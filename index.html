@@ -86,7 +86,7 @@
 
 <!-- HOME — MISSION CONTROL -->
 <section class="sec" id="home">
-<div class="sec-hd"><div class="sec-num">00 — Home</div><h2 class="sec-title">Mission Control —<br><em>Your Life OS</em></h2></div>
+<div class="sec-hd"><div class="sec-num">📅 Today</div><h2 class="sec-title">Mission Control —<br><em>Your Life OS</em></h2></div>
 <div class="home-phase">
   <div>
     <div class="home-phase-label">Current Phase</div>
@@ -99,6 +99,29 @@
     <div class="hnd-title" id="home-nd-title"></div>
   </div>
 </div>
+
+<!-- Calendar + Upcoming -->
+<div class="home-cal-row">
+  <div class="home-cal-panel">
+    <div class="cal-header">
+      <span class="cal-month-name" id="cal-month-label">June 2026</span>
+      <div class="cal-nav">
+        <button class="cal-nav-btn" onclick="calNav(-1)">‹</button>
+        <button class="cal-nav-btn" onclick="calNav(1)">›</button>
+      </div>
+    </div>
+    <div class="cal-weekdays">
+      <span class="cal-wd">M</span><span class="cal-wd">T</span><span class="cal-wd">W</span>
+      <span class="cal-wd">T</span><span class="cal-wd">F</span><span class="cal-wd">S</span><span class="cal-wd">S</span>
+    </div>
+    <div class="cal-grid" id="cal-grid"></div>
+  </div>
+  <div class="home-upcoming-panel">
+    <div class="home-up-header">Upcoming Deadlines</div>
+    <div id="home-upcoming-list"></div>
+  </div>
+</div>
+
 <div class="home-bottom-grid">
   <div class="home-savings">
     <div class="home-section-title">Savings Goals</div>

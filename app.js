@@ -347,6 +347,80 @@ function show(id){
 })();
 
 /* ═══════════════════════════════════════════
+   HOME — CALENDAR
+   ═══════════════════════════════════════════ */
+let calYear=new Date().getFullYear();
+let calMonth=new Date().getMonth();
+
+function renderCalendar(){
+  const gridEl=document.getElementById('cal-grid');
+  const labelEl=document.getElementById('cal-month-label');
+  if(!gridEl) return;
+  const now=new Date();
+  const firstDayRaw=new Date(calYear,calMonth,1).getDay(); // 0=Sun
+  const startOffset=(firstDayRaw+6)%7; // Mon-first offset
+  const daysInMonth=new Date(calYear,calMonth+1,0).getDate();
+  const monthName=new Date(calYear,calMonth,1).toLocaleDateString('en-GB',{month:'long'});
+  if(labelEl) labelEl.textContent=monthName+' '+calYear;
+  // build event map
+  const ev={};
+  D.deadlines.forEach(d=>{
+    const dt=new Date(d.date);
+    if(dt.getFullYear()===calYear&&dt.getMonth()===calMonth){
+      const day=dt.getDate();
+      if(!ev[day]) ev[day]=[];
+      ev[day].push(d);
+    }
+  });
+  let html='';
+  for(let i=0;i<startOffset;i++) html+='<div class="cal-day"></div>';
+  for(let day=1;day<=daysInMonth;day++){
+    const isToday=now.getFullYear()===calYear&&now.getMonth()===calMonth&&now.getDate()===day;
+    const events=ev[day]||[];
+    const hasCrit=events.some(e=>e.importance==='critical');
+    const hasHigh=events.some(e=>e.importance==='high');
+    const tip=events.map(e=>e.title).join('\n');
+    const dotCls='cal-dot'+(hasCrit?' critical':hasHigh?' high':'');
+    html+='<div class="cal-day'+(isToday?' today':'')+(events.length?' has-event':'')+'"'+(tip?' title="'+tip+'"':'')+'>'+
+      '<div class="cal-day-num">'+day+'</div>'+
+      (events.length?'<div class="'+dotCls+'"></div>':'')+
+    '</div>';
+  }
+  gridEl.innerHTML=html;
+}
+
+function calNav(dir){
+  calMonth+=dir;
+  if(calMonth>11){calMonth=0;calYear++;}
+  if(calMonth<0){calMonth=11;calYear--;}
+  renderCalendar();
+}
+
+function renderUpcoming(){
+  const el=document.getElementById('home-upcoming-list');
+  if(!el) return;
+  const now=new Date();
+  const items=D.deadlines
+    .map(d=>({...d,daysLeft:Math.ceil((new Date(d.date)-now)/864e5)}))
+    .filter(d=>d.daysLeft>=-1) // include today
+    .sort((a,b)=>a.daysLeft-b.daysLeft)
+    .slice(0,9);
+  el.innerHTML=items.map(d=>{
+    const cls=d.daysLeft<=0?'done':d.daysLeft<=7?'urgent':d.daysLeft<=30?'soon':'ok';
+    const dayTxt=d.daysLeft<=0?'done':d.daysLeft+'d';
+    const dateStr=new Date(d.date).toLocaleDateString('en-GB',{day:'numeric',month:'short'});
+    const priv=d.private?' data-private="true"':'';
+    return '<div class="home-up-item"'+priv+'>'+
+      '<div class="home-up-days '+cls+'">'+dayTxt+'</div>'+
+      '<div>'+
+        '<div class="home-up-title">'+d.title+'</div>'+
+        '<div class="home-up-meta">'+dateStr+' · '+d.cat+'</div>'+
+      '</div>'+
+    '</div>';
+  }).join('');
+}
+
+/* ═══════════════════════════════════════════
    HOME — MISSION CONTROL WIDGETS
    ═══════════════════════════════════════════ */
 function renderHome(){
@@ -402,6 +476,9 @@ function renderHome(){
       '</div>';
     }).join('');
   }
+  // Calendar + upcoming
+  renderCalendar();
+  renderUpcoming();
 }
 document.addEventListener('DOMContentLoaded',renderHome);
 
