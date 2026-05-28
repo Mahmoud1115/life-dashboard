@@ -5,122 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Dune — Master Life Plan 2026–2037</title>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,300;1,400&family=DM+Mono:wght@300;400;500&family=Outfit:wght@300;400;500;600&display=swap" rel="stylesheet">
-<style>
-:root{--bg:#faf9f7;--bg2:#fff;--bg3:#f3f1ee;--bdr:rgba(0,0,0,0.08);--bdr2:rgba(0,0,0,0.14);--gold:#9a7832;--gold2:#7a5e1e;--gold3:rgba(154,120,50,0.08);--blue:#1a6fc4;--blue2:rgba(26,111,196,0.08);--green:#1a8a52;--green2:rgba(26,138,82,0.08);--red:#c43030;--red2:rgba(196,48,48,0.08);--amber:#b06820;--amber2:rgba(176,104,32,0.08);--purple:#6b3fa0;--purple2:rgba(107,63,160,0.08);--tx:#1a1814;--tx2:#5a5248;--tx3:#9a9288;--serif:'Cormorant Garamond',Georgia,serif;--mono:'DM Mono',monospace;--sans:'Outfit',sans-serif}
-*{margin:0;padding:0;box-sizing:border-box}
-body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-weight:300;line-height:1.7;min-height:100vh}
-.hero{padding:80px 40px 60px;max-width:960px;margin:0 auto;border-bottom:1px solid var(--bdr)}
-.hl-label{font-family:var(--mono);font-size:11px;letter-spacing:3px;color:var(--gold);text-transform:uppercase;margin-bottom:24px;opacity:.8}
-.hl-title{font-family:var(--serif);font-size:clamp(40px,6vw,70px);font-weight:300;line-height:1.1;margin-bottom:14px}
-.hl-title em{font-style:italic;color:var(--gold2)}
-.hl-sub{font-family:var(--serif);font-size:17px;font-style:italic;color:var(--tx2);margin-bottom:40px;line-height:1.7}
-.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:1px;background:var(--bdr);border:1px solid var(--bdr);border-radius:2px;overflow:hidden}
-.stat{background:var(--bg2);padding:18px 22px}
-.sv{font-family:var(--mono);font-size:20px;font-weight:500;color:var(--gold2);line-height:1;margin-bottom:5px}
-.sl{font-size:10px;letter-spacing:1px;color:var(--tx3);text-transform:uppercase}
-.nav{position:sticky;top:0;z-index:100;background:rgba(250,249,247,.97);backdrop-filter:blur(14px);border-bottom:1px solid var(--bdr);padding:0}
-.nav-in{max-width:960px;margin:0 auto;padding:10px 40px}
-.nav-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:3px}
-.nb{background:none;border:1px solid transparent;color:var(--tx3);font-family:var(--mono);font-size:8.5px;letter-spacing:.8px;text-transform:uppercase;padding:7px 6px;cursor:pointer;white-space:normal;line-height:1.3;transition:all .15s;border-radius:2px;text-align:center}
-.nb:hover{color:var(--tx2);background:var(--bg3);border-color:var(--bdr)}
-.nb.active{color:var(--gold);background:var(--gold3);border-color:var(--gold)}
-@media(max-width:700px){.nav-grid{grid-template-columns:repeat(3,1fr)}.nav-in{padding:8px 18px}}
-.main{max-width:960px;margin:0 auto;padding:0 40px 80px}
-.sec{display:none;padding-top:52px}.sec.active{display:block}
-.sec-hd{margin-bottom:40px}
-.sec-num{font-family:var(--mono);font-size:10px;color:var(--gold);letter-spacing:2px;text-transform:uppercase;margin-bottom:10px;opacity:.7}
-.sec-title{font-family:var(--serif);font-size:clamp(24px,4vw,40px);font-weight:300;line-height:1.2}
-.sec-title em{font-style:italic;color:var(--gold2)}
-.sec-intro{font-family:var(--serif);font-size:16px;font-style:italic;color:var(--tx2);margin-top:12px;line-height:1.7;max-width:680px}
-.card{background:var(--bg2);border:1px solid var(--bdr);border-radius:2px;padding:26px;margin-bottom:18px}
-.ctitle{font-family:var(--mono);font-size:10px;letter-spacing:2px;text-transform:uppercase;color:var(--gold);margin-bottom:16px;padding-bottom:10px;border-bottom:1px solid var(--bdr)}
-.card p{color:var(--tx2);font-size:14px;line-height:1.8;margin-bottom:9px}
-.card p:last-child{margin-bottom:0}
-.card strong{color:var(--tx);font-weight:500}
-.card ul{list-style:none;padding:0;margin:7px 0}
-.card ul li{padding:3px 0 3px 17px;position:relative;font-size:13.5px;color:var(--tx2);line-height:1.6}
-.card ul li::before{content:'→';position:absolute;left:0;color:var(--gold);font-size:11px;top:5px}
-.dec{border-left:3px solid var(--gold);padding-left:24px;margin-bottom:26px}
-.dec-title{font-family:var(--serif);font-size:20px;font-weight:400;color:var(--tx);margin-bottom:6px}
-.dec-body{color:var(--tx2);font-size:14px;line-height:1.8}
-.vrd{display:inline-block;font-family:var(--mono);font-size:10px;letter-spacing:1px;padding:3px 10px;border-radius:1px;margin-top:9px}
-.v-y{background:var(--green2);color:var(--green)}.v-n{background:var(--red2);color:var(--red)}.v-c{background:var(--amber2);color:var(--amber)}
-.tbl{width:100%;border-collapse:collapse;margin:18px 0;font-size:13px}
-.tbl th{font-family:var(--mono);font-size:9px;letter-spacing:1.5px;text-transform:uppercase;color:var(--tx3);padding:8px 12px;text-align:left;border-bottom:1px solid var(--bdr2)}
-.tbl td{padding:10px 12px;color:var(--tx2);border-bottom:1px solid var(--bdr);line-height:1.5;vertical-align:top}
-.tbl tr:last-child td{border-bottom:none}
-.ta{color:var(--green);font-weight:500}.tb{color:var(--amber);font-weight:500}.th{color:var(--tx);font-weight:500}
-.tl{position:relative;padding-left:36px}
-.tl::before{content:'';position:absolute;left:6px;top:8px;bottom:8px;width:1px;background:var(--bdr2)}
-.tl-item{position:relative;margin-bottom:28px}
-.tl-dot{position:absolute;left:-32px;top:4px;width:9px;height:9px;border-radius:50%;background:var(--bg3);border:2px solid var(--bdr2)}
-.tl-dot.gold{border-color:var(--gold);background:var(--gold3)}.tl-dot.green{border-color:var(--green);background:var(--green2)}.tl-dot.blue{border-color:var(--blue);background:var(--blue2)}.tl-dot.red{border-color:var(--red);background:var(--red2)}
-.tl-date{font-family:var(--mono);font-size:10px;color:var(--gold);letter-spacing:1px;margin-bottom:4px}
-.tl-title{font-size:14.5px;font-weight:500;color:var(--tx);margin-bottom:4px}
-.tl-body{font-size:13px;color:var(--tx2);line-height:1.7}
-.tl-body ul{list-style:none;padding:0;margin-top:5px}
-.tl-body ul li{padding:2px 0 2px 14px;position:relative}
-.tl-body ul li::before{content:'→';position:absolute;left:0;color:var(--gold);font-size:10px}
-.risk{display:flex;gap:16px;background:var(--bg2);border:1px solid var(--bdr);border-radius:2px;padding:20px;margin-bottom:12px}
-.rn{font-family:var(--mono);font-size:20px;font-weight:500;color:var(--bdr2);line-height:1;flex-shrink:0;width:34px}
-.rt{font-size:13.5px;font-weight:500;color:var(--red);margin-bottom:4px}
-.rb{font-size:13px;color:var(--tx2);line-height:1.7;margin-bottom:6px}
-.rf{font-size:12px;color:var(--green);font-family:var(--mono)}
-.sb{margin-bottom:26px}
-.sb-label{font-family:var(--mono);font-size:9.5px;letter-spacing:1.5px;text-transform:uppercase;color:var(--tx3);margin-bottom:12px}
-.sb-row{display:flex;align-items:center;gap:12px;margin-bottom:8px}
-.sb-name{font-size:12px;color:var(--tx2);width:155px;flex-shrink:0}
-.sb-wrap{flex:1;height:5px;background:var(--bg3);border-radius:1px;overflow:hidden}
-.sb-bar{height:100%;border-radius:1px;background:var(--gold)}
-.sb-val{font-family:var(--mono);font-size:11px;color:var(--gold2);width:130px;text-align:right;flex-shrink:0}
-.quote{border:1px solid var(--gold);background:var(--gold3);padding:20px 24px;border-radius:2px;margin:26px 0}
-.quote p{font-family:var(--serif);font-size:17px;font-style:italic;color:var(--gold2);line-height:1.7}
-.quote .attr{font-family:var(--mono);font-size:9.5px;color:var(--gold);letter-spacing:1px;margin-top:9px;opacity:.7}
-.wb{border:1px solid var(--red);background:var(--red2);padding:16px 20px;border-radius:2px;margin:18px 0}
-.wb p{font-size:13px;color:var(--red);line-height:1.7}
-.ib{border:1px solid var(--blue);background:var(--blue2);padding:16px 20px;border-radius:2px;margin:18px 0}
-.ib p{font-size:13px;color:var(--blue);line-height:1.7}
-.gb{border:1px solid var(--green);background:var(--green2);padding:16px 20px;border-radius:2px;margin:18px 0}
-.gb p{font-size:13px;color:var(--green);line-height:1.7}
-.pp{display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:12px;margin:18px 0}
-.pc{background:var(--bg3);border:1px solid var(--bdr);padding:16px;border-radius:2px;text-align:center}
-.pc.tgt{border-color:var(--gold);background:var(--gold3)}
-.pc-flag{font-size:28px;margin-bottom:6px}.pc-country{font-size:12px;font-weight:500;color:var(--tx);margin-bottom:3px}
-.pc-vf{font-family:var(--mono);font-size:19px;font-weight:500;color:var(--gold2);margin-bottom:3px}
-.pc-desc{font-size:10px;color:var(--tx3)}
-.dvdr{height:1px;background:var(--bdr);margin:32px 0}
-.ch{display:flex;align-items:center;gap:12px;margin-bottom:20px}
-.ch-flag{font-size:36px}.ch-lbl{font-family:var(--mono);font-size:9.5px;letter-spacing:2px;text-transform:uppercase;margin-bottom:3px}
-.ch-name{font-family:var(--serif);font-size:22px;font-weight:400;color:var(--tx)}
-.q-block{background:var(--bg3);border:1px solid var(--bdr);padding:22px;margin-bottom:16px;border-radius:2px}
-.q-text{font-family:var(--serif);font-size:18px;font-style:italic;color:var(--tx);margin-bottom:12px;line-height:1.5}
-.q-ctx{font-size:13px;color:var(--tx2);line-height:1.8}
-.mon-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(255px,1fr));gap:14px;margin:18px 0}
-.mc{background:var(--bg2);border:1px solid var(--bdr);border-radius:2px;padding:20px}
-.mc.urg{border-left:3px solid var(--red)}.mc.imp{border-left:3px solid var(--amber)}.mc.ong{border-left:3px solid var(--blue)}
-.mc-icon{font-size:20px;margin-bottom:9px}
-.mc-title{font-size:13px;font-weight:500;color:var(--tx);margin-bottom:5px}
-.mc-body{font-size:12.5px;color:var(--tx2);line-height:1.6;margin-bottom:7px}
-.mc-action{font-family:var(--mono);font-size:10px;color:var(--gold);letter-spacing:.4px}
-.kif-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));gap:13px;margin:18px 0}
-.kif{background:var(--bg2);border:1px solid var(--bdr);border-radius:2px;padding:18px 20px}
-.kif-num{font-family:var(--mono);font-size:26px;font-weight:500;line-height:1;margin-bottom:7px}
-.kif-title{font-size:12.5px;font-weight:500;color:var(--tx);margin-bottom:5px}
-.kif-body{font-size:11.5px;color:var(--tx2);line-height:1.6}
-.kif.gd .kif-num{color:var(--gold2)}.kif.gr .kif-num{color:var(--green)}.kif.bl .kif-num{color:var(--blue)}.kif.rd .kif-num{color:var(--red)}.kif.am .kif-num{color:var(--amber)}.kif.pu .kif-num{color:var(--purple)}
-.opt{background:var(--bg2);border:2px solid var(--gold);border-radius:2px;padding:26px;margin-bottom:18px;position:relative}
-.opt-badge{position:absolute;top:-1px;right:18px;background:var(--gold);color:white;font-family:var(--mono);font-size:8.5px;letter-spacing:1.5px;text-transform:uppercase;padding:3px 10px}
-.int-q{display:flex;gap:11px;padding:8px 0;border-bottom:1px solid var(--bdr);align-items:flex-start}
-.int-q:last-child{border-bottom:none}
-.int-num{min-width:20px;height:20px;border-radius:50%;background:var(--bg3);color:var(--tx3);font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:2px}
-.int-text{font-size:13px;color:var(--tx);line-height:1.55}
-.int-note{font-size:10.5px;color:var(--tx3);font-style:italic;margin-top:2px;display:block}
-.int-crit{background:#fdf6f0;border:1px solid #f5c8a8;border-radius:6px;padding:11px 15px;margin-bottom:13px}
-.int-crit .int-text{color:#7c3311;font-weight:600}
-.stag{font-size:10px;color:var(--tx3);margin:12px 0 10px;font-family:var(--mono);letter-spacing:1px;text-transform:uppercase}
-#prog{position:fixed;top:0;left:0;height:2px;background:var(--gold);z-index:200;transition:width .1s}
-@media(max-width:600px){.hero,.nav,.main{padding-left:18px;padding-right:18px}.hero{padding-top:44px}.sb-name{width:110px;font-size:11px}.tbl{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch;font-size:11px}.tbl th,.tbl td{padding:6px 8px}}
-</style>
+<link rel="stylesheet" href="styles.css">
 </head>
 <body>
 <div id="prog"></div>
@@ -144,72 +29,105 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-weight:30
 <nav class="nav">
   <div class="nav-in">
     <div class="nav-grid">
-      <button class="nb active" onclick="show('decisions')">3 Decisions</button>
-      <button class="nb" onclick="show('moscow')">Moscow Plan</button>
-      <button class="nb" onclick="show('interviews')">Interviews</button>
-      <button class="nb" onclick="show('career')">A vs B</button>
-      <button class="nb" onclick="show('passport')">Passport & Army</button>
-      <button class="nb" onclick="show('gulf')">Gulf Path</button>
-      <button class="nb" onclick="show('australia')">Australia 🇦🇺</button>
-      <button class="nb" onclick="show('canada')">Canada 🇨🇦</button>
-      <button class="nb" onclick="show('usa')">USA 🇺🇸</button>
-      <button class="nb" onclick="show('myoption')">My Opinion</button>
-      <button class="nb" onclick="show('money')">Money Map</button>
-      <button class="nb" onclick="show('timeline')">Full Timeline</button>
-      <button class="nb" onclick="show('monitor')">Monitor This</button>
-      <button class="nb" onclick="show('cards')">Keep In Front</button>
-      <button class="nb" onclick="show('risks')">Risks</button>
-      <button class="nb" onclick="show('questions')">Think About It</button>
-      <button class="nb" onclick="show('todo')">Mission Control</button>
-      <button class="nb" onclick="show('aboutyou')">About You</button>
-      <button class="nb" onclick="show('dtbureau')">🧸</button>
+      <button class="nb nb-live" data-sec="home" onclick="show('home')">Home</button>
+      <button class="nb nb-live" data-sec="progress" onclick="show('progress')">Goals</button>
+      <button class="nb nb-live" data-sec="logbook" onclick="show('logbook')">Logbook</button>
+      <button class="nb nb-live" data-sec="easa" onclick="show('easa')">EASA</button>
+      <button class="nb nb-live" data-sec="deadlines" onclick="show('deadlines')">Deadlines</button>
+      <button class="nb nb-live" data-sec="finance" onclick="show('finance')">Finance</button>
+      <button class="nb nb-live" data-sec="jobs" onclick="show('jobs')">Jobs</button>
+      <button class="nb nb-live" data-sec="claims" onclick="show('claims')">Claims</button>
+      <button class="nb nb-live" data-sec="riskmon" onclick="show('riskmon')">Risk Mon</button>
+      <button class="nb" data-sec="decisions" onclick="show('decisions')">3 Decisions</button>
+      <button class="nb" data-sec="moscow" onclick="show('moscow')">Moscow Plan</button>
+      <button class="nb" data-sec="interviews" onclick="show('interviews')">Interviews</button>
+      <button class="nb" data-sec="career" onclick="show('career')">A vs B</button>
+      <button class="nb" data-sec="passport" onclick="show('passport')">Passport</button>
+      <button class="nb" data-sec="gulf" onclick="show('gulf')">Gulf Path</button>
+      <button class="nb" data-sec="australia" onclick="show('australia')">Australia 🇦🇺</button>
+      <button class="nb" data-sec="canada" onclick="show('canada')">Canada 🇨🇦</button>
+      <button class="nb" data-sec="usa" onclick="show('usa')">USA 🇺🇸</button>
+      <button class="nb" data-sec="myoption" onclick="show('myoption')">My Opinion</button>
+      <button class="nb" data-sec="money" onclick="show('money')">Money Map</button>
+      <button class="nb" data-sec="timeline" onclick="show('timeline')">Timeline</button>
+      <button class="nb" data-sec="monitor" onclick="show('monitor')">Monitor</button>
+      <button class="nb" data-sec="cards" onclick="show('cards')">Keep In Front</button>
+      <button class="nb" data-sec="risks" onclick="show('risks')">Risks</button>
+      <button class="nb" data-sec="questions" onclick="show('questions')">Think About</button>
+      <button class="nb" data-sec="todo" onclick="show('todo')">Status Board</button>
+      <button class="nb" data-sec="aboutyou" onclick="show('aboutyou')">About You</button>
+      <button class="nb" data-sec="dtbureau" onclick="show('dtbureau')">🧸</button>
+      <button class="nb" onclick="toggleSearch()" title="Search">⌕ Search</button>
+      <button class="nb" id="privacy-btn" onclick="togglePrivacy()">👁 Private</button>
     </div>
   </div>
 </nav>
+<span id="privacy-ind" class="privacy-indicator">PUBLIC MODE</span>
 
 <!-- Plan Health Bar -->
-<div style="background:var(--bg2);border-bottom:1px solid var(--bdr);padding:9px 24px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;overflow-x:auto;-webkit-overflow-scrolling:touch">
+<div class="phb-bar">
   <span style="font-family:var(--mono);font-size:9px;letter-spacing:1.5px;text-transform:uppercase;color:var(--tx3);flex-shrink:0">Plan Health</span>
   <span style="color:var(--bdr2);flex-shrink:0;font-size:12px">|</span>
   <div id="phb" style="display:flex;gap:6px;flex-wrap:wrap"></div>
 </div>
-<script>
-(function(){
-  function days(iso){return Math.ceil((new Date(iso)-new Date())/(864e5));}
-  function pill(label,val,bg,col){
-    return '<span style="display:inline-flex;align-items:center;gap:4px;background:'+bg+';border-radius:2px;padding:3px 9px;white-space:nowrap">'
-      +'<span style="font-family:var(--mono);font-size:9px;color:'+col+';opacity:.75">'+label+'</span>'
-      +'<span style="font-family:var(--mono);font-size:9px;font-weight:600;color:'+col+'">'+val+'</span>'
-      +'</span>';
-  }
-  function countdown(label,iso){
-    const d=days(iso);
-    if(d<0)return pill(label,'DONE','var(--green2)','var(--green)');
-    if(d<=7)return pill(label,d+'d','var(--red2)','var(--red)');
-    if(d<=60)return pill(label,d+'d','var(--amber2)','var(--amber)');
-    return pill(label,d+'d','var(--bg3)','var(--tx2)');
-  }
-  function render(){
-    const el=document.getElementById('phb');
-    if(!el)return;
-    el.innerHTML=[
-      countdown('Interview 1','2026-06-02'),
-      countdown('Interview 2','2026-06-04'),
-      pill('Settlement','CLOSED','var(--bg3)','var(--tx3)'),
-      countdown('MAI Deadline','2026-07-15'),
-      countdown('ВНЖ Renewal','2027-03-01'),
-      countdown('Passport Wall','2028-01-21'),
-    ].join('');
-  }
-  render();
-  setInterval(render,60000);
-})();
-</script>
+
+<!-- Search Bar -->
+<div id="search-wrap" class="search-bar" style="flex-wrap:wrap">
+  <input id="search-input" type="text" placeholder="Search sections, topics, decisions…" oninput="doSearch(event)" style="flex:1;min-width:200px;border:1px solid var(--bdr2);border-radius:2px;padding:7px 12px;font-family:var(--sans);font-size:13px;color:var(--tx);background:var(--bg);outline:none">
+  <button onclick="toggleSearch()" style="background:none;border:1px solid var(--bdr);border-radius:2px;padding:6px 12px;font-family:var(--mono);font-size:10px;color:var(--tx3);cursor:pointer">✕ Close</button>
+  <div id="search-results" class="search-results" style="width:100%;padding:8px 0 0"></div>
+</div>
 
 <div class="main">
 
+<!-- HOME — MISSION CONTROL -->
+<section class="sec" id="home">
+<div class="sec-hd"><div class="sec-num">00 — Home</div><h2 class="sec-title">Mission Control —<br><em>Your Life OS</em></h2></div>
+<div class="home-phase">
+  <div>
+    <div class="home-phase-label">Current Phase</div>
+    <div class="home-phase-name" id="home-phase-name">Loading…</div>
+    <div class="home-phase-sub" id="home-phase-sub"></div>
+  </div>
+  <div class="home-next-deadline">
+    <div class="hnd-label">Next Critical</div>
+    <div class="hnd-count" id="home-nd-count">—</div>
+    <div class="hnd-title" id="home-nd-title"></div>
+  </div>
+</div>
+<div class="home-bottom-grid">
+  <div class="home-savings">
+    <div class="home-section-title">Savings Goals</div>
+    <div class="home-savings-row" data-private="true">
+      <div class="home-savings-label">Ring Fund</div>
+      <div class="home-savings-track"><div class="home-savings-fill" id="home-savings-fill-go16"></div></div>
+      <div class="home-savings-pct" id="home-savings-go16">0%</div>
+    </div>
+    <div class="home-savings-row">
+      <div class="home-savings-label">Gulf Move Fund</div>
+      <div class="home-savings-track"><div class="home-savings-fill" id="home-savings-fill-go17"></div></div>
+      <div class="home-savings-pct" id="home-savings-go17">0%</div>
+    </div>
+    <div class="home-savings-row">
+      <div class="home-savings-label">Settlement Fund</div>
+      <div class="home-savings-track"><div class="home-savings-fill" id="home-savings-fill-go18"></div></div>
+      <div class="home-savings-pct" id="home-savings-go18">0%</div>
+    </div>
+    <div class="home-savings-row">
+      <div class="home-savings-label">Emergency Fund</div>
+      <div class="home-savings-track"><div class="home-savings-fill" id="home-savings-fill-go19"></div></div>
+      <div class="home-savings-pct" id="home-savings-go19">0%</div>
+    </div>
+  </div>
+  <div class="home-risks">
+    <div class="home-section-title">Top Risks</div>
+    <div id="home-risk-list"></div>
+  </div>
+</div>
+</section>
+
 <!-- 3 DECISIONS -->
-<section class="sec active" id="decisions">
+<section class="sec" id="decisions">
 <div class="sec-hd"><div class="sec-num">00 — The Core</div><h2 class="sec-title">The 3 Decisions That<br><em>Determine Everything</em></h2><p class="sec-intro">Seven AIs. Hundreds of sources. Weeks of research. Three decisions. Get these right — everything else follows automatically.</p></div>
 <div class="dec"><div class="dec-title">Decision 1 — Career</div><div class="dec-body">Choose <strong>Timeline A: Аэрофлот Техникс</strong> if they confirm A320 or Boeing on June 2nd. Broad whole-aircraft experience builds the B1.1 logbook that opens every door: EASA Part-66, Gulf LAE, FAA A&P, CASA, Australia migration. Timeline B (АэроТраст, CFM56 only) is correct only if Аэрофлот pushes Superjet — walk out without hesitation.</div><div class="vrd v-y">6/6 AIs — Timeline A unanimous</div></div>
 <div class="dec"><div class="dec-title">Decision 2 — Passport</div><div class="dec-body">Enroll <strong>MAI part-time Master's, September 2026</strong>. Renew your Egyptian passport at the embassy in <strong>mid-2027 at age 27</strong> — no elaborate reason needed, just a citizen abroad doing a routine renewal. Bring the MAI enrollment certificate only if they ask about military service status — it's your shield for that specific question, not your justification for renewing. The hard deadline is your 28th birthday, January 21, 2028. When Egyptian settlement program reopens (7,000+ USD) — pay immediately for permanent clean status.</div><div class="vrd v-y">Renew mid-2027 — before age 28 — routine renewal, no complex justification</div></div>
@@ -339,6 +257,26 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-weight:30
 <!-- CAREER A vs B -->
 <section class="sec" id="career">
 <div class="sec-hd"><div class="sec-num">03 — Career</div><h2 class="sec-title">Timeline A vs B —<br><em>The Deep Comparison</em></h2><p class="sec-intro">Two parallel universes. Both companies. 2 years each. Here is where each path leads over 10 years — based on real EASA requirements, verified Gulf MRO job postings, and official salary data.</p></div>
+<div class="card" style="margin-bottom:28px">
+<div class="ctitle">Interactive Decision Engine — Adjust Weights &amp; Scores</div>
+<div class="decide-header">
+  <div class="decide-option" id="decide-box-a">
+    <div class="decide-option-label">Option A</div>
+    <div class="decide-option-score" id="decide-score-a">—</div>
+    <div style="font-size:12px;color:var(--tx2);margin-top:4px">Аэрофлот Техникс</div>
+  </div>
+  <div class="decide-option" id="decide-box-b">
+    <div class="decide-option-label">Option B</div>
+    <div class="decide-option-score" id="decide-score-b">—</div>
+    <div style="font-size:12px;color:var(--tx2);margin-top:4px">АэроТраст</div>
+  </div>
+</div>
+<div class="decide-header-row">
+  <span>Criterion</span><span>Weight</span><span>Score A</span><span>Score B</span>
+</div>
+<div id="decide-table"></div>
+<div id="decide-recommend" class="decide-recommend"></div>
+</div>
 <table class="tbl"><thead><tr><th>Factor</th><th>Timeline A — Аэрофлот</th><th>Timeline B — АэроТраст</th></tr></thead><tbody>
 <tr><td class="th">Work type</td><td class="ta">A320 + Boeing 737/777 whole aircraft — all systems</td><td class="tb">CFM56-5B/7B engine overhaul — deep but narrow</td></tr>
 <tr><td class="th">Logbook quality</td><td class="ta">Full B1.1 — hydraulics, fuel, pneumatics, avionics, engines, structures</td><td class="tb">Engine only — ATA 71-80. Missing aircraft systems.</td></tr>
@@ -782,68 +720,6 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-weight:30
   <p class="sec-intro">Every task in one place. Click once = Done ✓. Click again = add what actually happened. Click a third time = resets. Your notes are saved — even when you close the file. Use the Report button to generate a message you can paste to me.</p>
 </div>
 
-<style>
-/* STATUS BOARD STYLES */
-.sb-phase{margin-bottom:28px}
-.sb-phase-title{font-family:var(--mono);font-size:10px;letter-spacing:2px;text-transform:uppercase;padding:8px 14px;border-radius:2px;margin-bottom:3px;display:flex;align-items:center;justify-content:space-between}
-.sb-phase-title span{font-family:var(--mono);font-size:9px;color:inherit;opacity:.7}
-.ph-urgent{background:var(--red2);color:var(--red)}
-.ph-soon{background:var(--amber2);color:var(--amber)}
-.ph-upcoming{background:var(--blue2);color:var(--blue)}
-.ph-ongoing{background:var(--bg3);color:var(--tx3)}
-.sb-task{display:flex;align-items:flex-start;gap:12px;padding:11px 14px;border-bottom:1px solid var(--bdr);background:var(--bg2);cursor:pointer;transition:background .15s;position:relative}
-.sb-task:last-child{border-bottom:none;border-radius:0 0 2px 2px}
-.sb-task:first-of-type{border-radius:2px 2px 0 0}
-.sb-task:hover{background:var(--bg3)}
-.sb-task.state-done{background:#f0faf4}
-.sb-task.state-done:hover{background:#e6f7ed}
-.sb-task.state-noted{background:#f0faf4}
-.sb-state{width:28px;height:28px;border-radius:4px;border:2px solid var(--bdr2);flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:13px;transition:all .2s;margin-top:1px}
-.state-done .sb-state{background:var(--green);border-color:var(--green);color:white}
-.state-noted .sb-state{background:var(--green);border-color:var(--green);color:white}
-.sb-content{flex:1;min-width:0}
-.sb-title{font-size:13.5px;font-weight:500;color:var(--tx);margin-bottom:2px;transition:color .2s}
-.state-done .sb-title,.state-noted .sb-title{text-decoration:line-through;color:var(--tx3)}
-.sb-sub{font-size:11.5px;color:var(--tx3);line-height:1.5}
-.sb-note-wrap{display:none;margin-top:8px}
-.state-done .sb-note-wrap{display:block}
-.state-noted .sb-note-wrap{display:block}
-.sb-note{width:100%;padding:7px 10px;border:1px solid var(--bdr2);border-radius:3px;font-family:var(--sans);font-size:12px;color:var(--tx);background:white;resize:none;min-height:38px;line-height:1.5}
-.sb-note:focus{outline:none;border-color:var(--green)}
-.sb-note-label{font-family:var(--mono);font-size:9.5px;color:var(--green);letter-spacing:1px;text-transform:uppercase;margin-bottom:5px}
-.sb-note-saved{font-size:11px;color:var(--green);font-family:var(--mono);margin-top:3px;display:none}
-.sb-tag{display:inline-block;font-family:var(--mono);font-size:8.5px;letter-spacing:.8px;text-transform:uppercase;padding:2px 7px;border-radius:1px;margin-left:6px;vertical-align:middle}
-.tag-r{background:var(--red2);color:var(--red)}
-.tag-a{background:var(--amber2);color:var(--amber)}
-.tag-b{background:var(--blue2);color:var(--blue)}
-.tag-g{background:var(--green2);color:var(--green)}
-
-/* PROGRESS + REPORT BAR */
-.sb-header{background:var(--bg2);border:1px solid var(--bdr);border-radius:2px;padding:18px 22px;margin-bottom:20px;display:flex;align-items:center;gap:20px;flex-wrap:wrap}
-.sb-prog-wrap{flex:1;min-width:180px}
-.sb-prog-label{display:flex;justify-content:space-between;margin-bottom:7px}
-.sb-prog-label span:first-child{font-family:var(--mono);font-size:9.5px;letter-spacing:1.5px;text-transform:uppercase;color:var(--tx3)}
-.sb-prog-label span:last-child{font-family:var(--mono);font-size:11px;color:var(--gold);font-weight:500}
-.sb-prog-bar{height:6px;background:var(--bg3);border-radius:3px;overflow:hidden}
-.sb-prog-fill{height:100%;border-radius:3px;background:var(--gold);transition:width .4s ease}
-.sb-btns{display:flex;gap:8px;flex-shrink:0}
-.sb-btn{font-family:var(--mono);font-size:9px;letter-spacing:1px;text-transform:uppercase;padding:8px 14px;border-radius:2px;cursor:pointer;transition:all .15s;border:1px solid}
-.sb-btn-report{background:var(--gold3);border-color:var(--gold);color:var(--gold2)}
-.sb-btn-report:hover{background:var(--gold);color:white}
-.sb-btn-reset{background:none;border-color:var(--bdr);color:var(--tx3)}
-.sb-btn-reset:hover{border-color:var(--red);color:var(--red)}
-
-/* REPORT MODAL */
-.sb-modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:500;align-items:center;justify-content:center;padding:20px}
-.sb-modal.open{display:flex}
-.sb-modal-box{background:white;border-radius:4px;padding:28px;max-width:600px;width:100%;max-height:80vh;overflow-y:auto}
-.sb-modal-title{font-family:var(--mono);font-size:10px;letter-spacing:2px;text-transform:uppercase;color:var(--gold);margin-bottom:14px}
-.sb-modal-text{font-size:12.5px;color:var(--tx2);line-height:1.7;background:var(--bg3);padding:14px;border-radius:3px;white-space:pre-wrap;word-break:break-word;border:1px solid var(--bdr);margin-bottom:14px;font-family:var(--mono)}
-.sb-modal-btns{display:flex;gap:10px}
-.sb-modal-copy{background:var(--gold);color:white;border:none;font-family:var(--mono);font-size:9.5px;letter-spacing:1px;text-transform:uppercase;padding:9px 18px;border-radius:2px;cursor:pointer}
-.sb-modal-close{background:none;border:1px solid var(--bdr);color:var(--tx3);font-family:var(--mono);font-size:9.5px;letter-spacing:1px;text-transform:uppercase;padding:9px 18px;border-radius:2px;cursor:pointer}
-.sb-modal-hint{font-size:11.5px;color:var(--tx3);margin-bottom:12px}
-</style>
 
 <!-- HEADER BAR -->
 <div class="sb-header">
@@ -1143,129 +1019,6 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-weight:30
   </div>
 </div>
 
-<script>
-(function(){
-  const KEY='dune_sb_v1';
-  const PHASES=['This Week','June 2026','July–Aug 2026','Sept–Dec 2026','2027','Ongoing'];
-
-  function load(){try{return JSON.parse(localStorage.getItem(KEY)||'{}')}catch(e){return{}}}
-  function save(d){try{localStorage.setItem(KEY,JSON.stringify(d))}catch(e){}}
-
-  function getState(id){return load()[id]||{state:'pending',note:''}}
-  function setState(id,state,note){var d=load();d[id]={state,note:note||''};save(d)}
-
-  window.cycleTask=function(e,el){
-    if(e.target.tagName==='TEXTAREA')return;
-    var id=el.dataset.id;
-    var s=getState(id);
-    var next=s.state==='pending'?'done':s.state==='done'?'noted':'pending';
-    if(next==='pending'){setState(id,'pending','');}
-    else{setState(id,next,s.note);}
-    applyState(el,id);
-    updateProgress();
-  };
-
-  window.saveNote=function(ta){
-    var id=ta.dataset.id;
-    var s=getState(id);
-    setState(id,s.state||'done',ta.value);
-    var sv=document.getElementById('saved-'+id);
-    if(sv){sv.style.display='block';setTimeout(()=>sv.style.display='none',1500);}
-  };
-
-  function applyState(el,id){
-    var s=getState(id);
-    el.className='sb-task'+(s.state!=='pending'?' state-'+s.state:'');
-    var icon=el.querySelector('.sb-state');
-    icon.textContent=s.state!=='pending'?'✓':'';
-    var ta=el.querySelector('.sb-note');
-    if(ta&&s.note)ta.value=s.note;
-  }
-
-  function updateProgress(){
-    var tasks=document.querySelectorAll('.sb-task');
-    var done=[...tasks].filter(t=>t.classList.contains('state-done')||t.classList.contains('state-noted')).length;
-    var total=tasks.length;
-    var pct=total?Math.round(done/total*100):0;
-    var c=document.getElementById('sb-counter');
-    var f=document.getElementById('sb-fill');
-    if(c)c.textContent=done+' / '+total+' done ('+pct+'%)';
-    if(f){f.style.width=pct+'%';f.style.background=pct===100?'var(--green)':pct>50?'var(--amber)':'var(--gold)';}
-    // phase progress
-    [0,1,2,3,4,5].forEach(ph=>{
-      var pTasks=[...document.querySelectorAll('.sb-task[data-phase="'+ph+'"]')];
-      var pDone=pTasks.filter(t=>t.classList.contains('state-done')||t.classList.contains('state-noted')).length;
-      var el=document.getElementById('p'+ph+'-prog');
-      if(el)el.textContent=pDone+'/'+pTasks.length;
-    });
-  }
-
-  window.openReport=function(){
-    var lines=['DUNE STATUS REPORT — '+new Date().toLocaleDateString('en-GB'),
-               '─────────────────────────────────',''];
-    var tasks=document.querySelectorAll('.sb-task');
-    var phases={};
-    tasks.forEach(t=>{
-      var id=t.dataset.id;
-      var ph=parseInt(t.dataset.phase);
-      var s=getState(id);
-      if(!phases[ph])phases[ph]=[];
-      if(s.state!=='pending'){
-        var title=t.querySelector('.sb-title').textContent.trim();
-        var note=s.note?'\n   → '+s.note:'';
-        phases[ph].push('✓ '+title+note);
-      }
-    });
-    var hasAny=false;
-    [0,1,2,3,4,5].forEach(ph=>{
-      if(phases[ph]&&phases[ph].length){
-        hasAny=true;
-        lines.push('[ '+PHASES[ph]+' ]');
-        phases[ph].forEach(l=>lines.push(l));
-        lines.push('');
-      }
-    });
-    if(!hasAny){lines.push('No completed tasks yet.');}
-    lines.push('─────────────────────────────────');
-    lines.push('Please update the plan based on the above.');
-    document.getElementById('sb-report-text').textContent=lines.join('\n');
-    document.getElementById('sb-modal').classList.add('open');
-  };
-
-  window.closeReport=function(){
-    document.getElementById('sb-modal').classList.remove('open');
-  };
-
-  window.copyReport=function(){
-    var text=document.getElementById('sb-report-text').textContent;
-    navigator.clipboard.writeText(text).then(()=>{
-      var btn=document.querySelector('.sb-modal-copy');
-      btn.textContent='Copied ✓';
-      setTimeout(()=>btn.textContent='Copy to Clipboard',2000);
-    });
-  };
-
-  window.resetBoard=function(){
-    if(!confirm('Reset ALL tasks and notes? This cannot be undone.'))return;
-    try{localStorage.removeItem(KEY);}catch(e){}
-    document.querySelectorAll('.sb-task').forEach(el=>{
-      el.className='sb-task';
-      el.querySelector('.sb-state').textContent='';
-      var ta=el.querySelector('.sb-note');
-      if(ta)ta.value='';
-    });
-    updateProgress();
-  };
-
-  // init on load
-  document.querySelectorAll('.sb-task').forEach(el=>{
-    applyState(el,el.dataset.id);
-  });
-  updateProgress();
-})();
-</script>
-
-
 
 </section>
 <!-- ABOUT YOU -->
@@ -1295,7 +1048,7 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-weight:30
 
 
 <!-- DT BUREAU -->
-<section class="sec" id="dtbureau">
+<section class="sec" id="dtbureau" data-private="true">
 <div class="sec-hd"><div class="sec-num">18 — 🧸</div><h2 class="sec-title">🧸<br><em>Elisa & Your Future Together</em></h2><p class="sec-intro">Everything about Elisa — what to do, when, and how — in one place. Because she is not just in the plan. She is the reason for it.</p></div>
 
 <!-- RIGHT NOW -->
@@ -1414,6 +1167,161 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-weight:30
 
 </section>
 
+
+<!-- PROGRESS TRACKER -->
+<section class="sec" id="progress">
+<div class="sec-hd"><div class="sec-num">Live OS — Goals</div><h2 class="sec-title">Goal Tracker —<br><em>Progress System</em></h2><p class="sec-intro">Track every goal across career, legal, financial, and personal domains. Update progress and status directly.</p></div>
+<div class="pt-filters">
+  <button class="pt-filter active" onclick="filterGoals('all',this)">All</button>
+  <button class="pt-filter" onclick="filterGoals('career',this)">Career</button>
+  <button class="pt-filter" onclick="filterGoals('legal',this)">Legal</button>
+  <button class="pt-filter" onclick="filterGoals('financial',this)">Financial</button>
+  <button class="pt-filter" onclick="filterGoals('education',this)">Education</button>
+  <button class="pt-filter" onclick="filterGoals('personal',this)">Personal</button>
+</div>
+<div id="goals-list"></div>
+</section>
+
+<!-- EASA MODULE TRACKER -->
+<section class="sec" id="easa">
+<div class="sec-hd"><div class="sec-num">Live OS — EASA</div><h2 class="sec-title">EASA Part-66 —<br><em>Module Tracker</em></h2><p class="sec-intro">Track all 15 modules toward your B1.1 license. Update progress and status directly from here.</p></div>
+<div id="easa-stats" class="lb-stats-grid"></div>
+<div id="easa-grid" class="easa-grid"></div>
+</section>
+
+<!-- LOGBOOK TRACKER -->
+<section class="sec" id="logbook">
+<div class="sec-hd"><div class="sec-num">Live OS — Logbook</div><h2 class="sec-title">Aviation Logbook —<br><em>B1.1 Record</em></h2><p class="sec-intro">Every task, every aircraft, every stamp. Your English logbook is your most valuable career document. Start day one.</p></div>
+<div id="lb-stats" class="lb-stats-grid"></div>
+<div class="lb-toolbar">
+  <button class="lb-btn lb-btn-add" onclick="toggleLogForm()">+ Add Entry</button>
+</div>
+<form id="lb-form" class="lb-form" style="display:none" onsubmit="submitLogEntry(event)">
+  <div class="lb-form-grid">
+    <div class="lb-field"><label>Date</label><input id="lb-date-input" name="lb_date" type="date" required /></div>
+    <div class="lb-field"><label>Company / MRO</label><input name="lb_company" type="text" placeholder="Аэрофлот Техникс" required /></div>
+    <div class="lb-field"><label>Aircraft Type</label><input name="lb_aircraft" type="text" placeholder="A320-200" required /></div>
+    <div class="lb-field"><label>Registration</label><input name="lb_reg" type="text" placeholder="VP-BXX" /></div>
+    <div class="lb-field"><label>Engine Type</label><input name="lb_engine" type="text" placeholder="CFM56-5B" /></div>
+    <div class="lb-field"><label>ATA Chapter</label><input name="lb_ata" type="text" placeholder="72" required /></div>
+    <div class="lb-field"><label>System</label><input name="lb_system" type="text" placeholder="Engine" /></div>
+    <div class="lb-field" style="grid-column:1/-1"><label>Task Description (English)</label><textarea name="lb_task" rows="2" placeholder="Engine borescope inspection, HPC stages 3-9, ATA 72-30…" required></textarea></div>
+    <div class="lb-field"><label>Hours</label><input name="lb_hours" type="number" step="0.5" min="0" placeholder="2.5" required /></div>
+    <div class="lb-field"><label>Role</label><select name="lb_role"><option value="mechanic">Mechanic</option><option value="trainee">Trainee</option><option value="category_a">Cat A</option><option value="certifying">Certifying Staff</option></select></div>
+    <div class="lb-field"><label>Supervisor Name / Lic#</label><input name="lb_supervisor" type="text" placeholder="Ivan Petrov / Lic# 1234" /></div>
+    <div class="lb-field"><label>Stamp Status</label><select name="lb_stamp"><option value="pending">Pending</option><option value="stamped">Stamped</option><option value="witnessed">Witnessed</option></select></div>
+    <div class="lb-field"><label>Language</label><select name="lb_lang"><option value="english">English</option><option value="russian">Russian</option><option value="bilingual">Bilingual</option></select></div>
+    <div class="lb-field"><label>B1.1 Relevance</label><select name="lb_b1"><option value="direct">Direct</option><option value="partial">Partial</option><option value="admin">Admin</option></select></div>
+  </div>
+  <div class="lb-form-actions">
+    <button type="submit" class="lb-submit">Save Entry</button>
+    <button type="button" class="lb-cancel" onclick="toggleLogForm()">Cancel</button>
+  </div>
+</form>
+<div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+  <table class="tbl" style="min-width:700px">
+    <thead><tr><th>Date</th><th>Company</th><th>Aircraft / Reg</th><th>ATA</th><th>Task</th><th>Hours</th><th>Stamp</th><th></th></tr></thead>
+    <tbody id="lb-tbody"></tbody>
+  </table>
+</div>
+</section>
+
+<!-- DEADLINE TRACKER -->
+<section class="sec" id="deadlines">
+<div class="sec-hd"><div class="sec-num">Live OS — Deadlines</div><h2 class="sec-title">Deadline Tracker —<br><em>Never Miss A Date</em></h2><p class="sec-intro">Every legal, career, and personal deadline with countdown timers and .ics calendar export.</p></div>
+<div class="dl-filters">
+  <button class="dl-filter active" onclick="filterDeadlines('all',this)">All</button>
+  <button class="dl-filter" onclick="filterDeadlines('7',this)">7 Days</button>
+  <button class="dl-filter" onclick="filterDeadlines('30',this)">30 Days</button>
+  <button class="dl-filter" onclick="filterDeadlines('180',this)">6 Months</button>
+  <button class="dl-filter" onclick="filterDeadlines('legal',this)">Legal</button>
+  <button class="dl-filter" onclick="filterDeadlines('overdue',this)">Done / Overdue</button>
+  <button class="dl-filter" onclick="downloadAllICS()" style="margin-left:auto;background:var(--blue2);border-color:var(--blue);color:var(--blue)">📅 Export Critical</button>
+</div>
+<div id="deadlines-list"></div>
+</section>
+
+<!-- FINANCE SIMULATOR -->
+<section class="sec" id="finance">
+<div class="sec-hd"><div class="sec-num">Live OS — Finance</div><h2 class="sec-title">Finance Simulator —<br><em>Russia &amp; Gulf</em></h2><p class="sec-intro">Model your finances across phases. Adjust any input to see how savings change. All values saved locally.</p></div>
+<div class="fin-scenarios">
+  <button class="fin-scenario active" onclick="setFinScenario('realistic',this)">Realistic</button>
+  <button class="fin-scenario" onclick="setFinScenario('conservative',this)">Conservative</button>
+  <button class="fin-scenario" onclick="setFinScenario('upside',this)">Upside</button>
+  <button class="fin-scenario" onclick="setFinScenario('gulf_wife',this)">Gulf + Wife</button>
+</div>
+<div class="fin-tabs">
+  <button class="fin-tab active" onclick="showFinTab('russia',this)">Moscow Phase</button>
+  <button class="fin-tab" onclick="showFinTab('gulf',this)">Gulf Phase</button>
+</div>
+<div id="fin-russia" class="fin-panel active">
+  <div class="fin-grid">
+    <div class="fin-inputs">
+      <div class="fin-section-title">Moscow Income &amp; Expenses (RUB/month)</div>
+      <div class="fin-field"><label>Gross Salary (₽)</label><input id="fin-r-salary" type="number" onchange="finInputChange('russia','salary',this.value)" /></div>
+      <div class="fin-field"><label>Rent (₽)</label><input id="fin-r-rent" type="number" onchange="finInputChange('russia','rent',this.value)" /></div>
+      <div class="fin-field"><label>Food (₽)</label><input id="fin-r-food" type="number" onchange="finInputChange('russia','food',this.value)" /></div>
+      <div class="fin-field"><label>Transport (₽)</label><input id="fin-r-transport" type="number" onchange="finInputChange('russia','transport',this.value)" /></div>
+      <div class="fin-field"><label>Other (₽)</label><input id="fin-r-other" type="number" onchange="finInputChange('russia','other',this.value)" /></div>
+      <div class="fin-field"><label>MAI Fees (₽/month)</label><input id="fin-r-mai" type="number" onchange="finInputChange('russia','mai',this.value)" /></div>
+      <div class="fin-field"><label>USD Rate (₽)</label><input id="fin-r-usd_rate" type="number" onchange="finInputChange('russia','usd_rate',this.value)" /></div>
+    </div>
+    <div class="fin-outputs"><div id="fin-russia-out"></div></div>
+  </div>
+</div>
+<div id="fin-gulf" class="fin-panel">
+  <div class="fin-grid">
+    <div class="fin-inputs">
+      <div class="fin-section-title">Gulf Income &amp; Expenses (AED/month)</div>
+      <div class="fin-field"><label>Gross Salary (AED)</label><input id="fin-g-salary_aed" type="number" onchange="finInputChange('gulf','salary_aed',this.value)" /></div>
+      <div class="fin-field"><label>Housing (AED)</label><input id="fin-g-housing" type="number" onchange="finInputChange('gulf','housing',this.value)" /></div>
+      <div class="fin-field"><label>Transport (AED)</label><input id="fin-g-transport" type="number" onchange="finInputChange('gulf','transport',this.value)" /></div>
+      <div class="fin-field"><label>Food (AED)</label><input id="fin-g-food" type="number" onchange="finInputChange('gulf','food',this.value)" /></div>
+      <div class="fin-field"><label>Dependent Cost (AED)</label><input id="fin-g-dep_cost" type="number" onchange="finInputChange('gulf','dep_cost',this.value)" /></div>
+      <div class="fin-field"><label>Remittance (AED)</label><input id="fin-g-remittance" type="number" onchange="finInputChange('gulf','remittance',this.value)" /></div>
+      <div class="fin-field"><label>EASA Study (AED/month)</label><input id="fin-g-easa_monthly" type="number" onchange="finInputChange('gulf','easa_monthly',this.value)" /></div>
+    </div>
+    <div class="fin-outputs"><div id="fin-gulf-out"></div></div>
+  </div>
+</div>
+</section>
+
+<!-- JOB APPLICATION CRM -->
+<section class="sec" id="jobs">
+<div class="sec-hd"><div class="sec-num">Live OS — Jobs</div><h2 class="sec-title">Job Application CRM —<br><em>Gulf Pipeline</em></h2><p class="sec-intro">Track your Gulf job applications across the pipeline. Click any card for details, notes, and status updates.</p></div>
+<div class="crm-filters">
+  <button class="crm-filter active" onclick="filterCRM('all',this)">All</button>
+  <button class="crm-filter" onclick="filterCRM('gulf',this)">Gulf</button>
+  <button class="crm-filter" onclick="filterCRM('australia',this)">Australia</button>
+  <button class="crm-filter" onclick="filterCRM('canada',this)">Canada</button>
+  <button class="crm-filter" onclick="filterCRM('target',this)">Target</button>
+  <button class="crm-filter" onclick="filterCRM('applied',this)">Applied</button>
+  <button class="crm-filter" onclick="filterCRM('interview',this)">Interview</button>
+</div>
+<div id="crm-pipeline" class="crm-pipeline"></div>
+<div id="crm-detail" class="crm-detail"></div>
+</section>
+
+<!-- CLAIMS REGISTER -->
+<section class="sec" id="claims">
+<div class="sec-hd"><div class="sec-num">Live OS — Claims</div><h2 class="sec-title">Claims Register —<br><em>Source Verification</em></h2><p class="sec-intro">Verified facts vs uncertain claims. Track confidence levels and when each claim needs rechecking.</p></div>
+<div class="cl-filters">
+  <button class="cl-filter active" onclick="filterClaims('all',this)">All</button>
+  <button class="cl-filter" onclick="filterClaims('verified',this)">Verified</button>
+  <button class="cl-filter" onclick="filterClaims('likely',this)">Likely</button>
+  <button class="cl-filter" onclick="filterClaims('uncertain',this)">Uncertain</button>
+  <button class="cl-filter" onclick="filterClaims('dangerous',this)">Dangerous</button>
+</div>
+<div id="claims-list"></div>
+</section>
+
+<!-- RISK MONITOR -->
+<section class="sec" id="riskmon">
+<div class="sec-hd"><div class="sec-num">Live OS — Risk Monitor</div><h2 class="sec-title">Risk Monitor —<br><em>Sorted by Score</em></h2><p class="sec-intro">All risks sorted by probability × impact score. Highest threats first. Score = prob × impact (max 25).</p></div>
+<div id="risk-mon-stats" class="risk-mon-header"></div>
+<div id="risk-mon-list"></div>
+</section>
+
 </div><!-- end main -->
 
 <div style="border-top:1px solid var(--bdr);padding:36px 40px;max-width:960px;margin:0 auto;text-align:center">
@@ -1421,25 +1329,18 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-weight:30
 <p style="font-family:var(--mono);font-size:10px;color:var(--tx3);letter-spacing:1px;margin-top:12px">Built May 27, 2026 · 7 AIs · Official sources · For Dune · Arrow keys ← → to navigate sections</p>
 </div>
 
-<script>
-const secs=['decisions','moscow','interviews','career','passport','gulf','australia','canada','usa','myoption','money','timeline','monitor','cards','risks','questions','todo','aboutyou','dtbureau'];
-let cur=0;
-function show(id){
-  document.querySelectorAll('.sec').forEach(s=>s.classList.remove('active'));
-  document.querySelectorAll('.nb').forEach(b=>b.classList.remove('active'));
-  document.getElementById(id).classList.add('active');
-  const idx=secs.indexOf(id);
-  if(idx>=0){cur=idx;document.querySelectorAll('.nb')[cur].classList.add('active');}
-  window.scrollTo({top:0,behavior:'smooth'});
-}
-window.addEventListener('scroll',()=>{
-  const t=document.documentElement.scrollHeight-window.innerHeight;
-  if(t>0)document.getElementById('prog').style.width=(window.scrollY/t*100)+'%';
-});
-document.addEventListener('keydown',e=>{
-  if(e.key==='ArrowRight'&&cur<secs.length-1){cur++;document.querySelectorAll('.nb')[cur].click();}
-  if(e.key==='ArrowLeft'&&cur>0){cur--;document.querySelectorAll('.nb')[cur].click();}
-});
-</script>
+<!-- Mobile Bottom Nav -->
+<nav class="mob-nav">
+  <div class="mob-nav-grid">
+    <button class="mob-nb" data-sec="home" onclick="show('home')"><span class="mob-nb-icon">⌂</span><span class="mob-nb-label">Home</span></button>
+    <button class="mob-nb" data-sec="progress" onclick="show('progress')"><span class="mob-nb-icon">◎</span><span class="mob-nb-label">Goals</span></button>
+    <button class="mob-nb" data-sec="logbook" onclick="show('logbook')"><span class="mob-nb-icon">✈</span><span class="mob-nb-label">Logbook</span></button>
+    <button class="mob-nb" data-sec="deadlines" onclick="show('deadlines')"><span class="mob-nb-icon">⏱</span><span class="mob-nb-label">Deadlines</span></button>
+    <button class="mob-nb" data-sec="todo" onclick="show('todo')"><span class="mob-nb-icon">☑</span><span class="mob-nb-label">Status</span></button>
+  </div>
+</nav>
+
+<script src="data.js"></script>
+<script src="app.js"></script>
 </body>
 </html>
