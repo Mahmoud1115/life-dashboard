@@ -347,6 +347,99 @@ function show(id){
 })();
 
 /* ═══════════════════════════════════════════
+   PHASE 3 — SECTION LABELS & GROUP PILLS
+   ═══════════════════════════════════════════ */
+const SEC_LABELS={
+  decisions:'✈️ Career — Decisions',
+  moscow:'💍 Life — Moscow',
+  interviews:'✈️ Career — Interviews',
+  career:'✈️ Career',
+  passport:'🛂 Documents',
+  gulf:'🇦🇪 Gulf',
+  australia:'🌍 2nd Passport',
+  canada:'🌍 Canada',
+  usa:'🌍 USA',
+  myoption:'🌍 My Opinion',
+  money:'💰 Money',
+  timeline:'✅ Mission — Timeline',
+  monitor:'🇦🇪 Gulf — Monitor',
+  cards:'💍 Life — Keep In Front',
+  risks:'⚠️ Risk Cards',
+  questions:'💍 Life — Questions',
+  todo:'✅ Mission Control',
+  aboutyou:'💍 About You',
+  dtbureau:'💍 Life — 🧸',
+  progress:'✅ Goals',
+  easa:'✈️ EASA Modules',
+  logbook:'✈️ Logbook',
+  deadlines:'✅ Deadlines',
+  finance:'💰 Finance Simulator',
+  jobs:'✈️ Job Pipeline',
+  claims:'🛂 Claims Register',
+  riskmon:'⚠️ Risk Monitor',
+};
+
+const GROUP_PILLS={
+  career:[{id:'interviews',label:'Interviews'},{id:'decisions',label:'Decisions'},{id:'logbook',label:'Logbook'},{id:'easa',label:'EASA'},{id:'jobs',label:'Jobs'}],
+  passport:[{id:'claims',label:'Claims'},{id:'deadlines',label:'Deadlines'}],
+  gulf:[{id:'finance',label:'Finance'},{id:'monitor',label:'Monitor'}],
+  australia:[{id:'canada',label:'Canada 🇨🇦'},{id:'usa',label:'USA 🇺🇸'},{id:'myoption',label:'My Opinion'},{id:'timeline',label:'Timeline'}],
+  money:[{id:'finance',label:'Simulator'},{id:'progress',label:'Goals'}],
+  moscow:[{id:'dtbureau',label:'🧸 Elisa'},{id:'cards',label:'Keep In Front'},{id:'questions',label:'Questions'},{id:'aboutyou',label:'About You'}],
+  riskmon:[{id:'risks',label:'Risk Cards'},{id:'claims',label:'Claims'},{id:'monitor',label:'Monitor'}],
+  todo:[{id:'timeline',label:'Timeline'},{id:'deadlines',label:'Deadlines'},{id:'progress',label:'Goals'}],
+};
+
+function updateSectionLabels(){
+  Object.entries(SEC_LABELS).forEach(([id,label])=>{
+    const sec=document.getElementById(id);
+    if(!sec) return;
+    const el=sec.querySelector('.sec-num');
+    if(el) el.textContent=label;
+  });
+}
+
+function addGroupPills(){
+  Object.entries(GROUP_PILLS).forEach(([secId,subs])=>{
+    const sec=document.getElementById(secId);
+    if(!sec||sec.querySelector('.group-pills')) return;
+    const hd=sec.querySelector('.sec-hd');
+    if(!hd) return;
+    const el=document.createElement('div');
+    el.className='group-pills';
+    el.innerHTML=subs.map(s=>'<button class="group-pill" onclick="show(\''+s.id+'\')">'+s.label+'</button>').join('');
+    hd.insertAdjacentElement('afterend',el);
+  });
+}
+
+function addBreadcrumbs(){
+  // for every section that is a sub-section (not a primary), inject a breadcrumb
+  const primaries=new Set(Object.values(NAV_GROUPS).map(g=>g.primary));
+  primaries.add('home'); // home is always its own primary
+  document.querySelectorAll('.sec').forEach(sec=>{
+    const id=sec.id;
+    if(primaries.has(id)||id==='home') return;
+    if(sec.querySelector('.sec-breadcrumb')) return; // already added
+    const gk=SEC_TO_GROUP[id];
+    if(!gk) return;
+    const g=NAV_GROUPS[gk];
+    if(!g) return;
+    const hd=sec.querySelector('.sec-hd');
+    if(!hd) return;
+    const bc=document.createElement('button');
+    bc.className='sec-breadcrumb';
+    bc.textContent=g.primary.charAt(0).toUpperCase()+g.primary.slice(1);
+    // use emoji from nav button
+    const nmb=document.querySelector('.nmb[data-group="'+gk+'"]');
+    const emoji=nmb?nmb.querySelector('.nmb-emoji').textContent:'';
+    const label=nmb?nmb.querySelector('.nmb-label').textContent:'';
+    bc.textContent=emoji+' '+label;
+    bc.onclick=()=>showGroup(gk);
+    sec.insertBefore(bc,sec.firstChild);
+  });
+}
+
+/* ═══════════════════════════════════════════
    HOME — CALENDAR
    ═══════════════════════════════════════════ */
 let calYear=new Date().getFullYear();
@@ -1177,6 +1270,9 @@ window.showFinTab=function(tab,btn){
    INIT — RESTORE LAST SECTION
    ═══════════════════════════════════════════ */
 document.addEventListener('DOMContentLoaded',()=>{
+  updateSectionLabels();
+  addGroupPills();
+  addBreadcrumbs();
   const last=LS.get('dune_activesec','home');
   const lastGroup=LS.get('dune_activegroup','home');
   const sub=document.getElementById('nav-sub');
