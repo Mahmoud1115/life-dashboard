@@ -20,21 +20,68 @@ window.addEventListener('scroll',()=>{
 });
 
 /* ═══════════════════════════════════════════
-   NAVIGATION
+   NAVIGATION — 9-GROUP STRUCTURE
    ═══════════════════════════════════════════ */
+const NAV_GROUPS={
+  home:     {primary:'home',      subs:[]},
+  career:   {primary:'career',    subs:[{id:'interviews',label:'Interviews'},{id:'decisions',label:'Decisions'},{id:'logbook',label:'Logbook'},{id:'easa',label:'EASA'},{id:'jobs',label:'Jobs'}]},
+  documents:{primary:'passport',  subs:[{id:'claims',label:'Claims'},{id:'deadlines',label:'Deadlines'}]},
+  gulf:     {primary:'gulf',      subs:[{id:'finance',label:'Finance'},{id:'monitor',label:'Monitor'}]},
+  passport2:{primary:'australia', subs:[{id:'canada',label:'Canada 🇨🇦'},{id:'usa',label:'USA 🇺🇸'},{id:'myoption',label:'My Opinion'},{id:'timeline',label:'Timeline'}]},
+  money:    {primary:'money',     subs:[{id:'finance',label:'Simulator'},{id:'progress',label:'Goals'}]},
+  life:     {primary:'moscow',    subs:[{id:'dtbureau',label:'🧸 Elisa'},{id:'cards',label:'Keep In Front'},{id:'questions',label:'Questions'},{id:'aboutyou',label:'About You'}]},
+  risks:    {primary:'riskmon',   subs:[{id:'risks',label:'Risk Cards'},{id:'claims',label:'Claims'},{id:'monitor',label:'Monitor'}]},
+  mission:  {primary:'todo',      subs:[{id:'timeline',label:'Timeline'},{id:'deadlines',label:'Deadlines'},{id:'progress',label:'Goals'}]},
+};
+const SEC_TO_GROUP={};
+Object.entries(NAV_GROUPS).forEach(([k,g])=>{
+  if(!SEC_TO_GROUP[g.primary]) SEC_TO_GROUP[g.primary]=k;
+  g.subs.forEach(s=>{if(!SEC_TO_GROUP[s.id]) SEC_TO_GROUP[s.id]=k;});
+});
+
+function getSectionName(sid){
+  const nsb=document.querySelector('.nsb[data-sec="'+sid+'"]');
+  if(nsb) return nsb.textContent.trim();
+  const gk=SEC_TO_GROUP[sid];
+  if(gk&&NAV_GROUPS[gk]&&NAV_GROUPS[gk].primary===sid) return gk.charAt(0).toUpperCase()+gk.slice(1);
+  return sid;
+}
+function renderSubNav(groupKey){
+  const sub=document.getElementById('nav-sub');
+  if(!sub) return;
+  const g=NAV_GROUPS[groupKey];
+  if(!g||!g.subs.length){sub.innerHTML='';return;}
+  sub.innerHTML=g.subs.map(s=>'<button class="nsb" data-sec="'+s.id+'" onclick="show(\''+s.id+'\')">'+s.label+'</button>').join('');
+}
+function syncGroupNav(secId){
+  const gk=SEC_TO_GROUP[secId];
+  if(!gk) return;
+  document.querySelectorAll('.nmb').forEach(b=>b.classList.remove('active'));
+  const mb=document.querySelector('.nmb[data-group="'+gk+'"]');
+  if(mb) mb.classList.add('active');
+  const sub=document.getElementById('nav-sub');
+  if(sub&&sub.dataset.group!==gk){sub.dataset.group=gk;renderSubNav(gk);}
+  document.querySelectorAll('.nsb').forEach(b=>b.classList.remove('active'));
+  const sb=document.querySelector('.nsb[data-sec="'+secId+'"]');
+  if(sb) sb.classList.add('active');
+}
+function showGroup(groupKey){
+  const g=NAV_GROUPS[groupKey];
+  if(!g) return;
+  const sub=document.getElementById('nav-sub');
+  if(sub){sub.dataset.group=groupKey;renderSubNav(groupKey);}
+  show(g.primary);
+  LS.set('dune_activegroup',groupKey);
+}
 function show(id){
   document.querySelectorAll('.sec').forEach(s=>s.classList.remove('active'));
-  document.querySelectorAll('.nb').forEach(b=>b.classList.remove('active'));
   const sec=document.getElementById(id);
   if(sec) sec.classList.add('active');
-  document.querySelectorAll('.nb[data-sec="'+id+'"]').forEach(b=>b.classList.add('active'));
   window.scrollTo(0,0);
   LS.set('dune_activesec',id);
-  // mobile nav sync
-  document.querySelectorAll('.mob-nb[data-sec="'+id+'"]').forEach(b=>{
-    document.querySelectorAll('.mob-nb').forEach(mb=>mb.classList.remove('active'));
-    b.classList.add('active');
-  });
+  syncGroupNav(id);
+  document.querySelectorAll('.mob-nb').forEach(mb=>mb.classList.remove('active'));
+  document.querySelectorAll('.mob-nb[data-sec="'+id+'"]').forEach(b=>b.classList.add('active'));
 }
 
 /* ═══════════════════════════════════════════
@@ -43,7 +90,7 @@ function show(id){
 (function(){
   function days(iso){return Math.ceil((new Date(iso)-new Date())/(864e5));}
   function pill(label,val,bg,col){
-    return '<span style="display:inline-flex;align-items:center;gap:4px;background:'+bg+';border-radius:2px;padding:3px 9px;white-space:nowrap">'
+    return '<span style="display:inline-flex;align-items:center;gap:4px;background:'+bg+';border-radius:100px;padding:3px 11px;white-space:nowrap">'
       +'<span style="font-family:var(--mono);font-size:9px;color:'+col+';opacity:.75">'+label+'</span>'
       +'<span style="font-family:var(--mono);font-size:9px;font-weight:600;color:'+col+'">'+val+'</span>'
       +'</span>';
@@ -81,7 +128,10 @@ function show(id){
     const btn=document.getElementById('privacy-btn');
     const ind=document.getElementById('privacy-ind');
     if(btn){
-      btn.textContent=isPublic?'🔒 Public Mode':'👁 Private Mode';
+      const emojiEl=btn.querySelector('.nmb-emoji');
+      const labelEl=btn.querySelector('.nmb-label');
+      if(emojiEl) emojiEl.textContent=isPublic?'🔒':'👁';
+      if(labelEl) labelEl.textContent=isPublic?'Public':'Private';
       btn.classList.toggle('public-mode',isPublic);
     }
     if(ind) ind.classList.toggle('show',isPublic);
@@ -103,8 +153,7 @@ function show(id){
     idx=[];
     document.querySelectorAll('.sec').forEach(sec=>{
       const sid=sec.id;
-      const nb=document.querySelector('.nb[data-sec="'+sid+'"]');
-      const sname=nb?nb.textContent.trim():sid;
+      const sname=getSectionName(sid);
       // collect all text nodes from cards and titles
       sec.querySelectorAll('.ctitle,.dec-title,.tl-title,.mc-title,.kif-title,.claim-title,.goal-title,.risk-mon-title,.dl-title,.crm-card-company').forEach(el=>{
         const txt=el.textContent.trim();
@@ -1052,5 +1101,8 @@ window.showFinTab=function(tab,btn){
    ═══════════════════════════════════════════ */
 document.addEventListener('DOMContentLoaded',()=>{
   const last=LS.get('dune_activesec','home');
+  const lastGroup=LS.get('dune_activegroup','home');
+  const sub=document.getElementById('nav-sub');
+  if(sub&&NAV_GROUPS[lastGroup]){sub.dataset.group=lastGroup;}
   show(last||'home');
 });

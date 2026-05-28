@@ -28,38 +28,42 @@
 <!-- NAV -->
 <nav class="nav">
   <div class="nav-in">
-    <div class="nav-grid">
-      <button class="nb nb-live" data-sec="home" onclick="show('home')">Home</button>
-      <button class="nb nb-live" data-sec="progress" onclick="show('progress')">Goals</button>
-      <button class="nb nb-live" data-sec="logbook" onclick="show('logbook')">Logbook</button>
-      <button class="nb nb-live" data-sec="easa" onclick="show('easa')">EASA</button>
-      <button class="nb nb-live" data-sec="deadlines" onclick="show('deadlines')">Deadlines</button>
-      <button class="nb nb-live" data-sec="finance" onclick="show('finance')">Finance</button>
-      <button class="nb nb-live" data-sec="jobs" onclick="show('jobs')">Jobs</button>
-      <button class="nb nb-live" data-sec="claims" onclick="show('claims')">Claims</button>
-      <button class="nb nb-live" data-sec="riskmon" onclick="show('riskmon')">Risk Mon</button>
-      <button class="nb" data-sec="decisions" onclick="show('decisions')">3 Decisions</button>
-      <button class="nb" data-sec="moscow" onclick="show('moscow')">Moscow Plan</button>
-      <button class="nb" data-sec="interviews" onclick="show('interviews')">Interviews</button>
-      <button class="nb" data-sec="career" onclick="show('career')">A vs B</button>
-      <button class="nb" data-sec="passport" onclick="show('passport')">Passport</button>
-      <button class="nb" data-sec="gulf" onclick="show('gulf')">Gulf Path</button>
-      <button class="nb" data-sec="australia" onclick="show('australia')">Australia 🇦🇺</button>
-      <button class="nb" data-sec="canada" onclick="show('canada')">Canada 🇨🇦</button>
-      <button class="nb" data-sec="usa" onclick="show('usa')">USA 🇺🇸</button>
-      <button class="nb" data-sec="myoption" onclick="show('myoption')">My Opinion</button>
-      <button class="nb" data-sec="money" onclick="show('money')">Money Map</button>
-      <button class="nb" data-sec="timeline" onclick="show('timeline')">Timeline</button>
-      <button class="nb" data-sec="monitor" onclick="show('monitor')">Monitor</button>
-      <button class="nb" data-sec="cards" onclick="show('cards')">Keep In Front</button>
-      <button class="nb" data-sec="risks" onclick="show('risks')">Risks</button>
-      <button class="nb" data-sec="questions" onclick="show('questions')">Think About</button>
-      <button class="nb" data-sec="todo" onclick="show('todo')">Status Board</button>
-      <button class="nb" data-sec="aboutyou" onclick="show('aboutyou')">About You</button>
-      <button class="nb" data-sec="dtbureau" onclick="show('dtbureau')">🧸</button>
-      <button class="nb" onclick="toggleSearch()" title="Search">⌕ Search</button>
-      <button class="nb" id="privacy-btn" onclick="togglePrivacy()">👁 Private</button>
+    <div class="nav-main">
+      <button class="nmb active" data-group="home" onclick="showGroup('home')">
+        <span class="nmb-emoji">📅</span><span class="nmb-label">Today</span>
+      </button>
+      <button class="nmb" data-group="career" onclick="showGroup('career')">
+        <span class="nmb-emoji">✈️</span><span class="nmb-label">Career</span>
+      </button>
+      <button class="nmb" data-group="documents" onclick="showGroup('documents')">
+        <span class="nmb-emoji">🛂</span><span class="nmb-label">Documents</span>
+      </button>
+      <button class="nmb" data-group="gulf" onclick="showGroup('gulf')">
+        <span class="nmb-emoji">🇦🇪</span><span class="nmb-label">Gulf</span>
+      </button>
+      <button class="nmb" data-group="passport2" onclick="showGroup('passport2')">
+        <span class="nmb-emoji">🌍</span><span class="nmb-label">2nd Passport</span>
+      </button>
+      <button class="nmb" data-group="money" onclick="showGroup('money')">
+        <span class="nmb-emoji">💰</span><span class="nmb-label">Money</span>
+      </button>
+      <button class="nmb" data-group="life" onclick="showGroup('life')">
+        <span class="nmb-emoji">💍</span><span class="nmb-label">Life</span>
+      </button>
+      <button class="nmb" data-group="risks" onclick="showGroup('risks')">
+        <span class="nmb-emoji">⚠️</span><span class="nmb-label">Risks</span>
+      </button>
+      <button class="nmb" data-group="mission" onclick="showGroup('mission')">
+        <span class="nmb-emoji">✅</span><span class="nmb-label">Mission</span>
+      </button>
+      <button class="nmb nmb-util" onclick="toggleSearch()">
+        <span class="nmb-emoji">⌕</span><span class="nmb-label">Search</span>
+      </button>
+      <button class="nmb nmb-util" id="privacy-btn" onclick="togglePrivacy()">
+        <span class="nmb-emoji">👁</span><span class="nmb-label">Private</span>
+      </button>
     </div>
+    <div class="nav-sub" id="nav-sub"></div>
   </div>
 </nav>
 <span id="privacy-ind" class="privacy-indicator">PUBLIC MODE</span>
