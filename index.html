@@ -77,7 +77,7 @@
 
 <!-- Search Bar -->
 <div id="search-wrap" class="search-bar" style="flex-wrap:wrap">
-  <input id="search-input" type="text" placeholder="Search sections, topics, decisions…" oninput="doSearch(event)" style="flex:1;min-width:200px;border:1px solid var(--bdr2);border-radius:2px;padding:7px 12px;font-family:var(--sans);font-size:13px;color:var(--tx);background:var(--bg);outline:none">
+  <input id="search-input" type="text" placeholder="Search sections, topics, decisions…" oninput="doSearch(event)" style="flex:1;min-width:200px">
   <button onclick="toggleSearch()" style="background:none;border:1px solid var(--bdr);border-radius:2px;padding:6px 12px;font-family:var(--mono);font-size:10px;color:var(--tx3);cursor:pointer">✕ Close</button>
   <div id="search-results" class="search-results" style="width:100%;padding:8px 0 0"></div>
 </div>
@@ -1204,10 +1204,8 @@
 <div class="pt-filters">
   <button class="pt-filter active" onclick="filterGoals('all',this)">All</button>
   <button class="pt-filter" onclick="filterGoals('career',this)">Career</button>
-  <button class="pt-filter" onclick="filterGoals('legal',this)">Legal</button>
-  <button class="pt-filter" onclick="filterGoals('financial',this)">Financial</button>
-  <button class="pt-filter" onclick="filterGoals('education',this)">Education</button>
-  <button class="pt-filter" onclick="filterGoals('personal',this)">Personal</button>
+  <button class="pt-filter" onclick="filterGoals('documents',this)">Documents</button>
+  <button class="pt-filter" onclick="filterGoals('finance',this)">Finance</button>
 </div>
 <div id="goals-list"></div>
 </section>

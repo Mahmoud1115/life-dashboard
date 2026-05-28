@@ -857,7 +857,7 @@ function renderATACoverage(entries){
         '<td><span style="font-family:var(--mono);font-size:10px">ATA '+e.ata_chapter+'</span></td>'+
         '<td style="max-width:200px">'+e.task_description.slice(0,60)+(e.task_description.length>60?'…':'')+'</td>'+
         '<td style="font-family:var(--mono)">'+e.hours+'h</td>'+
-        '<td><span style="font-family:var(--mono);font-size:9px;padding:2px 6px;border-radius:1px;background:'+(e.stamp_status==='stamped'?'var(--green2)':'var(--amber2)')+';color:'+(e.stamp_status==='stamped'?'var(--green)':'var(--amber)')+'">'+e.stamp_status+'</span></td>'+
+        '<td><span style="font-family:var(--mono);font-size:9px;padding:2px 9px;border-radius:100px;background:'+(e.stamp_status==='stamped'?'var(--green2)':'var(--amber2)')+';color:'+(e.stamp_status==='stamped'?'var(--green)':'var(--amber)')+'">'+e.stamp_status+'</span></td>'+
         '<td><div class="lb-row-actions"><button class="lb-row-del" onclick="deleteLogEntry('+i+')">×</button></div></td>'+
       '</tr>';
     }).join('');
@@ -1187,7 +1187,7 @@ function renderATACoverage(entries){
         field('Next Follow-up',c.nextFollowup||'—')+
       '</div>'+
       '<div class="crm-detail-field" style="margin-top:12px"><div class="crm-detail-label">Notes</div>'+
-        '<textarea style="width:100%;border:1px solid var(--bdr2);border-radius:2px;padding:8px;font-family:var(--sans);font-size:12.5px;color:var(--tx);background:var(--bg);resize:vertical;min-height:60px;outline:none" onchange="updateCRMNotes(\''+id+'\',this.value)">'+c.notes+'</textarea>'+
+        '<textarea style="width:100%;border:1px solid var(--bdr2);border-radius:8px;padding:8px;font-family:var(--sans);font-size:12.5px;color:var(--tx);background:var(--bg);resize:vertical;min-height:60px;outline:none" onchange="updateCRMNotes(\''+id+'\',this.value)">'+(c.notes||'')+'</textarea>'+
       '</div>';
     det.classList.add('open');
   };
