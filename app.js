@@ -514,6 +514,75 @@ function renderUpcoming(){
 }
 
 /* ═══════════════════════════════════════════
+   HOME — METRIC CARDS
+   ═══════════════════════════════════════════ */
+function renderMetricCards(){
+  const el=document.getElementById('home-metrics');
+  if(!el) return;
+  const now=new Date();
+  function daysTo(iso){return Math.ceil((new Date(iso)-now)/864e5);}
+
+  // EASA
+  const easaSt=LS.get('dune_easa_v1',{});
+  const easaDone=D.easa.filter(m=>{const s=easaSt[m.id]||{};return (s.status||m.status)==='done';}).length;
+
+  // Logbook
+  const lb=LS.get('dune_logbook_v1',[]);
+  const lbHours=lb.reduce((a,e)=>a+(parseFloat(e.hours)||0),0);
+
+  // Finance monthly savings
+  const fin=LS.get('dune_finance_v1',D.finance);
+  const r=fin.russia||D.finance.russia;
+  const mSav=(parseFloat(r.salary)||0)-(parseFloat(r.rent)||0)-(parseFloat(r.food)||0)-(parseFloat(r.transport)||0)-(parseFloat(r.other)||0)-(parseFloat(r.mai)||0);
+  const mSavUSD=Math.round(mSav/(parseFloat(r.usd_rate)||88));
+
+  function card(emoji,label,value,sub,color,priv){
+    return '<div class="metric-card"'+(priv?' data-private="true"':'')+'>'+
+      '<div class="metric-emoji">'+emoji+'</div>'+
+      '<div class="metric-value" style="color:'+color+'">'+value+'</div>'+
+      '<div class="metric-label">'+label+'</div>'+
+      '<div class="metric-sub">'+sub+'</div>'+
+    '</div>';
+  }
+
+  const d1=daysTo('2026-06-02');
+  const d2=daysTo('2026-06-04');
+  const dPass=daysTo('2028-01-21');
+  const dMAI=daysTo('2026-07-15');
+
+  el.innerHTML=[
+    card('✈️','Interview 1',
+      d1<0?'✓':d1+'d',
+      d1<0?'Done · Аэрофлот':'June 2 · Аэрофлот Техникс',
+      d1<0?'var(--green)':d1<=7?'var(--red)':'var(--amber)',false),
+    card('✈️','Interview 2',
+      d2<0?'✓':d2+'d',
+      d2<0?'Done · АэроТраст':'June 4 · АэроТраст',
+      d2<0?'var(--green)':d2<=7?'var(--red)':'var(--amber)',false),
+    card('🛂','Passport Wall',
+      dPass+'d',
+      'Jan 21, 2028 · renew before age 28',
+      dPass<=90?'var(--red)':dPass<=365?'var(--amber)':'var(--tx2)',false),
+    card('🎓','MAI Deadline',
+      dMAI<0?'✓':dMAI+'d',
+      dMAI<0?'Done':'July 15 · enrollment application',
+      dMAI<0?'var(--green)':dMAI<=14?'var(--red)':dMAI<=30?'var(--amber)':'var(--tx2)',false),
+    card('📚','EASA B1.1',
+      easaDone+'/15',
+      easaDone===0?'Not started · begin Module 7':easaDone+' done · '+(15-easaDone)+' remaining',
+      easaDone>=10?'var(--green)':easaDone>=5?'var(--amber)':'var(--tx3)',false),
+    card('✈️','Logbook',
+      lb.length===0?'0h':parseFloat(lbHours.toFixed(1))+'h',
+      lb.length===0?'No entries · start day one':lb.length+' entries logged',
+      lbHours>500?'var(--green)':lbHours>0?'var(--amber)':'var(--tx3)',false),
+    card('💰','Monthly Savings',
+      mSav>0?'₽'+Math.round(mSav/1000)+'k':'₽—',
+      mSav>0?'≈ $'+mSavUSD+'/mo · adjust in Finance':'Set salary in Finance tab',
+      mSav>=40000?'var(--green)':mSav>=20000?'var(--amber)':mSav>0?'var(--red)':'var(--tx3)',true),
+  ].join('');
+}
+
+/* ═══════════════════════════════════════════
    HOME — MISSION CONTROL WIDGETS
    ═══════════════════════════════════════════ */
 function renderHome(){
@@ -569,7 +638,8 @@ function renderHome(){
       '</div>';
     }).join('');
   }
-  // Calendar + upcoming
+  // Metric cards + calendar + upcoming
+  renderMetricCards();
   renderCalendar();
   renderUpcoming();
 }
@@ -708,6 +778,50 @@ document.addEventListener('DOMContentLoaded',renderHome);
 })();
 
 /* ═══════════════════════════════════════════
+   LOGBOOK — ATA COVERAGE GRID
+   ═══════════════════════════════════════════ */
+function renderATACoverage(entries){
+  const el=document.getElementById('lb-ata-coverage');
+  if(!el) return;
+  const chapters=[
+    {n:'20',l:'Standard'},{n:'21',l:'Air Cond'},{n:'22',l:'AutoFlight'},
+    {n:'23',l:'Comms'},{n:'24',l:'Electrical'},{n:'25',l:'Equipment'},
+    {n:'26',l:'Fire Prot'},{n:'27',l:'Flt Controls'},{n:'28',l:'Fuel'},
+    {n:'29',l:'Hydraulic'},{n:'30',l:'Ice & Rain'},{n:'31',l:'Indicating'},
+    {n:'32',l:'Ldg Gear'},{n:'33',l:'Lights'},{n:'34',l:'Navigation'},
+    {n:'35',l:'Oxygen'},{n:'36',l:'Pneumatic'},{n:'49',l:'APU'},
+    {n:'51',l:'Structures'},{n:'71',l:'Power Plant'},{n:'72',l:'Engine'},
+    {n:'73',l:'Eng Fuel'},{n:'74',l:'Ignition'},{n:'75',l:'Air'},
+    {n:'76',l:'Eng Controls'},{n:'77',l:'Eng Ind.'},{n:'78',l:'Exhaust'},
+    {n:'79',l:'Oil'},{n:'80',l:'Starting'},
+  ];
+  const counts={};
+  (entries||[]).forEach(e=>{
+    const ch=(e.ata_chapter||'').toString().split('.')[0].trim();
+    if(ch) counts[ch]=(counts[ch]||0)+1;
+  });
+  const covered=chapters.filter(c=>counts[c.n]>0).length;
+  const total=Object.values(counts).reduce((a,b)=>a+b,0);
+  const isEngine=n=>parseInt(n)>=71&&parseInt(n)<=80;
+  el.innerHTML=
+    '<div class="ata-coverage-header">'+
+      '<span class="ata-cov-title">ATA Chapter Coverage — B1.1</span>'+
+      '<span class="ata-cov-stats">'+covered+'/'+chapters.length+' chapters · '+total+' entries</span>'+
+    '</div>'+
+    '<div class="ata-grid">'+
+    chapters.map(c=>{
+      const cnt=counts[c.n]||0;
+      const cls='ata-cell'+(cnt>=3?' filled':cnt>=1?' partial':'')+(isEngine(c.n)?' ata-engine':'');
+      return '<div class="'+cls+'" title="ATA '+c.n+' — '+c.l+(cnt?' ('+cnt+' entr'+( cnt===1?'y':'ies')+')':' — none yet')+'">'+
+        '<div class="ata-num">'+c.n+'</div>'+
+        '<div class="ata-lbl">'+c.l+'</div>'+
+        (cnt?'<div class="ata-count">'+cnt+'×</div>':'')+
+      '</div>';
+    }).join('')+
+    '</div>';
+}
+
+/* ═══════════════════════════════════════════
    AVIATION LOGBOOK TRACKER
    ═══════════════════════════════════════════ */
 (function(){
@@ -752,6 +866,7 @@ document.addEventListener('DOMContentLoaded',renderHome);
     const entries=getEntries();
     renderStats(entries);
     renderTable(entries);
+    renderATACoverage(entries);
     const form=document.getElementById('lb-form');
     if(form) form.style.display=showForm?'block':'none';
   }
@@ -932,22 +1047,33 @@ document.addEventListener('DOMContentLoaded',renderHome);
     const g=calcGulf(v.gulf||D.finance.gulf);
     const rOut=document.getElementById('fin-russia-out');
     const gOut=document.getElementById('fin-gulf-out');
+    function headline(value,sub,cls){
+      return '<div class="fin-headline">'+
+        '<div class="fin-headline-label">Monthly Net Savings</div>'+
+        '<div class="fin-headline-value '+cls+'">'+value+'</div>'+
+        '<div class="fin-headline-sub">'+sub+'</div>'+
+      '</div>';
+    }
     if(rOut) rOut.innerHTML=
-      '<div class="fin-section-title">Calculations</div>'+
-      row('Monthly gross',r.gross+' ₽')+
-      row('Monthly expenses',r.expenses+' ₽')+
-      row('Monthly savings',r.net+' ₽',r.net>0?'positive':'negative')+
-      row('Monthly savings (USD)','$'+r.netUSD,r.net>0?'positive':'negative')+
-      row('Annual savings (USD)','$'+r.annualUSD,r.net>0?'positive':'negative')+
+      headline(
+        (r.net>0?'+':'')+Math.round(r.net).toLocaleString()+' ₽',
+        '≈ $'+r.netUSD+'/mo · $'+r.annualUSD+'/yr',
+        r.net>0?'positive':'negative')+
+      '<div class="fin-section-title">Breakdown</div>'+
+      row('Monthly gross',r.gross.toLocaleString()+' ₽')+
+      row('Monthly expenses',r.expenses.toLocaleString()+' ₽')+
+      row('Monthly savings',r.net.toLocaleString()+' ₽',r.net>0?'positive':'negative')+
       row('Gulf move fund (120k ₽)',r.net>0?Math.ceil(120000/r.net)+' months':'-');
     if(gOut) gOut.innerHTML=
-      '<div class="fin-section-title">Calculations</div>'+
-      row('Monthly gross','AED '+g.gross)+
-      row('Monthly expenses','AED '+g.expenses)+
-      row('Monthly savings','AED '+g.net,g.net>0?'positive':'negative')+
-      row('Monthly savings (USD)','$'+g.netUSD,g.net>0?'positive':'negative')+
-      row('Annual savings (USD)','$'+g.annualUSD,g.net>0?'positive':'negative')+
-      row('2-year savings','$'+(g.annualUSD*2).toLocaleString());
+      headline(
+        (g.net>0?'+':'')+Math.round(g.net).toLocaleString()+' AED',
+        '≈ $'+g.netUSD+'/mo · $'+g.annualUSD+'/yr',
+        g.net>0?'positive':'negative')+
+      '<div class="fin-section-title">Breakdown</div>'+
+      row('Monthly gross','AED '+g.gross.toLocaleString())+
+      row('Monthly expenses','AED '+g.expenses.toLocaleString())+
+      row('Monthly savings','AED '+g.net.toLocaleString(),g.net>0?'positive':'negative')+
+      row('2-year savings','$'+(parseInt(g.annualUSD)*2).toLocaleString());
   }
   function row(label,val,cls){
     return '<div class="fin-result"><span class="fin-result-label">'+label+'</span><span class="fin-result-val'+(cls?' '+cls:'')+'">'+val+'</span></div>';
