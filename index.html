@@ -167,6 +167,45 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-weight:30
   </div>
 </nav>
 
+<!-- Plan Health Bar -->
+<div style="background:var(--bg2);border-bottom:1px solid var(--bdr);padding:9px 24px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;overflow-x:auto;-webkit-overflow-scrolling:touch">
+  <span style="font-family:var(--mono);font-size:9px;letter-spacing:1.5px;text-transform:uppercase;color:var(--tx3);flex-shrink:0">Plan Health</span>
+  <span style="color:var(--bdr2);flex-shrink:0;font-size:12px">|</span>
+  <div id="phb" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+</div>
+<script>
+(function(){
+  function days(iso){return Math.ceil((new Date(iso)-new Date())/(864e5));}
+  function pill(label,val,bg,col){
+    return '<span style="display:inline-flex;align-items:center;gap:4px;background:'+bg+';border-radius:2px;padding:3px 9px;white-space:nowrap">'
+      +'<span style="font-family:var(--mono);font-size:9px;color:'+col+';opacity:.75">'+label+'</span>'
+      +'<span style="font-family:var(--mono);font-size:9px;font-weight:600;color:'+col+'">'+val+'</span>'
+      +'</span>';
+  }
+  function countdown(label,iso){
+    const d=days(iso);
+    if(d<0)return pill(label,'DONE','var(--green2)','var(--green)');
+    if(d<=7)return pill(label,d+'d','var(--red2)','var(--red)');
+    if(d<=60)return pill(label,d+'d','var(--amber2)','var(--amber)');
+    return pill(label,d+'d','var(--bg3)','var(--tx2)');
+  }
+  function render(){
+    const el=document.getElementById('phb');
+    if(!el)return;
+    el.innerHTML=[
+      countdown('Interview 1','2026-06-02'),
+      countdown('Interview 2','2026-06-04'),
+      pill('Settlement','CLOSED','var(--bg3)','var(--tx3)'),
+      countdown('MAI Deadline','2026-07-15'),
+      countdown('ВНЖ Renewal','2027-03-01'),
+      countdown('Passport Wall','2028-01-21'),
+    ].join('');
+  }
+  render();
+  setInterval(render,60000);
+})();
+</script>
+
 <div class="main">
 
 <!-- 3 DECISIONS -->
@@ -1226,239 +1265,8 @@ body{background:var(--bg);color:var(--tx);font-family:var(--sans);font-weight:30
 })();
 </script>
 
-<!-- Progress bar -->
-<div style="background:var(--bg2);border:1px solid var(--bdr);border-radius:2px;padding:20px 26px;margin-bottom:22px;display:flex;align-items:center;gap:20px">
-  <div style="flex:1">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-      <span style="font-family:var(--mono);font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:var(--tx3)">Overall Progress</span>
-      <span id="todo-counter" style="font-family:var(--mono);font-size:12px;color:var(--gold);font-weight:500">0 / 0 done</span>
-    </div>
-    <div style="height:6px;background:var(--bg3);border-radius:3px;overflow:hidden">
-      <div id="todo-bar" style="height:100%;background:var(--gold);border-radius:3px;width:0%;transition:width .4s ease"></div>
-    </div>
-  </div>
-  <button onclick="resetTodo()" style="background:none;border:1px solid var(--bdr);color:var(--tx3);font-family:var(--mono);font-size:9px;letter-spacing:1px;text-transform:uppercase;padding:6px 12px;cursor:pointer;border-radius:2px;transition:all .15s;flex-shrink:0" onmouseover="this.style.borderColor='var(--red)';this.style.color='var(--red)'" onmouseout="this.style.borderColor='var(--bdr)';this.style.color='var(--tx3)'">Reset All</button>
-</div>
 
-<style>
-.todo-item{display:flex;align-items:flex-start;gap:14px;padding:12px 0;border-bottom:1px solid var(--bdr);cursor:pointer;transition:background .15s;border-radius:2px;user-select:none}
-.todo-item:last-child{border-bottom:none}
-.todo-item:hover{background:var(--bg3);margin:0 -8px;padding:12px 8px}
-.todo-cb{min-width:22px;height:22px;border-radius:4px;border:2px solid var(--bdr2);flex-shrink:0;margin-top:1px;display:flex;align-items:center;justify-content:center;transition:all .2s;font-size:13px}
-.todo-item.done .todo-cb{background:var(--green);border-color:var(--green);color:white}
-.todo-item.done .todo-title{text-decoration:line-through;color:var(--tx3)}
-.todo-item.done .todo-desc{opacity:.45}
-.todo-title{font-size:13.5px;font-weight:500;color:var(--tx);transition:color .2s}
-.todo-desc{font-size:11.5px;color:var(--tx3);margin-top:3px;line-height:1.55}
-.todo-badge{display:inline-block;font-family:var(--mono);font-size:8px;letter-spacing:.8px;text-transform:uppercase;padding:2px 7px;border-radius:1px;margin-left:7px;vertical-align:middle}
-.b-red{background:var(--red2);color:var(--red)}
-.b-amber{background:var(--amber2);color:var(--amber)}
-.b-blue{background:var(--blue2);color:var(--blue)}
-.b-gray{background:var(--bg3);color:var(--tx3)}
-</style>
 
-<div class="card">
-<div class="ctitle" style="color:var(--red)">🔴 This Week — Before June 6th</div>
-<div class="todo-item" data-id="t1" onclick="toggleTodo(this)">
-  <div class="todo-cb"></div>
-  <div><div class="todo-title">June 1 — Buy flowers for Elisa 🌸 <span class="todo-badge b-red">urgent</span></div><div class="todo-desc">White/pink peonies. Real florist — not a petrol station. Budget: 1,500–2,000 RUB. Be fully present when you give them.</div></div>
-</div>
-<div class="todo-item" data-id="t2" onclick="toggleTodo(this)">
-  <div class="todo-cb"></div>
-  <div><div class="todo-title">June 2, 15:30 — Interview 1: Аэрофлот Техникс <span class="todo-badge b-red">urgent</span></div><div class="todo-desc">Шереметьево, корп. 6, каб. 108. Ask fleet question first. A320/Boeing = stay. Superjet = leave politely. Ask for deadline June 6th.</div></div>
-</div>
-<div class="todo-item" data-id="t3" onclick="toggleTodo(this)">
-  <div class="todo-cb"></div>
-  <div><div class="todo-title">June 4, 12:00 — Interview 2: АэроТраст <span class="todo-badge b-red">urgent</span></div><div class="todo-desc">Sky Point, Международное шоссе 28Б, корпус Бета. Engine count question first. Confirm position title with "двигатели" in writing.</div></div>
-</div>
-<div class="todo-item" data-id="t4" onclick="toggleTodo(this)">
-  <div class="todo-cb"></div>
-  <div><div class="todo-title">June 5 — Compare both offers and decide <span class="todo-badge b-red">urgent</span></div><div class="todo-desc">Use the comparison table in the Interviews section. Communicate answer by June 6th at the latest.</div></div>
-</div>
-<div class="todo-item" data-id="t5" onclick="toggleTodo(this)">
-  <div class="todo-cb"></div>
-  <div><div class="todo-title">Call Egyptian Embassy Moscow <span class="todo-badge b-red">urgent</span></div><div class="todo-desc">+7 495 246-0442. Ask for written confirmation of documents needed for passport renewal under student status. Don't pay MAI until you have this.</div></div>
-</div>
-</div>
-
-<div class="card">
-<div class="ctitle" style="color:var(--amber)">🟡 June 2026</div>
-<div class="todo-item" data-id="t6" onclick="toggleTodo(this)">
-  <div class="todo-cb"></div>
-  <div><div class="todo-title">Call MAI admissions — confirm September intake</div><div class="todo-desc">+7 499 158-43-36. Ask: "Есть ли заочная магистратура по авиационным специальностям? Когда подача документов?" Deadline may be July — don't wait.</div></div>
-</div>
-<div class="todo-item" data-id="t7" onclick="toggleTodo(this)">
-  <div class="todo-cb"></div>
-  <div><div class="todo-title">Start new job — English logbook from day one</div><div class="todo-desc">Every task: date, aircraft type, ATA chapter, description in English, hours, supervisor stamp. No exceptions. Most valuable document you will ever build.</div></div>
-</div>
-<div class="todo-item" data-id="t8" onclick="toggleTodo(this)">
-  <div class="todo-cb"></div>
-  <div><div class="todo-title">Set up Bybit account + start USDT saving</div><div class="todo-desc">Before your first Moscow salary arrives. 70% USD, 20% RUB, 10% EGP split. Protects savings from RUB devaluation.</div></div>
-</div>
-<div class="todo-item" data-id="t9" onclick="toggleTodo(this)">
-  <div class="todo-cb"></div>
-  <div><div class="todo-title">Register on mfa.gov.eg — monitor settlement program</div><div class="todo-desc">Currently closed. Register now so you see the moment it reopens. Set monthly phone reminder to check.</div></div>
-</div>
-<div class="todo-item" data-id="t10" onclick="toggleTodo(this)">
-  <div class="todo-cb"></div>
-  <div><div class="todo-title">Find apartment in Лобня or Химки near SVO</div><div class="todo-desc">Rent ceiling: 22,000–28,000 RUB/month. Migration registration from landlord mandatory — make it a condition before signing. Stay with Osama first while searching.</div></div>
-</div>
-</div>
-
-<div class="card">
-<div class="ctitle" style="color:var(--amber)">🟡 July 2026</div>
-<div class="todo-item" data-id="t11" onclick="toggleTodo(this)">
-  <div class="todo-cb"></div>
-  <div><div class="todo-title">Buy engagement ring 💍 — before end of July</div><div class="todo-desc">Budget: 25,000–35,000 RUB. Stores: Sunlight, 585 Gold, Pandora, Arbat jewellers. Gesture matters more than price. Plan the proposal with real intention.</div></div>
-</div>
-<div class="todo-item" data-id="t12" onclick="toggleTodo(this)">
-  <div class="todo-cb"></div>
-  <div><div class="todo-title">Submit MAI application before deadline</div><div class="todo-desc">September intake deadline likely July or August. Confirm exact date when you call.</div></div>
-</div>
-<div class="todo-item" data-id="t13" onclick="toggleTodo(this)">
-  <div class="todo-cb"></div>
-  <div><div class="todo-title">Begin EASA Module 15 self-study on off days</div><div class="todo-desc">Gas Turbines — your strongest area. Start here on 2/2 off days. Don't wait for a perfect plan, just start.</div></div>
-</div>
-</div>
-
-<div class="card">
-<div class="ctitle" style="color:var(--blue)">🔵 September 2026</div>
-<div class="todo-item" data-id="t14" onclick="toggleTodo(this)">
-  <div class="todo-cb"></div>
-  <div><div class="todo-title">Enroll in MAI part-time Master's</div><div class="todo-desc">Aviation specialty. Part-time/distance. Get enrollment certificate immediately — this document is your passport renewal key.</div></div>
-</div>
-<div class="todo-item" data-id="t15" onclick="toggleTodo(this)">
-  <div class="todo-cb"></div>
-  <div><div class="todo-title">Plan Elisa's birthday (August 20th) <span class="todo-badge b-blue">start July 30</span></div><div class="todo-desc">Start planning 3 weeks before. Meaningful over expensive. She values experiences she can feel.</div></div>
-</div>
-</div>
-
-<div class="card">
-<div class="ctitle" style="color:var(--blue)">🔵 Mid-2027 — Most Important Single Action Before Age 28</div>
-<div class="todo-item" data-id="t16" onclick="toggleTodo(this)">
-  <div class="todo-cb"></div>
-  <div><div class="todo-title">Renew Egyptian passport at Embassy Moscow — Age 27 <span class="todo-badge b-blue">critical</span></div><div class="todo-desc">Say nothing complicated — "I am a citizen abroad renewing my passport while settled in Moscow." Routine renewal. Bring MAI enrollment certificate only if they ask about military status. Must be done before January 21, 2028 (your 28th birthday). New passport valid until ~2034.</div></div>
-</div>
-</div>
-
-<div class="card">
-<div class="ctitle" style="color:var(--tx3)">⚪ Ongoing — Every Month</div>
-<div class="todo-item" data-id="t17" onclick="toggleTodo(this)">
-  <div class="todo-cb"></div>
-  <div><div class="todo-title">Monthly logbook audit</div><div class="todo-desc">Check: English? ATA chapter? Supervisor stamp? Specific task? Fix gaps before they accumulate.</div></div>
-</div>
-<div class="todo-item" data-id="t18" onclick="toggleTodo(this)">
-  <div class="todo-cb"></div>
-  <div><div class="todo-title">Convert surplus savings to USDT via Bybit</div><div class="todo-desc">After fixed expenses every month. Track total in USD — not RUB.</div></div>
-</div>
-<div class="todo-item" data-id="t19" onclick="toggleTodo(this)">
-  <div class="todo-cb"></div>
-  <div><div class="todo-title">Check mfa.gov.eg — settlement program status</div><div class="todo-desc">Monthly check. The day it opens — pay immediately. No deliberation.</div></div>
-</div>
-<div class="todo-item" data-id="t20" onclick="toggleTodo(this)">
-  <div class="todo-cb"></div>
-  <div><div class="todo-title">EASA module self-study on off days</div><div class="todo-desc">Target: 2 modules every 4 months. M15 → M9 → M7 → M11A.</div></div>
-</div>
-<div class="todo-item" data-id="t21" onclick="toggleTodo(this)">
-  <div class="todo-cb"></div>
-  <div><div class="todo-title">Follow Gulf MRO career pages on LinkedIn</div><div class="todo-desc">Etihad Engineering, Emirates Engineering, Air Arabia, Qatar Airways. Note what they require. Build toward it.</div></div>
-</div>
-</div>
-
-<div class="card">
-<div class="ctitle" style="color:var(--tx3)">⚪ Future Deadlines — Don't Miss</div>
-<div class="todo-item" data-id="t22" onclick="toggleTodo(this)">
-  <div class="todo-cb"></div>
-  <div><div class="todo-title">December 2026 — Start ВНЖ renewal paperwork <span class="todo-badge b-gray">3 months early</span></div><div class="todo-desc">ВНЖ must be renewed by March 2027. Missing this = illegal status = no airport badge = no clean Russia exit.</div></div>
-</div>
-<div class="todo-item" data-id="t23" onclick="toggleTodo(this)">
-  <div class="todo-cb"></div>
-  <div><div class="todo-title">March 2027 — Renew ВНЖ (NOT citizenship)</div><div class="todo-desc">Renew temporary residence permit. Do NOT apply for Russian citizenship — army risk at 27 under Law 53-FZ is real.</div></div>
-</div>
-<div class="todo-item" data-id="t26" onclick="toggleTodo(this)">
-  <div class="todo-cb"></div>
-  <div><div class="todo-title">Q2 2027 — Sit IELTS exam <span class="todo-badge b-gray">~$270 USD</span></div><div class="todo-desc">Required for Australian 482 and 186 applications. Target CLB 7+ = IELTS 6.0 minimum. With your C1 English you'll pass easily — you just need the official score documented before applications go out.</div></div>
-</div>
-<div class="todo-item" data-id="t27" onclick="toggleTodo(this)">
-  <div class="todo-cb"></div>
-  <div><div class="todo-title">Q3 2027 — Submit WES credential evaluation <span class="todo-badge b-gray">~$250 USD, 2-4 months</span></div><div class="todo-desc">Your Samara University degree needs WES assessment for Australian and Canadian immigration. Submit early — 2-4 months processing time. Do not leave this until you're already applying.</div></div>
-</div>
-<div class="todo-item" data-id="t28" onclick="toggleTodo(this)">
-  <div class="todo-cb"></div>
-  <div><div class="todo-title">Q3 2027 — Apostille and legalize English logbook</div><div class="todo-desc">Russian logbook entries need apostille stamps from Russian authorities (Минюст/МИД) before EASA, CASA, and Australian immigration will recognize them. Budget ~15,000-25,000 RUB. Must be done before leaving Russia.</div></div>
-</div>
-<div class="todo-item" data-id="t29" onclick="toggleTodo(this)">
-  <div class="todo-cb"></div>
-  <div><div class="todo-title">Q3 2027 — Contact IAA for written pre-assessment</div><div class="todo-desc">Contact Irish Aviation Authority before submitting anything. Get written confirmation they accept your Russian non-EASA experience and confirm which document formats they require. Don't build the EASA strategy on assumptions.</div></div>
-</div>
-<div class="todo-item" data-id="t24" onclick="toggleTodo(this)">
-  <div class="todo-cb"></div>
-  <div><div class="todo-title">Q3 2027 — Start Gulf job applications</div><div class="todo-desc">LinkedIn fully optimized. Apply Etihad first → wait 6 weeks → Emirates → Air Arabia + Qatar same week. All four active by December 2027.</div></div>
-</div>
-<div class="todo-item" data-id="t30" onclick="toggleTodo(this)">
-  <div class="todo-cb"></div>
-  <div><div class="todo-title">Q4 2027 — Begin marriage registration the moment Gulf offer arrives</div><div class="todo-desc">Russian marriage registration takes 30-60 days + apostille + translations + UAE dependent visa = 3-4 months total chain. Start the same week as the Gulf offer. Do not wait until "early 2028" or you delay your departure.</div></div>
-</div>
-<div class="todo-item" data-id="t25" onclick="toggleTodo(this)">
-  <div class="todo-cb"></div>
-  <div><div class="todo-title">When settlement program opens — Pay immediately</div><div class="todo-desc">7,000+ USD. Same day it opens. Permanent military exemption forever. No delays, no waiting.</div></div>
-</div>
-</div>
-
-<script>
-(function(){
-  const STORE_KEY='dune_todo_v1';
-  function save(id,done){
-    let d={};
-    try{d=JSON.parse(localStorage.getItem(STORE_KEY)||'{}')}catch(e){}
-    d[id]=done;
-    localStorage.setItem(STORE_KEY,JSON.stringify(d));
-  }
-  function load(){
-    try{return JSON.parse(localStorage.getItem(STORE_KEY)||'{}')}catch(e){return{}}
-  }
-  function updateProgress(){
-    const items=document.querySelectorAll('.todo-item');
-    const done=document.querySelectorAll('.todo-item.done').length;
-    const total=items.length;
-    const pct=total?Math.round(done/total*100):0;
-    const counter=document.getElementById('todo-counter');
-    const bar=document.getElementById('todo-bar');
-    if(counter)counter.textContent=done+' / '+total+' done ('+pct+'%)';
-    if(bar)bar.style.width=pct+'%';
-    if(bar){
-      if(pct===100)bar.style.background='var(--green)';
-      else if(pct>50)bar.style.background='var(--amber)';
-      else bar.style.background='var(--gold)';
-    }
-  }
-  window.toggleTodo=function(el){
-    const id=el.dataset.id;
-    const isDone=el.classList.toggle('done');
-    el.querySelector('.todo-cb').textContent=isDone?'✓':'';
-    save(id,isDone);
-    updateProgress();
-  };
-  window.resetTodo=function(){
-    if(!confirm('Reset all tasks to not done?'))return;
-    localStorage.removeItem(STORE_KEY);
-    document.querySelectorAll('.todo-item').forEach(el=>{
-      el.classList.remove('done');
-      el.querySelector('.todo-cb').textContent='';
-    });
-    updateProgress();
-  };
-  // restore on load
-  const saved=load();
-  document.querySelectorAll('.todo-item').forEach(el=>{
-    if(saved[el.dataset.id]){
-      el.classList.add('done');
-      el.querySelector('.todo-cb').textContent='✓';
-    }
-  });
-  updateProgress();
-})();
-</script>
 </section>
 <!-- ABOUT YOU -->
 <section class="sec" id="aboutyou">
