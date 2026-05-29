@@ -1116,13 +1116,19 @@ function renderATACoverage(entries){
   }
   function syncInputs(){
     const v=getInputs();
+    const rd=D.finance.russia;
+    const gd=D.finance.gulf;
     ['salary','rent','food','transport','utilities','phone','family_transfer','other','mai','usd_rate'].forEach(k=>{
       const el=document.getElementById('fin-r-'+k);
-      if(el&&v.russia&&v.russia[k]!==undefined) el.value=v.russia[k];
+      if(!el) return;
+      const val=(v.russia&&v.russia[k]!==undefined)?v.russia[k]:rd[k];
+      if(val!==undefined) el.value=val;
     });
     ['salary_aed','housing','transport','food','dep_cost','remittance','easa_monthly'].forEach(k=>{
       const el=document.getElementById('fin-g-'+k);
-      if(el&&v.gulf&&v.gulf[k]!==undefined) el.value=v.gulf[k];
+      if(!el) return;
+      const val=(v.gulf&&v.gulf[k]!==undefined)?v.gulf[k]:gd[k];
+      if(val!==undefined) el.value=val;
     });
   }
   window.finInputChange=function(phase,field,val){
