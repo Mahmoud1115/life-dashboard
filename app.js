@@ -149,6 +149,7 @@ function show(id,e){
   let isPublic=LS.get('dune_privacy',false);
   function apply(){
     document.body.classList.toggle('public-mode',isPublic);
+    document.body.classList.toggle('private-mode-active',isPublic);
     const btn=document.getElementById('privacy-btn');
     const ind=document.getElementById('privacy-ind');
     if(btn){
@@ -160,8 +161,8 @@ function show(id,e){
     }
     if(ind) ind.classList.toggle('show',isPublic);
   }
-  window.togglePrivacy=function(){
-    isPublic=!isPublic;
+  window.togglePrivacy=function(state){
+    isPublic=(state!==undefined)?state:!isPublic;
     LS.set('dune_privacy',isPublic);
     apply();
   };
