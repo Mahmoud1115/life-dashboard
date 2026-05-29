@@ -56,14 +56,14 @@ function renderSubNav(groupKey){
 function syncGroupNav(secId){
   const gk=SEC_TO_GROUP[secId];
   if(!gk) return;
-  document.querySelectorAll('.nmb').forEach(b=>b.classList.remove('active'));
+  document.querySelectorAll('.nmb').forEach(b=>{b.classList.remove('active');b.removeAttribute('aria-current');});
   const mb=document.querySelector('.nmb[data-group="'+gk+'"]');
-  if(mb) mb.classList.add('active');
+  if(mb){mb.classList.add('active');mb.setAttribute('aria-current','page');}
   const sub=document.getElementById('nav-sub');
   if(sub&&sub.dataset.group!==gk){sub.dataset.group=gk;renderSubNav(gk);}
-  document.querySelectorAll('.nsb').forEach(b=>b.classList.remove('active'));
+  document.querySelectorAll('.nsb').forEach(b=>{b.classList.remove('active');b.removeAttribute('aria-current');});
   const sb=document.querySelector('.nsb[data-sec="'+secId+'"]');
-  if(sb) sb.classList.add('active');
+  if(sb){sb.classList.add('active');sb.setAttribute('aria-current','page');}
 }
 function showGroup(groupKey){
   const g=NAV_GROUPS[groupKey];

@@ -26,7 +26,7 @@
 </div>
 
 <!-- NAV -->
-<nav class="nav">
+<nav class="nav" aria-label="Main navigation">
   <div class="nav-in">
     <div class="nav-main">
       <button class="nmb active" data-group="home" onclick="showGroup('home')">
@@ -76,13 +76,13 @@
 </div>
 
 <!-- Search Bar -->
-<div id="search-wrap" class="search-bar" style="flex-wrap:wrap">
+<div id="search-wrap" class="search-bar" role="search" aria-label="Search dashboard" style="flex-wrap:wrap">
   <input id="search-input" type="text" placeholder="Search sections, topics, decisions…" oninput="doSearch(event)" style="flex:1;min-width:200px">
   <button onclick="toggleSearch()" style="background:none;border:1px solid var(--bdr);border-radius:2px;padding:6px 12px;font-family:var(--mono);font-size:10px;color:var(--tx3);cursor:pointer">✕ Close</button>
   <div id="search-results" class="search-results" style="width:100%;padding:8px 0 0"></div>
 </div>
 
-<div class="main">
+<main class="main">
 
 <!-- HOME — MISSION CONTROL -->
 <section class="sec" id="home">
@@ -1351,7 +1351,7 @@
 <div id="risk-mon-list"></div>
 </section>
 
-</div><!-- end main -->
+</main>
 
 <div style="border-top:1px solid var(--bdr);padding:36px 40px;max-width:960px;margin:0 auto;text-align:center">
 <p style="font-family:var(--serif);font-size:15px;font-style:italic;color:var(--tx3);line-height:1.8">"From Ryazan to the world. One logbook entry, one module, one decision at a time."</p>
