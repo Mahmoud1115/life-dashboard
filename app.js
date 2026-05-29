@@ -74,27 +74,33 @@ function showGroup(groupKey){
   LS.set('dune_activegroup',groupKey);
 }
 const _secScroll={};
-function show(id){
+function show(id,e){
+  if(e) e.preventDefault();
+
   const prevY=window.scrollY;
   const cur=document.querySelector('.sec.active');
   if(cur) _secScroll[cur.id]=prevY;
 
-  // Pin the document height so it can't collapse while sections swap.
-  // Without this, hiding all .sec elements shrinks the page to ~0 and the
-  // browser resets scrollY to 0 before we can restore it.
-  const main=document.querySelector('.main');
-  if(main) main.style.minHeight=document.documentElement.scrollHeight+'px';
+  // Pin body (not .main) so the browser viewport engine sees a constant
+  // document length throughout the section swap and never resets scrollY.
+  document.body.style.minHeight=document.documentElement.scrollHeight+'px';
 
   document.querySelectorAll('.sec').forEach(s=>s.classList.remove('active'));
   const sec=document.getElementById(id);
   if(sec) sec.classList.add('active');
 
-  // Scroll synchronously while height is still pinned.
   const pos=_secScroll[id]!==undefined?_secScroll[id]:prevY;
   window.scrollTo(0,pos);
 
-  // Release the pin after the new section has painted.
-  requestAnimationFrame(()=>{ if(main) main.style.minHeight=''; });
+  requestAnimationFrame(()=>{
+    document.body.style.minHeight='';
+    // If the new section is short and scroll snapped above the nav, clamp below it.
+    const nav=document.querySelector('.nav');
+    const navBottom=nav?nav.offsetTop+nav.offsetHeight:0;
+    if(window.scrollY<navBottom && prevY>=navBottom){
+      window.scrollTo(0,navBottom);
+    }
+  });
 
   LS.set('dune_activesec',id);
   syncGroupNav(id);
