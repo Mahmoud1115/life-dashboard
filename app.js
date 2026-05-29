@@ -73,11 +73,29 @@ function showGroup(groupKey){
   show(g.primary);
   LS.set('dune_activegroup',groupKey);
 }
+const _secScroll={};
 function show(id){
+  const prevY=window.scrollY;
+  const cur=document.querySelector('.sec.active');
+  if(cur) _secScroll[cur.id]=prevY;
+
+  // Pin the document height so it can't collapse while sections swap.
+  // Without this, hiding all .sec elements shrinks the page to ~0 and the
+  // browser resets scrollY to 0 before we can restore it.
+  const main=document.querySelector('.main');
+  if(main) main.style.minHeight=document.documentElement.scrollHeight+'px';
+
   document.querySelectorAll('.sec').forEach(s=>s.classList.remove('active'));
   const sec=document.getElementById(id);
   if(sec) sec.classList.add('active');
-  window.scrollTo(0,0);
+
+  // Scroll synchronously while height is still pinned.
+  const pos=_secScroll[id]!==undefined?_secScroll[id]:prevY;
+  window.scrollTo(0,pos);
+
+  // Release the pin after the new section has painted.
+  requestAnimationFrame(()=>{ if(main) main.style.minHeight=''; });
+
   LS.set('dune_activesec',id);
   syncGroupNav(id);
   document.querySelectorAll('.mob-nb').forEach(mb=>mb.classList.remove('active'));
