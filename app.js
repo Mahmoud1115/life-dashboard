@@ -285,7 +285,7 @@ function show(id,e){
     const fill=document.getElementById('sb-fill');
     if(counter) counter.textContent=done+' / '+total+' done ('+pct+'%)';
     if(fill){
-      fill.style.width=pct+'%';
+      fill.style.transform='scaleX('+(pct/100)+')';
       fill.style.background=pct===100?'var(--green)':pct>50?'var(--amber)':'var(--gold)';
     }
     // per-phase progress
@@ -717,7 +717,7 @@ document.addEventListener('DOMContentLoaded',renderHome);
         '<div class="goal-main">'+
           '<div class="goal-title">'+g.title+'</div>'+
           '<div class="goal-progress-wrap">'+
-            '<div class="goal-pbar"><div class="goal-pfill" style="width:'+pct+'%"></div></div>'+
+            '<div class="goal-pbar"><div class="goal-pfill" style="transform:scaleX('+(pct/100)+')"></div></div>'+
             '<input class="goal-pct-input" type="number" min="0" max="100" value="'+pct+'" title="Edit progress %" onchange="updateGoalProgress(\''+g.id+'\',this.value)" />'+
           '</div>'+
           '<div class="goal-meta">'+
@@ -783,7 +783,7 @@ document.addEventListener('DOMContentLoaded',renderHome);
       return '<div class="easa-card '+cardClass+'">'+
         '<div class="easa-num">'+m.num+'</div>'+
         '<div class="easa-title">'+m.title+'</div>'+
-        '<div class="easa-bar-wrap"><div class="easa-bar-fill" style="width:'+pct+'%"></div></div>'+
+        '<div class="easa-bar-wrap"><div class="easa-bar-fill" style="transform:scaleX('+(pct/100)+')"></div></div>'+
         '<div class="easa-meta">'+
           '<select class="easa-status-select" onchange="updateEasaStatus(\''+m.id+'\',this.value)">'+
             ['not_started','studying','done'].map(st=>'<option value="'+st+'"'+(status===st?' selected':'')+'>'+st.replace('_',' ')+'</option>').join('')+
