@@ -674,10 +674,10 @@ function renderHome(){
       '</div>';
     }).join('');
   }
-  // Metric cards + calendar + upcoming
-  renderMetricCards();
-  renderCalendar();
-  renderUpcoming();
+  // Metric cards + calendar + upcoming — isolated so one crash can't freeze the others
+  try{renderMetricCards();}catch(e){console.warn('renderMetricCards:',e);}
+  try{renderCalendar();}catch(e){console.warn('renderCalendar:',e);}
+  try{renderUpcoming();}catch(e){console.warn('renderUpcoming:',e);}
 }
 document.addEventListener('DOMContentLoaded',renderHome);
 
