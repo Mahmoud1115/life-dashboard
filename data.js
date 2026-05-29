@@ -157,6 +157,7 @@ D.decision = {
 D.finance = {
   russia: {
     salary: 100000, rent: 26000, food: 15000, transport: 5000,
+    utilities: 3500, phone: 1500, family_transfer: 0,
     other: 5000, mai: 0, ring_save: 0, usd_rate: 88
   },
   gulf: {

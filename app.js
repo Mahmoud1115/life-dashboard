@@ -1065,7 +1065,7 @@ function renderATACoverage(entries){
   function saveInputs(v){LS.set(STORE,v);}
   function calcRussia(v){
     const gross=parseFloat(v.salary)||0;
-    const expenses=(parseFloat(v.rent)||0)+(parseFloat(v.food)||0)+(parseFloat(v.transport)||0)+(parseFloat(v.other)||0)+(parseFloat(v.mai)||0);
+    const expenses=(parseFloat(v.rent)||0)+(parseFloat(v.food)||0)+(parseFloat(v.transport)||0)+(parseFloat(v.utilities)||0)+(parseFloat(v.phone)||0)+(parseFloat(v.family_transfer)||0)+(parseFloat(v.other)||0)+(parseFloat(v.mai)||0);
     const net=gross-expenses;
     const usd=parseFloat(v.usd_rate)||88;
     return {gross,expenses,net,netUSD:(net/usd).toFixed(0),annualUSD:((net*12)/usd).toFixed(0)};
@@ -1116,7 +1116,7 @@ function renderATACoverage(entries){
   }
   function syncInputs(){
     const v=getInputs();
-    ['salary','rent','food','transport','other','mai','usd_rate'].forEach(k=>{
+    ['salary','rent','food','transport','utilities','phone','family_transfer','other','mai','usd_rate'].forEach(k=>{
       const el=document.getElementById('fin-r-'+k);
       if(el&&v.russia&&v.russia[k]!==undefined) el.value=v.russia[k];
     });
@@ -1136,10 +1136,10 @@ function renderATACoverage(entries){
     document.querySelectorAll('.fin-scenario').forEach(b=>b.classList.remove('active'));
     if(btn) btn.classList.add('active');
     const presets={
-      conservative:{russia:{salary:85000,rent:28000,food:18000,transport:6000,other:7000,mai:15000},gulf:{salary_aed:10000,housing:6500,transport:1200,food:2500,dep_cost:0,remittance:500,easa_monthly:300}},
-      realistic:{russia:{salary:100000,rent:26000,food:15000,transport:5000,other:5000,mai:15000},gulf:{salary_aed:12000,housing:6000,transport:1200,food:2000,dep_cost:0,remittance:500,easa_monthly:300}},
-      upside:{russia:{salary:120000,rent:24000,food:12000,transport:4000,other:4000,mai:0},gulf:{salary_aed:16000,housing:6000,transport:1000,food:2000,dep_cost:0,remittance:500,easa_monthly:200}},
-      gulf_wife:{russia:{salary:100000,rent:26000,food:15000,transport:5000,other:5000,mai:15000},gulf:{salary_aed:12000,housing:8000,transport:1500,food:3000,dep_cost:2000,remittance:500,easa_monthly:300}},
+      conservative:{russia:{salary:85000,rent:28000,food:18000,transport:6000,utilities:4000,phone:1500,family_transfer:0,other:7000,mai:16000},gulf:{salary_aed:10000,housing:6500,transport:1200,food:2500,dep_cost:0,remittance:500,easa_monthly:300}},
+      realistic:{russia:{salary:100000,rent:26000,food:15000,transport:5000,utilities:3500,phone:1500,family_transfer:0,other:5000,mai:14000},gulf:{salary_aed:12000,housing:6000,transport:1200,food:2000,dep_cost:0,remittance:500,easa_monthly:300}},
+      upside:{russia:{salary:120000,rent:24000,food:12000,transport:4000,utilities:3000,phone:1200,family_transfer:0,other:4000,mai:0},gulf:{salary_aed:16000,housing:6000,transport:1000,food:2000,dep_cost:0,remittance:500,easa_monthly:200}},
+      gulf_wife:{russia:{salary:100000,rent:26000,food:15000,transport:5000,utilities:3500,phone:1500,family_transfer:0,other:5000,mai:14000},gulf:{salary_aed:12000,housing:8000,transport:1500,food:3000,dep_cost:2000,remittance:500,easa_monthly:300}},
     };
     if(presets[s]){
       const v=getInputs();
