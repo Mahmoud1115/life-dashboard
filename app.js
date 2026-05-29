@@ -75,7 +75,7 @@ function showGroup(groupKey){
 }
 const _secScroll={};
 function show(id,e){
-  if(e) e.preventDefault();
+  if(e && typeof e.preventDefault==='function') e.preventDefault();
 
   const prevY=window.scrollY;
   const cur=document.querySelector('.sec.active');
@@ -147,9 +147,20 @@ function show(id,e){
    ═══════════════════════════════════════════ */
 (function(){
   let isPublic=LS.get('dune_privacy',false);
+  function maskNodes(){
+    document.querySelectorAll('[data-private-val]').forEach(el=>{
+      el.textContent=el.getAttribute('data-mask')||'••••••';
+    });
+  }
+  function unmaskNodes(){
+    document.querySelectorAll('[data-private-val]').forEach(el=>{
+      el.textContent=el.getAttribute('data-private-val');
+    });
+  }
   function apply(){
     document.body.classList.toggle('public-mode',isPublic);
     document.body.classList.toggle('private-mode-active',isPublic);
+    isPublic?maskNodes():unmaskNodes();
     const btn=document.getElementById('privacy-btn');
     const ind=document.getElementById('privacy-ind');
     if(btn){

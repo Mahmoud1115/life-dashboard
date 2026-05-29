@@ -21,7 +21,7 @@
     <div class="stat"><div class="sv">June 2</div><div class="sl">Interview 1 date</div></div>
     <div class="stat"><div class="sv">2028</div><div class="sl">Gulf move target</div></div>
     <div class="stat"><div class="sv">2036</div><div class="sl">Second passport</div></div>
-    <div class="stat"><div class="sv">$1.8M+</div><div class="sl">10yr earnings est.</div></div>
+    <div class="stat"><div class="sv" data-private-val="$1.8M+" data-mask="[•••]">$1.8M+</div><div class="sl">10yr earnings est.</div></div>
   </div>
 </div>
 
@@ -187,7 +187,7 @@
 <div class="card"><div class="ctitle">Moscow Finances — Two Protected Goals</div>
 <p><strong>Ring fund (40% savings):</strong> 25,000–35,000 RUB. Before end July 2026. Sunlight, 585 Gold, Pandora, Arbat independents.</p>
 <p><strong>Gulf move fund (60% savings):</strong> Target 120,000+ RUB. First month expenses, deposit, docs, flights for two.</p>
-<p><strong>Settlement payment fund:</strong> Save toward 7,000+ USD simultaneously. Highest priority after the ring. At 100k/month salary with ~40–50k/month saved after rent and expenses — achievable in 13–16 months, not 5–7.</p>
+<p><strong>Settlement payment fund:</strong> Save toward <span data-private-val="7,000+ USD" data-mask="[RESTRICTED]">7,000+ USD</span> simultaneously. Highest priority after the ring. At <span data-private-val="100k/month salary" data-mask="[•••]">100k/month salary</span> with ~40–50k/month saved after rent and expenses — achievable in 13–16 months, not 5–7.</p>
 <p><strong>USDT strategy:</strong> Bybit P2P. 70% USD, 20% RUB, 10% EGP. Protects against RUB devaluation. Set up before June 10th salary.</p></div>
 
 <div class="card"><div class="ctitle">Moscow Housing</div>
@@ -317,7 +317,7 @@
 <tr><td class="th">FAA A&P</td><td class="ta">Strong — covers airframe + powerplant</td><td class="tb">Powerplant strong, airframe needs supplement</td></tr>
 <tr><td class="th">Australia CASA</td><td class="ta">Strong — maps to full LAME B1 scope</td><td class="tb">Weaker — engine-only doesn't cover LAME scope</td></tr>
 <tr><td class="th">Future-proofing</td><td class="ta">Strong — transfers to new fleets, eVTOL, management</td><td class="tb">Risk — CFM56 is legacy, replaced by LEAP/GTF</td></tr>
-<tr><td class="th">10yr earnings</td><td class="ta">$574,000–$920,000</td><td class="tb">$442,000–$602,000</td></tr>
+<tr><td class="th">10yr earnings</td><td class="ta"><span data-private-val="$574,000–$920,000" data-mask="[•••]">$574,000–$920,000</span></td><td class="tb"><span data-private-val="$442,000–$602,000" data-mask="[•••]">$442,000–$602,000</span></td></tr>
 </tbody></table>
 <div class="wb"><p><strong>CFM56 Obsolescence Warning:</strong> CFM56-5B (A320ceo) and CFM56-7B (737NG) replaced by LEAP-1A and LEAP-1B. MRO demand peaks ~2027-2030 then contracts. By 2032 deep CFM56 expertise alone is a depreciating asset. Timeline B engineers must add LEAP/GTF, borescope, engine health monitoring to stay relevant. Timeline A engineers simply retrain on new aircraft systems.</p></div>
 <div class="card"><div class="ctitle">The Best Move — Combine Both</div>
@@ -1361,11 +1361,11 @@
 <!-- Mobile Bottom Nav -->
 <nav class="mob-nav">
   <div class="mob-nav-grid">
-    <button class="mob-nb" data-sec="home" onclick="show('home')"><span class="mob-nb-icon">⌂</span><span class="mob-nb-label">Home</span></button>
-    <button class="mob-nb" data-sec="progress" onclick="show('progress')"><span class="mob-nb-icon">◎</span><span class="mob-nb-label">Goals</span></button>
-    <button class="mob-nb" data-sec="logbook" onclick="show('logbook')"><span class="mob-nb-icon">✈</span><span class="mob-nb-label">Logbook</span></button>
-    <button class="mob-nb" data-sec="deadlines" onclick="show('deadlines')"><span class="mob-nb-icon">⏱</span><span class="mob-nb-label">Deadlines</span></button>
-    <button class="mob-nb" data-sec="todo" onclick="show('todo')"><span class="mob-nb-icon">☑</span><span class="mob-nb-label">Status</span></button>
+    <button class="mob-nb" data-sec="home" onclick="show('home',event)"><span class="mob-nb-icon">⌂</span><span class="mob-nb-label">Home</span></button>
+    <button class="mob-nb" data-sec="progress" onclick="show('progress',event)"><span class="mob-nb-icon">◎</span><span class="mob-nb-label">Goals</span></button>
+    <button class="mob-nb" data-sec="logbook" onclick="show('logbook',event)"><span class="mob-nb-icon">✈</span><span class="mob-nb-label">Logbook</span></button>
+    <button class="mob-nb" data-sec="deadlines" onclick="show('deadlines',event)"><span class="mob-nb-icon">⏱</span><span class="mob-nb-label">Deadlines</span></button>
+    <button class="mob-nb" data-sec="todo" onclick="show('todo',event)"><span class="mob-nb-icon">☑</span><span class="mob-nb-label">Status</span></button>
   </div>
 </nav>
 

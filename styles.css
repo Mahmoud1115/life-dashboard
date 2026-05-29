@@ -114,7 +114,7 @@ body{
 .private-mode-active .private-blur{filter:blur(10px);pointer-events:none;user-select:none;}
 
 /* ── SECTIONS ── */
-.sec{display:none;padding-top:48px}
+.sec{display:none;padding-top:48px;scroll-margin-top:80px;}
 .sec.active{display:block;animation:secIn 0.22s cubic-bezier(0.16,1,0.3,1);}
 @keyframes secIn{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:translateY(0)}}
 .sec-hd{margin-bottom:40px}
