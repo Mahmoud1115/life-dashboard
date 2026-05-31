@@ -1618,11 +1618,11 @@ window.dismissBackupReminder=function(){
 };
 window.openBackupPanel=function(){
   const panel=document.getElementById('backup-panel');
-  if(panel) panel.hidden=false;
+  if(panel) panel.style.display='flex';
 };
 window.closeBackupPanel=function(){
   const panel=document.getElementById('backup-panel');
-  if(panel) panel.hidden=true;
+  if(panel) panel.style.display='none';
 };
 window.exportBackup=function(){
   const data=getAllBackupData();
