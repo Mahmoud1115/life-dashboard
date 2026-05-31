@@ -1474,14 +1474,24 @@ function renderInterviewQA(){
   const diffBadge={low:'🟢 Low',med:'🟡 Med',high:'🔴 High'};
   const compBadge={both:'Both','aeroflot':'Аэрофлот','aerotrust':'АэроТраст'};
 
-  let html='';
+  // count per difficulty
+  const counts={all:0,high:0,med:0,low:0};
+  (D.interview_qa||[]).forEach(q=>{counts.all++;if(q.difficulty)counts[q.difficulty]=(counts[q.difficulty]||0)+1;});
+
+  let html=`<div class="iqa-filters">
+    <button class="iqa-filter-btn active" onclick="iqaFilter('all',this)">All <span class="iqa-filter-count">${counts.all}</span></button>
+    <button class="iqa-filter-btn iqa-f-high" onclick="iqaFilter('high',this)">🔴 High <span class="iqa-filter-count">${counts.high||0}</span></button>
+    <button class="iqa-filter-btn iqa-f-med" onclick="iqaFilter('med',this)">🟡 Med <span class="iqa-filter-count">${counts.med||0}</span></button>
+    <button class="iqa-filter-btn iqa-f-low" onclick="iqaFilter('low',this)">🟢 Low <span class="iqa-filter-count">${counts.low||0}</span></button>
+  </div>`;
+
   ORDER.forEach(pid=>{
     const part=partMap[pid];
     if(!part) return;
     const qs=(D.interview_qa||[]).filter(q=>q.part===pid);
     if(!qs.length) return;
 
-    html+=`<div class="iqa-part-header">
+    html+=`<div class="iqa-part-header" data-part="${pid}">
       <span class="iqa-part-tag">${part.tag}</span>
       <span class="iqa-part-title">${part.title}</span>
       <span class="iqa-part-sub">${part.title_en}</span>
@@ -1490,7 +1500,7 @@ function renderInterviewQA(){
     qs.forEach(q=>{
       const isCrit=(q.tag==='CRITICAL');
       const note=savedNotes[q.id]||'';
-      html+=`<div class="iqa-card${isCrit?' iqa-critical':''}">
+      html+=`<div class="iqa-card${isCrit?' iqa-critical':''}" data-difficulty="${q.difficulty}" data-part="${pid}">
         <div class="iqa-meta">
           <span class="iqa-tag">${q.tag||''}</span>
           <span class="iqa-diff">${diffBadge[q.difficulty]||''}</span>
@@ -1540,4 +1550,23 @@ window.iqaToggle=function(id,btn){
   const hidden=wrap.style.display==='none';
   wrap.style.display=hidden?'block':'none';
   btn.textContent=hidden?'▲ Hide answer':'▼ Show answer';
+};
+
+window.iqaFilter=function(diff,btn){
+  document.querySelectorAll('.iqa-filter-btn').forEach(b=>b.classList.remove('active'));
+  if(btn) btn.classList.add('active');
+  // show/hide cards
+  document.querySelectorAll('.iqa-card[data-difficulty]').forEach(card=>{
+    card.style.display=(diff==='all'||card.dataset.difficulty===diff)?'':'none';
+  });
+  // hide part headers when all their cards are hidden
+  document.querySelectorAll('.iqa-part-header[data-part]').forEach(header=>{
+    let el=header.nextElementSibling;
+    let hasVisible=false;
+    while(el&&!el.classList.contains('iqa-part-header')){
+      if(el.classList.contains('iqa-card')&&el.style.display!=='none'){hasVisible=true;break;}
+      el=el.nextElementSibling;
+    }
+    header.style.display=hasVisible?'':'none';
+  });
 };

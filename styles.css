@@ -734,6 +734,14 @@ body.public-mode [data-private="true"]{display:none !important}
 /* ═══════════════════════════════════════════
    INTERVIEW Q&A MASTER
    ═══════════════════════════════════════════ */
+.iqa-filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:28px;padding:16px 20px;background:var(--glass-bg);backdrop-filter:var(--glass-blur);-webkit-backdrop-filter:var(--glass-blur);border:1px solid var(--glass-border);border-radius:14px;box-shadow:var(--glass-shadow);}
+.iqa-filter-btn{font-family:var(--mono);font-size:10px;letter-spacing:.8px;text-transform:uppercase;padding:7px 16px;border-radius:100px;cursor:pointer;border:1px solid var(--bdr2);background:var(--bg3);color:var(--tx2);transition:background 180ms,border-color 180ms,color 180ms;white-space:nowrap}
+.iqa-filter-btn:hover{border-color:var(--gold);color:var(--gold2)}
+.iqa-filter-btn.active{background:var(--gold3);border-color:var(--gold);color:var(--gold2)}
+.iqa-filter-btn.iqa-f-high.active{background:var(--red2);border-color:var(--red);color:var(--red)}
+.iqa-filter-btn.iqa-f-med.active{background:var(--amber2);border-color:var(--amber);color:var(--amber)}
+.iqa-filter-btn.iqa-f-low.active{background:var(--green2);border-color:var(--green);color:var(--green)}
+.iqa-filter-count{font-family:var(--num);font-size:11px;font-weight:600;margin-left:4px;opacity:.8}
 .iqa-part-header{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;padding:10px 0 8px;border-bottom:2px solid var(--gold3);margin:32px 0 16px}
 .iqa-part-tag{font-family:var(--mono);font-size:9px;letter-spacing:2px;text-transform:uppercase;background:var(--gold3);color:var(--gold2);padding:3px 10px;border-radius:100px;border:1px solid rgba(154,120,50,.25);flex-shrink:0}
 .iqa-part-title{font-family:var(--serif);font-size:20px;font-weight:400;color:var(--tx);flex:1}
