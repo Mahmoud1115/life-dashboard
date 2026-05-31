@@ -62,6 +62,9 @@
       <button class="nmb nmb-util" id="privacy-btn" onclick="togglePrivacy()">
         <span class="nmb-emoji">👁</span><span class="nmb-label">Private</span>
       </button>
+      <button class="nmb nmb-util" onclick="openBackupPanel()">
+        <span class="nmb-emoji"><span id="backup-pill" class="backup-pill bp-red">📦</span></span><span class="nmb-label">Backup</span>
+      </button>
     </div>
     <div class="nav-sub" id="nav-sub"></div>
   </div>
@@ -199,11 +202,15 @@
 <p><strong>Moscow Aviation Institute (MAI)</strong> — mai.ru. Aviation specialty. Part-time/distance. Cost ~150,000–200,000 RUB/year. September 2026 intake. 100% accepted by Egyptian Embassy. MAI is Russia's top aviation university.</p>
 <p><strong>Call now:</strong> +7 499 158-43-36. Ask: "Есть ли заочная или дистанционная магистратура по авиационным специальностям? Когда подача документов на сентябрь 2026?"</p>
 <p><strong>Alternatives:</strong> МГТУ ГА (air transport management), Samara University (your original university — easiest enrollment), Ufa USATU (cheapest ~80,000 RUB/year).</p></div>
+
+<div class="card"><div id="apartments-root"></div></div>
 </section>
 
 <!-- INTERVIEWS -->
 <section class="sec" id="interviews">
 <div class="sec-hd"><div class="sec-num">02 — Interviews</div><h2 class="sec-title">June 2nd & 4th —<br><em>Interview Command Centre</em></h2><p class="sec-intro">Two tabs. Questions you ask them — and everything they will ask you, with full scripted answers and your personal notes.</p></div>
+
+<div id="interview-checklist-root"></div>
 
 <div class="fin-tabs" style="margin-bottom:28px">
   <button class="fin-tab int-tab-btn active" onclick="showIntTab('myq',this)">🎯 Мои вопросы</button>
@@ -1237,6 +1244,11 @@
 <!-- LOGBOOK TRACKER -->
 <section class="sec" id="logbook">
 <div class="sec-hd"><div class="sec-num">Live OS — Logbook</div><h2 class="sec-title">Aviation Logbook —<br><em>B1.1 Record</em></h2><p class="sec-intro">Every task, every aircraft, every stamp. Your English logbook is your most valuable career document. Start day one.</p></div>
+<div class="fin-tabs" style="margin-bottom:20px">
+  <button class="fin-tab lb-tab-btn active" onclick="showLbTab('tracker',this)">📋 Logbook Tracker</button>
+  <button class="fin-tab lb-tab-btn" onclick="showLbTab('builder',this)">✍ Entry Builder</button>
+</div>
+<div id="lb-tab-tracker">
 <div id="lb-stats" class="lb-stats-grid"></div>
 <div class="lb-toolbar">
   <button class="lb-btn lb-btn-add" onclick="toggleLogForm()">+ Add Entry</button>
@@ -1270,6 +1282,8 @@
   </table>
 </div>
 <div id="lb-ata-coverage" class="lb-ata-coverage"></div>
+</div><!-- end lb-tab-tracker -->
+<div id="lb-tab-builder" hidden><div id="lb-builder-root"></div></div>
 </section>
 
 <!-- DEADLINE TRACKER -->
@@ -1372,6 +1386,44 @@
 </section>
 
 </main>
+
+<!-- BACKUP REMINDER PILL -->
+<div id="backup-reminder" class="backup-reminder" style="display:none">
+  <span id="backup-reminder-text"></span>
+  <button class="icl-small-btn" onclick="exportBackup()">Export now</button>
+  <button class="icl-small-btn" onclick="dismissBackupReminder()">✕</button>
+</div>
+
+<!-- BACKUP PANEL -->
+<div id="backup-panel" class="backup-panel-overlay" hidden onclick="if(event.target===this)closeBackupPanel()">
+  <div class="backup-panel">
+    <div class="backup-panel-head">
+      <div class="ctitle" style="margin-bottom:0">📦 Backup & Restore</div>
+      <button class="icl-small-btn" onclick="closeBackupPanel()">✕ Close</button>
+    </div>
+    <div class="backup-panel-body">
+      <div class="backup-section">
+        <div class="backup-section-title">Export — save your data</div>
+        <div class="backup-btns">
+          <button class="lb-btn lb-btn-add" onclick="exportBackup()">⬇ Download JSON</button>
+          <button class="lb-btn lb-btn-view" onclick="copyBackupToClipboard()">📋 Copy to Clipboard</button>
+        </div>
+        <p class="backup-hint">JSON file: save to Files app, send to yourself via Telegram, or store in iCloud. Clipboard: paste into Notes on another device, then "Import from Clipboard" there.</p>
+      </div>
+      <div class="backup-section">
+        <div class="backup-section-title">Import — restore from backup</div>
+        <div class="backup-btns">
+          <button class="lb-btn lb-btn-view" onclick="triggerImportFile()">⬆ Import JSON File</button>
+          <button class="lb-btn lb-btn-view" onclick="importFromClipboard()">📋 Import from Clipboard</button>
+        </div>
+        <input id="backup-file-input" type="file" accept=".json" style="display:none" onchange="handleImportFile(this)">
+        <p class="backup-hint">⚠ Importing overwrites current data. Your current data is automatically saved as a pre-restore backup first.</p>
+      </div>
+    </div>
+  </div>
+</div>
+<!-- BACKUP TOAST -->
+<div id="backup-toast" class="backup-toast"></div>
 
 <div style="border-top:1px solid var(--bdr);padding:36px 40px;max-width:960px;margin:0 auto;text-align:center">
 <p style="font-family:var(--serif);font-size:15px;font-style:italic;color:var(--tx3);line-height:1.8">"From Ryazan to the world. One logbook entry, one module, one decision at a time."</p>

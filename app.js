@@ -1446,10 +1446,579 @@ document.addEventListener('DOMContentLoaded',()=>{
   const sub=document.getElementById('nav-sub');
   if(sub&&NAV_GROUPS[lastGroup]){sub.dataset.group=lastGroup;}
   show(last||'home');
-  // restore interview tab state
   const savedIntTab=LS.get('dune_int_tab_v1','myq');
   if(savedIntTab!=='myq') showIntTab(savedIntTab,null);
+  const savedLbTab=LS.get('dune_logbook_tab_v1','tracker');
+  if(savedLbTab!=='tracker') showLbTab(savedLbTab,null);
+  renderInterviewChecklist();
+  renderApartments();
+  initBackupSystem();
 });
+
+/* ═══════════════════════════════════════════
+   FEATURE 1 — INTERVIEW DAY CHECKLIST
+   ═══════════════════════════════════════════ */
+function renderInterviewChecklist(){
+  const root=document.getElementById('interview-checklist-root');
+  if(!root) return;
+  const state=LS.get('dune_int_checklist_v1',{});
+  const results=LS.get('dune_int_results_v1',{});
+  const now=new Date();
+
+  function countdown(dateStr,timeStr){
+    const dt=new Date(dateStr+'T'+timeStr);
+    const diff=dt-now;
+    if(diff<0) return null;
+    const days=Math.floor(diff/86400000);
+    const hours=Math.floor((diff%86400000)/3600000);
+    if(days>0) return days+'d';
+    return hours+'h';
+  }
+
+  const html=(D.interview_checklists||[]).map(intv=>{
+    const cd=countdown(intv.date,intv.time);
+    const isPast=new Date(intv.date+'T'+intv.time)<now;
+    const done=intv.items.filter(it=>state[it.id]).length;
+    const total=intv.items.length;
+    const allDone=done===total;
+    const borderColor=intv.border==='red'?'var(--red)':'var(--amber)';
+    const todayStr=now.toISOString().slice(0,10);
+    const isToday=intv.date===todayStr;
+
+    if(isPast){
+      return `<div class="icl-card icl-done">
+        <div class="icl-done-row">
+          <span class="icl-done-check">✓</span>
+          <span class="icl-done-title">${intv.company}</span>
+          <span class="icl-done-meta">${intv.date} · ${intv.time} · ${done}/${total} готово</span>
+          <button class="icl-expand-btn" onclick="this.closest('.icl-card').classList.toggle('icl-expanded')">▼</button>
+        </div>
+        <div class="icl-collapse-body">
+          <div class="icl-items">${intv.items.map(it=>`<div class="icl-item ${state[it.id]?'icl-checked':''}"><span class="icl-cb">${state[it.id]?'✓':'○'}</span><span>${it.text}</span></div>`).join('')}</div>
+          ${results[intv.id]?`<div class="icl-result-display"><span class="icl-result-label">Результат</span><p>${results[intv.id]}</p></div>`:''}
+        </div>
+      </div>`;
+    }
+
+    return `<div class="icl-card" style="border-left:3px solid ${borderColor}">
+      <div class="icl-header">
+        <div>
+          <div class="icl-company">${intv.company}</div>
+          <div class="icl-meta">${intv.address} · ${intv.time}</div>
+        </div>
+        <div class="icl-right">
+          ${isToday?'<span class="icl-today">⚠ TODAY</span>':cd?`<span class="icl-countdown">${cd}</span>`:''}
+          <span class="icl-progress ${allDone?'icl-prog-done':''}">${done}/${total}</span>
+        </div>
+      </div>
+      <div class="icl-items">${intv.items.map(it=>`
+        <label class="icl-item ${state[it.id]?'icl-checked':''}">
+          <input type="checkbox" ${state[it.id]?'checked':''} onchange="iciToggle('${it.id}',this.checked)" style="display:none">
+          <span class="icl-cb">${state[it.id]?'✓':'○'}</span>
+          <span>${it.text}</span>
+        </label>`).join('')}
+      </div>
+      <div class="icl-result-wrap">
+        <div class="icl-result-label">Результат / Outcome</div>
+        <textarea class="sb-note icl-result-ta" data-iid="${intv.id}" placeholder="После интервью: флот подтверждён, зарплата, следующий шаг…">${results[intv.id]||''}</textarea>
+        <div class="iqa-saved" id="icl-saved-${intv.id}">✓ сохранено</div>
+      </div>
+    </div>`;
+  }).join('');
+
+  root.innerHTML=`<div class="icl-grid">${html}</div>`;
+
+  root.querySelectorAll('.icl-result-ta').forEach(ta=>{
+    let t;
+    ta.addEventListener('input',()=>{
+      clearTimeout(t);
+      t=setTimeout(()=>{
+        const res=LS.get('dune_int_results_v1',{});
+        res[ta.dataset.iid]=ta.value;
+        LS.set('dune_int_results_v1',res);
+        const ind=document.getElementById('icl-saved-'+ta.dataset.iid);
+        if(ind){ind.style.opacity='1';setTimeout(()=>ind.style.opacity='0',1200);}
+      },800);
+    });
+  });
+}
+
+window.iciToggle=function(id,checked){
+  const state=LS.get('dune_int_checklist_v1',{});
+  state[id]=checked;
+  LS.set('dune_int_checklist_v1',state);
+  bumpChangeCount();
+  const label=document.querySelector(`[onchange*="${id}"]`)?.closest('.icl-item');
+  if(label){label.classList.toggle('icl-checked',checked);label.querySelector('.icl-cb').textContent=checked?'✓':'○';}
+  const card=document.querySelector(`[onchange*="${id}"]`)?.closest('.icl-card');
+  if(card){
+    const all=card.querySelectorAll('input[type=checkbox]');
+    const done=[...all].filter(c=>c.checked).length;
+    const prog=card.querySelector('.icl-progress');
+    if(prog){prog.textContent=done+'/'+all.length;prog.classList.toggle('icl-prog-done',done===all.length);}
+  }
+};
+
+/* ═══════════════════════════════════════════
+   FEATURE 2 — BACKUP & RESTORE SYSTEM
+   ═══════════════════════════════════════════ */
+const BACKUP_KEYS=[
+  'dune_int_checklist_v1','dune_int_results_v1',
+  'dune_interview_qa_notes_v1','dune_finance_v1',
+  'dune_sb_tasks_v1','dune_goals_v1','dune_easa_v1',
+  'dune_crm_v1','dune_logbook_v1','dune_deadlines_ext_v1',
+  'dune_apartments_v1','dune_logbook_entries_v1','dune_logbook_tab_v1',
+  'dune_decision_weights_v1'
+];
+
+function getAllBackupData(){
+  const out={};
+  BACKUP_KEYS.forEach(k=>{
+    const v=localStorage.getItem(k);
+    if(v!==null) try{out[k]=JSON.parse(v);}catch(e){out[k]=v;}
+  });
+  return out;
+}
+function bumpChangeCount(){
+  const c=(parseInt(localStorage.getItem('dune_change_count_v1')||'0'))+1;
+  localStorage.setItem('dune_change_count_v1',c);
+  updateBackupPill();
+}
+function initBackupSystem(){
+  updateBackupPill();
+  checkBackupReminder();
+}
+function updateBackupPill(){
+  const pill=document.getElementById('backup-pill');
+  if(!pill) return;
+  const last=LS.get('dune_last_backup_v1',null);
+  if(!last){pill.textContent='📦 Backup';pill.className='backup-pill bp-red';return;}
+  const days=Math.floor((Date.now()-new Date(last).getTime())/86400000);
+  pill.textContent='📦 '+(days===0?'Today':days+'d');
+  pill.className='backup-pill '+(days<=6?'bp-green':days<=13?'bp-amber':'bp-red');
+}
+function checkBackupReminder(){
+  const last=LS.get('dune_last_backup_v1',null);
+  const dismissed=LS.get('dune_backup_dismissed_v1',null);
+  const changes=parseInt(localStorage.getItem('dune_change_count_v1')||'0');
+  if(dismissed&&(Date.now()-new Date(dismissed).getTime())<3*86400000) return;
+  const daysSince=last?Math.floor((Date.now()-new Date(last).getTime())/86400000):999;
+  if(daysSince>7||changes>10){
+    const rem=document.getElementById('backup-reminder');
+    if(rem){
+      rem.textContent=last?`📦 Last backed up ${daysSince}d ago · ${changes} changes — Export?`:'📦 No backup yet — export your data';
+      rem.style.display='flex';
+    }
+  }
+}
+window.dismissBackupReminder=function(){
+  LS.set('dune_backup_dismissed_v1',new Date().toISOString());
+  const rem=document.getElementById('backup-reminder');
+  if(rem) rem.style.display='none';
+};
+window.openBackupPanel=function(){
+  const panel=document.getElementById('backup-panel');
+  if(panel) panel.hidden=false;
+};
+window.closeBackupPanel=function(){
+  const panel=document.getElementById('backup-panel');
+  if(panel) panel.hidden=true;
+};
+window.exportBackup=function(){
+  const data=getAllBackupData();
+  const backup={version:'2026.1',exported_at:new Date().toISOString(),data};
+  const blob=new Blob([JSON.stringify(backup,null,2)],{type:'application/json'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url;a.download='dune-backup-'+new Date().toISOString().slice(0,10)+'.json';
+  a.click();URL.revokeObjectURL(url);
+  LS.set('dune_last_backup_v1',new Date().toISOString());
+  localStorage.setItem('dune_change_count_v1','0');
+  updateBackupPill();
+  const rem=document.getElementById('backup-reminder');
+  if(rem) rem.style.display='none';
+  showBackupToast('✓ Backup downloaded');
+};
+window.copyBackupToClipboard=async function(){
+  const data=getAllBackupData();
+  const json=JSON.stringify({version:'2026.1',exported_at:new Date().toISOString(),data},null,2);
+  try{
+    await navigator.clipboard.writeText(json);
+    showBackupToast('✓ Backup copied to clipboard — paste into Notes on other device');
+    LS.set('dune_last_backup_v1',new Date().toISOString());
+    updateBackupPill();
+  }catch(e){showBackupToast('⚠ Clipboard failed — use JSON download instead');}
+};
+window.importFromClipboard=async function(){
+  try{
+    const text=await navigator.clipboard.readText();
+    processImport(text);
+  }catch(e){showBackupToast('⚠ Cannot read clipboard — use file import instead');}
+};
+window.triggerImportFile=function(){
+  document.getElementById('backup-file-input').click();
+};
+window.handleImportFile=function(input){
+  const file=input.files[0];
+  if(!file) return;
+  const reader=new FileReader();
+  reader.onload=e=>processImport(e.target.result);
+  reader.readAsText(file);
+  input.value='';
+};
+function processImport(text){
+  let backup;
+  try{backup=JSON.parse(text);}catch(e){showBackupToast('⚠ Invalid file — cannot parse JSON');return;}
+  if(!backup.version||!backup.data||Object.keys(backup.data).length<2){showBackupToast('⚠ Invalid backup format');return;}
+  const counts=summarizeBackup(backup.data);
+  const preview=counts.map(c=>c[0]+': '+c[1]).join(' · ');
+  const confirmed=confirm('Restore backup from '+backup.exported_at+'?\n\n'+preview+'\n\n⚠ Overwrites current data. Current data saved as pre-restore backup.');
+  if(!confirmed) return;
+  // auto-save current before overwrite
+  const current=getAllBackupData();
+  LS.set('dune_pre_import_backup_v1',{version:'2026.1',exported_at:new Date().toISOString(),data:current});
+  // atomic write
+  Object.entries(backup.data).forEach(([k,v])=>localStorage.setItem(k,JSON.stringify(v)));
+  localStorage.setItem('dune_change_count_v1','0');
+  showBackupToast('✓ Restored — '+preview);
+  setTimeout(()=>location.reload(),1200);
+}
+function summarizeBackup(data){
+  const out=[];
+  if(data.dune_logbook_entries_v1) out.push(['Logbook',(data.dune_logbook_entries_v1||[]).length+' entries']);
+  if(data.dune_interview_qa_notes_v1) out.push(['Q&A notes',Object.keys(data.dune_interview_qa_notes_v1||{}).length]);
+  if(data.dune_apartments_v1) out.push(['Apartments',(data.dune_apartments_v1||[]).length]);
+  if(data.dune_goals_v1) out.push(['Goals',Object.keys(data.dune_goals_v1||{}).length]);
+  return out;
+}
+function showBackupToast(msg){
+  let t=document.getElementById('backup-toast');
+  if(!t){t=document.createElement('div');t.id='backup-toast';t.className='backup-toast';document.body.appendChild(t);}
+  t.textContent=msg;t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'),3000);
+}
+
+/* ═══════════════════════════════════════════
+   FEATURE 3 — LOGBOOK ENTRY BUILDER
+   ═══════════════════════════════════════════ */
+const LB_ATA=[
+  {val:'05',label:'05 — Time Limits'},
+  {val:'12',label:'12 — Servicing'},
+  {val:'21',label:'21 — Air Conditioning'},
+  {val:'24',label:'24 — Electrical Power'},
+  {val:'27',label:'27 — Flight Controls'},
+  {val:'28',label:'28 — Fuel'},
+  {val:'29',label:'29 — Hydraulic Power'},
+  {val:'32',label:'32 — Landing Gear'},
+  {val:'36',label:'36 — Pneumatic'},
+  {val:'71',label:'71 — Powerplant'},
+  {val:'72',label:'72 — Engine'},
+  {val:'73',label:'73 — Engine Fuel & Control'},
+  {val:'74',label:'74 — Ignition'},
+  {val:'79',label:'79 — Oil'},
+  {val:'80',label:'80 — Starting'},
+  {val:'other',label:'Other (specify)'}
+];
+
+window.showLbTab=function(tab,btn){
+  document.querySelectorAll('.lb-tab-btn').forEach(b=>b.classList.remove('active'));
+  const activeBtn=btn||Array.from(document.querySelectorAll('.lb-tab-btn')).find(b=>(b.getAttribute('onclick')||'').includes("'"+tab+"'"));
+  if(activeBtn) activeBtn.classList.add('active');
+  const t1=document.getElementById('lb-tab-tracker');
+  const t2=document.getElementById('lb-tab-builder');
+  if(t1) t1.hidden=(tab!=='tracker');
+  if(t2) t2.hidden=(tab!=='builder');
+  if(tab==='builder') renderLogbookBuilder();
+  LS.set('dune_logbook_tab_v1',tab);
+};
+
+function renderLogbookBuilder(){
+  const root=document.getElementById('lb-builder-root');
+  if(!root||root.dataset.rendered==='1') return;
+  root.dataset.rendered='1';
+  const entries=LS.get('dune_logbook_entries_v1',[]);
+  const today=new Date().toISOString().slice(0,10);
+  const ataOpts=LB_ATA.map(a=>`<option value="${a.val}">${a.label}</option>`).join('');
+
+  // stats
+  const totalHrs=entries.reduce((s,e)=>s+(parseFloat(e.hours)||0),0);
+  const now=new Date();
+  const monthHrs=entries.filter(e=>{
+    const d=new Date(e.date);
+    return d.getFullYear()===now.getFullYear()&&d.getMonth()===now.getMonth();
+  }).reduce((s,e)=>s+(parseFloat(e.hours)||0),0);
+  const ataSet=new Set(entries.map(e=>e.ata).filter(Boolean));
+
+  root.innerHTML=`
+  <div class="lbb-stats">
+    <div class="lbb-stat"><div class="lbb-stat-val">${entries.length}</div><div class="lbb-stat-lbl">Entries</div></div>
+    <div class="lbb-stat"><div class="lbb-stat-val">${totalHrs.toFixed(1)}</div><div class="lbb-stat-lbl">Total hrs</div></div>
+    <div class="lbb-stat"><div class="lbb-stat-val">${monthHrs.toFixed(1)}</div><div class="lbb-stat-lbl">This month</div></div>
+    <div class="lbb-stat"><div class="lbb-stat-val">${ataSet.size}</div><div class="lbb-stat-lbl">ATA chapters</div></div>
+  </div>
+  <div class="lbb-form card">
+    <div class="ctitle">New Entry</div>
+    <div class="lbb-form-grid">
+      <div class="lb-field"><label>Date</label><input id="lbb-date" type="date" value="${today}"></div>
+      <div class="lb-field"><label>Aircraft Type</label><input id="lbb-aircraft" type="text" placeholder="Airbus A320-200"></div>
+      <div class="lb-field"><label>Registration</label><input id="lbb-reg" type="text" placeholder="VP-BQP"></div>
+      <div class="lb-field"><label>ATA Chapter</label>
+        <select id="lbb-ata" onchange="lbbAtaChange(this)">${ataOpts}</select>
+      </div>
+      <div class="lb-field" id="lbb-ata-other-wrap" style="display:none"><label>Custom ATA</label><input id="lbb-ata-other" type="text" placeholder="e.g. 30 — Ice & Rain"></div>
+      <div class="lb-field"><label>Work Hours</label><input id="lbb-hours" type="number" step="0.5" min="0.5" placeholder="2.5"></div>
+      <div class="lb-field"><label>Supervisor</label><input id="lbb-supervisor" type="text" placeholder="Ivan Petrov"></div>
+      <div class="lb-field"><label>Task Reference</label><input id="lbb-ref" type="text" placeholder="AMM 72-00-00-200"></div>
+      <div class="lb-field" style="grid-column:1/-1"><label>Task Description (English)</label><textarea id="lbb-desc" rows="3" placeholder="Describe what you did — be specific, use ATA language"></textarea></div>
+    </div>
+    <div style="display:flex;gap:10px;margin-top:8px">
+      <button class="lb-btn lb-btn-add" onclick="lbbSaveEntry()">+ Add to Logbook</button>
+      <button class="lb-btn lb-btn-view" onclick="lbbClearForm()">Clear</button>
+    </div>
+  </div>
+  <div class="lbb-search-wrap">
+    <input class="lbb-search" id="lbb-search" type="text" placeholder="Search entries — aircraft, ATA, description…" oninput="lbbSearch(this.value)">
+    <button class="lb-btn lb-btn-view" onclick="lbbExportCSV()" style="white-space:nowrap">⬇ Export CSV</button>
+  </div>
+  <div id="lbb-entries"></div>`;
+  lbbRenderEntries(entries);
+}
+
+window.lbbAtaChange=function(sel){
+  const wrap=document.getElementById('lbb-ata-other-wrap');
+  if(wrap) wrap.style.display=sel.value==='other'?'':'none';
+};
+window.lbbClearForm=function(){
+  ['lbb-aircraft','lbb-reg','lbb-hours','lbb-supervisor','lbb-ref','lbb-desc'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
+  const ata=document.getElementById('lbb-ata');
+  if(ata){ata.value='05';lbbAtaChange(ata);}
+};
+window.lbbSaveEntry=function(){
+  const date=document.getElementById('lbb-date')?.value;
+  const aircraft=document.getElementById('lbb-aircraft')?.value.trim();
+  const reg=document.getElementById('lbb-reg')?.value.trim();
+  const ataEl=document.getElementById('lbb-ata');
+  const ataOther=document.getElementById('lbb-ata-other')?.value.trim();
+  const ata=ataEl?.value==='other'?ataOther:ataEl?.value;
+  const ataLabel=ataEl?.value==='other'?ataOther:(LB_ATA.find(a=>a.val===ataEl?.value)?.label||ata);
+  const hours=document.getElementById('lbb-hours')?.value;
+  const supervisor=document.getElementById('lbb-supervisor')?.value.trim();
+  const ref=document.getElementById('lbb-ref')?.value.trim();
+  const desc=document.getElementById('lbb-desc')?.value.trim();
+  if(!date||!aircraft||!ata||!hours||!desc){alert('Fill in: Date, Aircraft, ATA, Hours, Task Description');return;}
+  const entry={id:'lbe_'+Date.now(),date,aircraft,reg,ata,ataLabel,hours:parseFloat(hours),supervisor,ref,desc};
+  const entries=LS.get('dune_logbook_entries_v1',[]);
+  entries.unshift(entry);
+  if(entries.length>50) entries.pop();
+  LS.set('dune_logbook_entries_v1',entries);
+  bumpChangeCount();
+  // update stats
+  document.getElementById('lb-builder-root').dataset.rendered='0';
+  renderLogbookBuilder();
+};
+window.lbbDeleteEntry=function(id){
+  if(!confirm('Delete this logbook entry? Cannot undo.')) return;
+  const entries=LS.get('dune_logbook_entries_v1',[]).filter(e=>e.id!==id);
+  LS.set('dune_logbook_entries_v1',entries);
+  document.getElementById('lb-builder-root').dataset.rendered='0';
+  renderLogbookBuilder();
+};
+window.lbbReuseEntry=function(id){
+  const e=LS.get('dune_logbook_entries_v1',[]).find(x=>x.id===id);
+  if(!e) return;
+  document.getElementById('lbb-aircraft').value=e.aircraft||'';
+  document.getElementById('lbb-reg').value=e.reg||'';
+  const ataEl=document.getElementById('lbb-ata');
+  if(ataEl){
+    const found=LB_ATA.find(a=>a.val===e.ata);
+    ataEl.value=found?e.ata:'other';
+    lbbAtaChange(ataEl);
+    if(!found){const ow=document.getElementById('lbb-ata-other');if(ow)ow.value=e.ataLabel||e.ata||'';}
+  }
+  document.getElementById('lbb-hours').value=e.hours||'';
+  document.getElementById('lbb-supervisor').value=e.supervisor||'';
+  document.getElementById('lbb-ref').value=e.ref||'';
+  document.getElementById('lbb-desc').value=e.desc||'';
+  window.scrollTo({top:document.getElementById('lb-builder-root').offsetTop-100,behavior:'smooth'});
+};
+window.lbbCopyEntry=async function(id){
+  const e=LS.get('dune_logbook_entries_v1',[]).find(x=>x.id===id);
+  if(!e) return;
+  const text=`${e.date} | ${e.aircraft}${e.reg?' | REG: '+e.reg:''}\nATA ${e.ata} — ${e.ataLabel}\nTask: ${e.desc}\nRef: ${e.ref||'—'} | Hours: ${e.hours} hrs | Supervised by: ${e.supervisor||'—'}`;
+  try{await navigator.clipboard.writeText(text);showBackupToast('✓ Entry copied to clipboard');}
+  catch(err){alert(text);}
+};
+function lbbRenderEntries(entries){
+  const container=document.getElementById('lbb-entries');
+  if(!container) return;
+  if(!entries.length){container.innerHTML='<div class="lb-empty">No entries yet. Add your first logbook entry above.</div>';return;}
+  container.innerHTML=entries.map(e=>`
+    <div class="lbb-entry">
+      <div class="lbb-entry-meta">
+        <span class="lbb-entry-date">${e.date}</span>
+        <span class="lbb-entry-aircraft">${e.aircraft}${e.reg?' · '+e.reg:''}</span>
+        <span class="iqa-tag" style="font-size:8px">ATA ${e.ata}</span>
+        <span class="lbb-entry-hrs">${e.hours} hrs</span>
+      </div>
+      <div class="lbb-entry-desc">${e.desc}</div>
+      ${e.supervisor?`<div class="lbb-entry-sup">Supervised by: ${e.supervisor}${e.ref?' · '+e.ref:''}</div>`:''}
+      <div class="lbb-entry-actions">
+        <button class="icl-small-btn" onclick="lbbCopyEntry('${e.id}')">📋 Copy</button>
+        <button class="icl-small-btn" onclick="lbbReuseEntry('${e.id}')">♻ Reuse</button>
+        <button class="icl-small-btn icl-del-btn" onclick="lbbDeleteEntry('${e.id}')">✕ Delete</button>
+      </div>
+    </div>`).join('');
+}
+window.lbbSearch=function(q){
+  const entries=LS.get('dune_logbook_entries_v1',[]);
+  const filtered=q.trim()?entries.filter(e=>[e.aircraft,e.reg,e.ata,e.desc,e.supervisor].join(' ').toLowerCase().includes(q.toLowerCase())):entries;
+  lbbRenderEntries(filtered);
+};
+window.lbbExportCSV=function(){
+  const entries=LS.get('dune_logbook_entries_v1',[]);
+  if(!entries.length){alert('No entries to export.');return;}
+  const BOM='﻿';
+  const header='Date,Aircraft Type,Registration,ATA Chapter,Task Description,Hours,Supervisor,Task Reference\n';
+  const rows=entries.map(e=>[e.date,e.aircraft,e.reg||'',e.ataLabel||e.ata,'"'+( e.desc||'').replace(/"/g,'""')+'"',e.hours,e.supervisor||'',e.ref||''].join(',')).join('\n');
+  const blob=new Blob([BOM+header+rows],{type:'text/csv;charset=utf-8'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');a.href=url;a.download='logbook-'+new Date().toISOString().slice(0,10)+'.csv';a.click();URL.revokeObjectURL(url);
+};
+
+/* ═══════════════════════════════════════════
+   FEATURE 4 — APARTMENT TRACKER
+   ═══════════════════════════════════════════ */
+function renderApartments(){
+  const root=document.getElementById('apartments-root');
+  if(!root) return;
+  const apts=LS.get('dune_apartments_v1',[]);
+  const filter=root.dataset.filter||'all';
+  const sort=root.dataset.sort||'rent_asc';
+  const winner=apts.find(a=>a.winner);
+
+  function commuteClass(m){return m<40?'apt-commute-green':m<=60?'apt-commute-amber':'apt-commute-red';}
+  function regBadge(r){return r==='yes'?'<span class="apt-reg apt-reg-yes">✓ Reg OK</span>':r==='no'?'<span class="apt-reg apt-reg-no">✗ No Reg</span>':'<span class="apt-reg apt-reg-uk">? Reg Unknown</span>';}
+  function statusPill(s){const map={viewing:'apt-s-viewing',applied:'apt-s-applied',rejected:'apt-s-rejected',signed:'apt-s-signed'};return `<span class="apt-status ${map[s]||''}">${s}</span>`;}
+
+  let filtered=apts.filter(a=>{
+    if(filter==='all'||filter===a.status) return true;
+    if(filter==='reg-yes') return a.registration==='yes';
+    if(filter==='reg-no') return a.registration==='no';
+    return false;
+  });
+  filtered=[...filtered].sort((a,b)=>{
+    if(sort==='rent_asc') return (a.rent||0)-(b.rent||0);
+    if(sort==='commute_asc') return (a.commute_min||0)-(b.commute_min||0);
+    return new Date(b.added||0)-new Date(a.added||0);
+  });
+
+  const counts={all:apts.length,viewing:0,applied:0,signed:0,rejected:0,'reg-yes':0,'reg-no':0};
+  apts.forEach(a=>{if(counts[a.status]!==undefined)counts[a.status]++;if(a.registration==='yes')counts['reg-yes']++;if(a.registration==='no')counts['reg-no']++;});
+
+  root.innerHTML=`
+  <div class="ctitle" style="margin-bottom:16px">🏠 Apartment Hunt — Moscow</div>
+  ${winner?`<div class="apt-winner-bar">⭐ Top choice: <strong>${winner.address}</strong> · ${winner.rent?winner.rent.toLocaleString()+' ₽':'?'} · ${winner.commute_min?winner.commute_min+' min':'?'} · ${regBadge(winner.registration)}</div>`:''}
+  <div class="apt-toolbar">
+    <div class="apt-filters">
+      ${['all','viewing','applied','signed','reg-yes','reg-no'].map(f=>`<button class="apt-filter-btn ${filter===f?'active':''}" onclick="aptFilter('${f}',this)">${f==='all'?'All':f==='reg-yes'?'✓ Reg OK':f==='reg-no'?'✗ No Reg':f.charAt(0).toUpperCase()+f.slice(1)} <span class="iqa-filter-count">${counts[f]||0}</span></button>`).join('')}
+    </div>
+    <select class="apt-sort-sel" onchange="aptSort(this.value)">
+      <option value="rent_asc" ${sort==='rent_asc'?'selected':''}>Cheapest first</option>
+      <option value="commute_asc" ${sort==='commute_asc'?'selected':''}>Shortest commute</option>
+      <option value="added_desc" ${sort==='added_desc'?'selected':''}>Newest added</option>
+    </select>
+  </div>
+  <button class="lb-btn lb-btn-add" onclick="aptOpenForm()" style="margin-bottom:16px">+ Add Apartment</button>
+  <div id="apt-form-wrap" hidden>
+    <div class="card apt-form">
+      <div class="ctitle">New Apartment</div>
+      <div class="lbb-form-grid">
+        <div class="lb-field" style="grid-column:1/-1"><label>Address</label><input id="apt-address" type="text" placeholder="Химки, ул. Панфилова 12, кв. 34"></div>
+        <div class="lb-field"><label>Area</label><select id="apt-area"><option value="lobnya">Лобня</option><option value="khimki">Химки</option><option value="mytishchi">Мытищи</option><option value="other">Other</option></select></div>
+        <div class="lb-field"><label>Rent (₽/month)</label><input id="apt-rent" type="number" placeholder="26000"></div>
+        <div class="lb-field"><label>Rooms</label><select id="apt-rooms"><option value="studio">Studio</option><option value="1">1-room</option><option value="2">2-room</option></select></div>
+        <div class="lb-field"><label>Commute to Шереметьево (min)</label><input id="apt-commute" type="number" placeholder="45"></div>
+        <div class="lb-field"><label>Migration Registration</label><select id="apt-reg"><option value="unknown">Unknown</option><option value="yes">YES — landlord agrees</option><option value="no">NO — refuses</option></select></div>
+        <div class="lb-field"><label>Status</label><select id="apt-status"><option value="viewing">Viewing</option><option value="applied">Applied</option><option value="signed">Signed</option><option value="rejected">Rejected</option></select></div>
+        <div class="lb-field" style="grid-column:1/-1"><label>Notes</label><textarea id="apt-notes" rows="2" placeholder="Landlord contact, flexibility on lease, anything important…"></textarea></div>
+      </div>
+      <div style="display:flex;gap:10px;margin-top:8px">
+        <button class="lb-btn lb-btn-add" onclick="aptSave()">Save</button>
+        <button class="lb-btn lb-btn-view" onclick="aptCloseForm()">Cancel</button>
+      </div>
+    </div>
+  </div>
+  <div class="apt-grid">${filtered.length?filtered.map(a=>{
+    const rentColor=a.rent>37000?'color:var(--red);font-weight:700':a.rent>28000?'color:var(--red)':'color:var(--tx)';
+    const rentWarn=a.rent>37000?' <span style="color:var(--red)">⚠ Savings collapse</span>':a.rent>28000?' <span style="color:var(--amber)">⚠ Over budget</span>':'';
+    const mapsUrl='https://www.google.com/maps/search/?api=1&query='+encodeURIComponent(a.address+' Moscow');
+    return `<div class="apt-card ${a.winner?'apt-card-winner':''} ${a.registration==='no'?'apt-card-noreg':''}">
+      <div class="apt-card-head">
+        ${statusPill(a.status)}
+        <button class="apt-star ${a.winner?'apt-star-on':''}" onclick="aptToggleWinner('${a.id}')" title="Mark as top choice">⭐</button>
+      </div>
+      <div class="apt-address">${a.address}</div>
+      <div class="apt-meta">
+        <span class="apt-area-tag">${a.area}</span>
+        <span class="apt-rooms">${a.rooms}-room</span>
+      </div>
+      <div class="apt-numbers">
+        <span class="apt-rent" style="${rentColor}">${a.rent?a.rent.toLocaleString()+' ₽':'-'}${rentWarn}</span>
+        <span class="apt-commute ${commuteClass(a.commute_min||99)}">${a.commute_min?a.commute_min+' min':'? min'} to SVO</span>
+      </div>
+      ${regBadge(a.registration)}
+      ${a.notes?`<div class="apt-notes">${a.notes}</div>`:''}
+      <div class="apt-actions">
+        <a href="${mapsUrl}" target="_blank" class="icl-small-btn">🗺 Maps</a>
+        <button class="icl-small-btn icl-del-btn" onclick="aptDelete('${a.id}')">✕ Delete</button>
+      </div>
+    </div>`;
+  }).join(''):'<div class="lb-empty">No apartments yet. Add your first listing above.</div>'}</div>`;
+}
+
+window.aptFilter=function(f,btn){
+  const root=document.getElementById('apartments-root');
+  if(root){root.dataset.filter=f;renderApartments();}
+};
+window.aptSort=function(s){
+  const root=document.getElementById('apartments-root');
+  if(root){root.dataset.sort=s;renderApartments();}
+};
+window.aptOpenForm=function(){const w=document.getElementById('apt-form-wrap');if(w)w.hidden=false;};
+window.aptCloseForm=function(){const w=document.getElementById('apt-form-wrap');if(w)w.hidden=true;};
+window.aptSave=function(){
+  const address=document.getElementById('apt-address')?.value.trim();
+  if(!address){alert('Address is required');return;}
+  const apts=LS.get('dune_apartments_v1',[]);
+  apts.push({
+    id:'apt_'+Date.now(),
+    address,
+    area:document.getElementById('apt-area')?.value||'other',
+    rent:parseFloat(document.getElementById('apt-rent')?.value)||0,
+    rooms:document.getElementById('apt-rooms')?.value||'1',
+    commute_min:parseInt(document.getElementById('apt-commute')?.value)||0,
+    registration:document.getElementById('apt-reg')?.value||'unknown',
+    status:document.getElementById('apt-status')?.value||'viewing',
+    winner:false,
+    notes:document.getElementById('apt-notes')?.value.trim()||'',
+    added:new Date().toISOString().slice(0,10)
+  });
+  LS.set('dune_apartments_v1',apts);
+  bumpChangeCount();
+  aptCloseForm();
+  renderApartments();
+};
+window.aptDelete=function(id){
+  if(!confirm('Delete this apartment listing?')) return;
+  const apts=LS.get('dune_apartments_v1',[]).filter(a=>a.id!==id);
+  LS.set('dune_apartments_v1',apts);
+  renderApartments();
+};
+window.aptToggleWinner=function(id){
+  const apts=LS.get('dune_apartments_v1',[]).map(a=>({...a,winner:a.id===id?!a.winner:false}));
+  LS.set('dune_apartments_v1',apts);
+  renderApartments();
+};
 
 /* ═══════════════════════════════════════════
    INTERVIEW Q&A MASTER
