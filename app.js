@@ -1619,6 +1619,7 @@ window.dismissBackupReminder=function(){
 window.openBackupPanel=function(){
   const panel=document.getElementById('backup-panel');
   if(panel) panel.style.display='flex';
+  updateGistUI();
 };
 window.closeBackupPanel=function(){
   const panel=document.getElementById('backup-panel');
@@ -1697,6 +1698,143 @@ function showBackupToast(msg){
   t.textContent=msg;t.classList.add('show');
   setTimeout(()=>t.classList.remove('show'),3000);
 }
+
+/* ── GITHUB GIST SYNC ── */
+function updateGistUI(){
+  const sec=document.getElementById('gist-token-section');
+  const btns=document.getElementById('gist-action-btns');
+  if(!sec) return;
+  const token=LS.get('dune_github_token_v1','');
+  const gistId=LS.get('dune_gist_id_v1','');
+  const lastSync=LS.get('dune_last_gist_sync_v1','');
+
+  if(token){
+    sec.innerHTML=`<div class="gist-token-saved">
+      <span>🔑 Token saved</span>
+      <button class="icl-small-btn icl-del-btn" onclick="clearGistToken()">✕ Remove</button>
+    </div>
+    ${gistId?`<div class="gist-id-display">Gist ID: <code>${gistId.slice(0,12)}…</code></div>`:''}
+    ${lastSync?`<div class="gist-sync-time">Last synced: ${new Date(lastSync).toLocaleString()}</div>`:''}`;
+    if(btns) btns.style.display='flex';
+  } else {
+    sec.innerHTML=`<div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+      <input id="gist-token-input" type="password" class="gist-token-input" placeholder="Paste GitHub token here…">
+      <button class="icl-small-btn" onclick="saveGistToken()">Save</button>
+    </div>`;
+    if(btns) btns.style.display='none';
+  }
+}
+
+window.saveGistToken=function(){
+  const el=document.getElementById('gist-token-input');
+  if(!el||!el.value.trim()){showBackupToast('⚠ Paste your token first');return;}
+  LS.set('dune_github_token_v1',el.value.trim());
+  updateGistUI();
+  showBackupToast('✓ Token saved');
+};
+window.clearGistToken=function(){
+  if(!confirm('Remove saved GitHub token?')) return;
+  localStorage.removeItem('dune_github_token_v1');
+  updateGistUI();
+  showBackupToast('Token removed');
+};
+
+window.saveToGist=async function(){
+  const token=LS.get('dune_github_token_v1','');
+  if(!token){showBackupToast('⚠ No token saved');return;}
+  const status=document.getElementById('gist-status');
+  if(status) status.textContent='Saving…';
+  try{
+    const data=getAllBackupData();
+    const backup={version:'2026.1',exported_at:new Date().toISOString(),data};
+    const content=JSON.stringify(backup,null,2);
+    const gistId=LS.get('dune_gist_id_v1','');
+    const url=gistId?`https://api.github.com/gists/${gistId}`:'https://api.github.com/gists';
+    const method=gistId?'PATCH':'POST';
+    const res=await fetch(url,{
+      method,
+      headers:{'Authorization':'Bearer '+token,'Accept':'application/vnd.github+json','Content-Type':'application/json'},
+      body:JSON.stringify({description:'Dune Life OS — Auto Backup',public:false,files:{'dune-backup.json':{content}}})
+    });
+    if(!res.ok){
+      const err=await res.json().catch(()=>({}));
+      const msg=res.status===401?'Invalid token — check it has gist scope':res.status===404?'Gist not found — will create a new one':(err.message||'HTTP '+res.status);
+      if(res.status===404){LS.set('dune_gist_id_v1','');return window.saveToGist();}
+      if(status) status.textContent='⚠ '+msg;
+      showBackupToast('⚠ '+msg);return;
+    }
+    const gist=await res.json();
+    LS.set('dune_gist_id_v1',gist.id);
+    LS.set('dune_last_backup_v1',new Date().toISOString());
+    LS.set('dune_last_gist_sync_v1',new Date().toISOString());
+    localStorage.setItem('dune_change_count_v1','0');
+    updateBackupPill();
+    updateGistUI();
+    if(status) status.textContent='';
+    showBackupToast('✓ Saved to GitHub Gist');
+  }catch(e){
+    const msg=e.message||'Network error';
+    if(status) status.textContent='⚠ '+msg;
+    showBackupToast('⚠ '+msg);
+  }
+};
+
+window.loadFromGist=async function(){
+  const token=LS.get('dune_github_token_v1','');
+  if(!token){showBackupToast('⚠ No token saved');return;}
+  const status=document.getElementById('gist-status');
+  if(status) status.textContent='Loading…';
+  try{
+    let gistId=LS.get('dune_gist_id_v1','');
+    if(!gistId){
+      // try to discover by description
+      const listRes=await fetch('https://api.github.com/gists?per_page=100',{
+        headers:{'Authorization':'Bearer '+token,'Accept':'application/vnd.github+json'}
+      });
+      if(!listRes.ok){if(status)status.textContent='⚠ Cannot list Gists: '+listRes.status;return;}
+      const gists=await listRes.json();
+      const found=gists.find(g=>g.description==='Dune Life OS — Auto Backup');
+      if(found){gistId=found.id;LS.set('dune_gist_id_v1',gistId);}
+      else{
+        if(status) status.textContent='';
+        const manual=document.getElementById('gist-load-manual');
+        if(manual) manual.style.display='block';
+        showBackupToast('No backup Gist found — enter Gist ID manually');
+        return;
+      }
+    }
+    await loadFromGistId(gistId);
+  }catch(e){
+    if(status) status.textContent='⚠ '+(e.message||'Network error');
+    showBackupToast('⚠ '+(e.message||'Network error'));
+  }
+};
+
+window.loadFromGistId=async function(gistId){
+  const token=LS.get('dune_github_token_v1','');
+  const status=document.getElementById('gist-status');
+  if(!gistId){showBackupToast('⚠ Enter a Gist ID');return;}
+  if(!token){showBackupToast('⚠ No token saved');return;}
+  if(status) status.textContent='Loading…';
+  try{
+    const res=await fetch('https://api.github.com/gists/'+gistId.trim(),{
+      headers:{'Authorization':'Bearer '+token,'Accept':'application/vnd.github+json'}
+    });
+    if(!res.ok){if(status)status.textContent='⚠ Gist not found: '+res.status;showBackupToast('⚠ Gist not found');return;}
+    const gist=await res.json();
+    const content=gist.files['dune-backup.json']?.content;
+    if(!content){showBackupToast('⚠ dune-backup.json not found in this Gist');return;}
+    LS.set('dune_gist_id_v1',gistId.trim());
+    updateGistUI();
+    if(status) status.textContent='';
+    const manual=document.getElementById('gist-load-manual');
+    if(manual) manual.style.display='none';
+    processImport(content);
+  }catch(e){
+    if(status) status.textContent='⚠ '+(e.message||'Network error');
+    showBackupToast('⚠ '+(e.message||'Network error'));
+  }
+};
 
 /* ═══════════════════════════════════════════
    FEATURE 3 — LOGBOOK ENTRY BUILDER

@@ -1419,6 +1419,28 @@
         <input id="backup-file-input" type="file" accept=".json" style="display:none" onchange="handleImportFile(this)">
         <p class="backup-hint">⚠ Importing overwrites current data. Your current data is automatically saved as a pre-restore backup first.</p>
       </div>
+
+      <div class="backup-divider"></div>
+
+      <div class="backup-section">
+        <div class="backup-section-title">☁ GitHub Gist Sync</div>
+        <div id="gist-token-section">
+          <!-- filled by updateGistUI() -->
+        </div>
+        <div id="gist-status" class="gist-status"></div>
+        <div class="backup-btns" id="gist-action-btns" style="display:none">
+          <button class="lb-btn lb-btn-add" onclick="saveToGist()">☁ Save to Gist</button>
+          <button class="lb-btn lb-btn-view" onclick="loadFromGist()">☁ Load from Gist</button>
+        </div>
+        <div id="gist-load-manual" style="display:none;margin-top:10px">
+          <div class="backup-hint" style="margin-bottom:8px">No Gist found automatically. Enter the Gist ID from your other device:</div>
+          <div style="display:flex;gap:8px">
+            <input id="gist-id-manual" type="text" class="gist-token-input" placeholder="e.g. a1b2c3d4e5f6…" style="font-family:var(--mono);font-size:11px">
+            <button class="icl-small-btn" onclick="loadFromGistId(document.getElementById('gist-id-manual').value)">Load</button>
+          </div>
+        </div>
+        <p class="backup-hint" style="margin-top:10px">One-time setup: go to <strong>github.com/settings/tokens</strong> → Generate new token (classic) → tick only <strong>gist</strong> scope → copy and paste below. Token is saved locally in your browser.</p>
+      </div>
     </div>
   </div>
 </div>
