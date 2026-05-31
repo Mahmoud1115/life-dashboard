@@ -203,7 +203,15 @@
 
 <!-- INTERVIEWS -->
 <section class="sec" id="interviews">
-<div class="sec-hd"><div class="sec-num">02 — Interviews</div><h2 class="sec-title">June 2nd & 4th —<br><em>Your Complete Questions</em></h2><p class="sec-intro">Every question. Right order. Ask naturally in conversation. The answers determine which path you take for the next 10 years.</p></div>
+<div class="sec-hd"><div class="sec-num">02 — Interviews</div><h2 class="sec-title">June 2nd & 4th —<br><em>Interview Command Centre</em></h2><p class="sec-intro">Two tabs. Questions you ask them — and everything they will ask you, with full scripted answers and your personal notes.</p></div>
+
+<div class="fin-tabs" style="margin-bottom:28px">
+  <button class="fin-tab int-tab-btn active" onclick="showIntTab('myq',this)">🎯 Мои вопросы</button>
+  <button class="fin-tab int-tab-btn" onclick="showIntTab('theyask',this)">💬 Они спрашивают меня</button>
+</div>
+
+<!-- TAB 1 — existing content, untouched -->
+<div id="int-tab-myq">
 
 <div class="card"><div class="ctitle">Interview 1 — Аэрофлот Техникс — June 2, 15:30 — Building 6 Room 108</div>
 <div class="int-crit"><div class="int-text">Скажите, на каком самолёте я буду учиться и работать — A320, Boeing, или Superjet?</div><span class="int-note">⚠ Superjet only = finish politely, do NOT commit under any circumstances</span></div>
@@ -282,6 +290,14 @@
 <tr><td class="th">SSJ risk</td><td class="tb">Real — ask</td><td class="ta">Zero</td></tr>
 <tr><td class="th">Passport title</td><td>Ask June 2</td><td>Ask June 4</td></tr>
 </tbody></table></div>
+
+</div><!-- end int-tab-myq -->
+
+<!-- TAB 2 — Q&A Master -->
+<div id="int-tab-theyask" hidden>
+  <div id="interview-qa-root"></div>
+</div>
+
 </section>
 
 <!-- CAREER A vs B -->

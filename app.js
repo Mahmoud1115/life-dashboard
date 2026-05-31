@@ -1447,3 +1447,97 @@ document.addEventListener('DOMContentLoaded',()=>{
   if(sub&&NAV_GROUPS[lastGroup]){sub.dataset.group=lastGroup;}
   show(last||'home');
 });
+
+/* ═══════════════════════════════════════════
+   INTERVIEW Q&A MASTER
+   ═══════════════════════════════════════════ */
+window.showIntTab=function(tab,btn){
+  document.querySelectorAll('.int-tab-btn').forEach(b=>b.classList.remove('active'));
+  if(btn) btn.classList.add('active');
+  const myQ=document.getElementById('int-tab-myq');
+  const theyAsk=document.getElementById('int-tab-theyask');
+  if(myQ) myQ.hidden=(tab!=='myq');
+  if(theyAsk) theyAsk.hidden=(tab!=='theyask');
+  if(tab==='theyask') renderInterviewQA();
+};
+
+function renderInterviewQA(){
+  const root=document.getElementById('interview-qa-root');
+  if(!root||root.dataset.rendered==='1') return;
+  root.dataset.rendered='1';
+
+  const savedNotes=LS.get('dune_interview_qa_notes_v1',{});
+  const ORDER=['p0','p1','p3','p2','p5','p4','p7','p6'];
+  const partMap={};
+  (D.interview_parts||[]).forEach(p=>{ partMap[p.id]=p; });
+
+  const diffBadge={low:'🟢 Low',med:'🟡 Med',high:'🔴 High'};
+  const compBadge={both:'Both','aeroflot':'Аэрофлот','aerotrust':'АэроТраст'};
+
+  let html='';
+  ORDER.forEach(pid=>{
+    const part=partMap[pid];
+    if(!part) return;
+    const qs=(D.interview_qa||[]).filter(q=>q.part===pid);
+    if(!qs.length) return;
+
+    html+=`<div class="iqa-part-header">
+      <span class="iqa-part-tag">${part.tag}</span>
+      <span class="iqa-part-title">${part.title}</span>
+      <span class="iqa-part-sub">${part.title_en}</span>
+    </div>`;
+
+    qs.forEach(q=>{
+      const isCrit=(q.tag==='CRITICAL');
+      const note=savedNotes[q.id]||'';
+      html+=`<div class="iqa-card${isCrit?' iqa-critical':''}">
+        <div class="iqa-meta">
+          <span class="iqa-tag">${q.tag||''}</span>
+          <span class="iqa-diff">${diffBadge[q.difficulty]||''}</span>
+          <span class="iqa-comp">${compBadge[q.company]||''}</span>
+        </div>
+        <div class="iqa-q-ru">${q.q_ru}</div>
+        <div class="iqa-q-en">${q.q_en}</div>
+        <div class="iqa-answer-wrap" id="ans-wrap-${q.id}">
+          <div class="iqa-answer-ru">${(q.answer_ru||'').replace(/\n/g,'<br>')}</div>
+          ${q.answer_en?`<div class="iqa-answer-en"><span class="iqa-en-label">EN KEYWORDS</span>${q.answer_en}</div>`:''}
+        </div>
+        <button class="iqa-toggle" onclick="iqaToggle('${q.id}',this)">▲ Hide answer</button>
+        <div class="iqa-note-wrap">
+          <div class="iqa-note-label">Мои заметки / My notes</div>
+          <textarea class="sb-note iqa-note" data-qid="${q.id}" placeholder="Пиши здесь после прочтения…">${note}</textarea>
+          <div class="iqa-saved" id="iqa-saved-${q.id}">✓ сохранено</div>
+        </div>
+      </div>`;
+    });
+  });
+  root.innerHTML=html;
+
+  // note saving
+  root.querySelectorAll('.iqa-note').forEach(ta=>{
+    let t;
+    ta.addEventListener('input',()=>{
+      clearTimeout(t);
+      const ind=document.getElementById('iqa-saved-'+ta.dataset.qid);
+      if(ind) ind.style.opacity='0';
+      t=setTimeout(()=>{
+        try{
+          const notes=LS.get('dune_interview_qa_notes_v1',{});
+          notes[ta.dataset.qid]=ta.value;
+          LS.set('dune_interview_qa_notes_v1',notes);
+          if(ind){ind.style.opacity='1';setTimeout(()=>ind.style.opacity='0',1200);}
+        }catch(e){
+          if(e.name==='QuotaExceededError'&&ind){ind.textContent='⚠ storage full';ind.style.opacity='1';}
+        }
+      },800);
+    });
+  });
+}
+
+window.iqaToggle=function(id,btn){
+  const wrap=document.getElementById('ans-wrap-'+id);
+  if(!wrap) return;
+  const hidden=wrap.style.display==='none';
+  wrap.style.display=hidden?'block':'none';
+  btn.textContent=hidden?'▲ Hide answer':'▼ Show answer';
+};
