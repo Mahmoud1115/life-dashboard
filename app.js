@@ -1446,6 +1446,9 @@ document.addEventListener('DOMContentLoaded',()=>{
   const sub=document.getElementById('nav-sub');
   if(sub&&NAV_GROUPS[lastGroup]){sub.dataset.group=lastGroup;}
   show(last||'home');
+  // restore interview tab state
+  const savedIntTab=LS.get('dune_int_tab_v1','myq');
+  if(savedIntTab!=='myq') showIntTab(savedIntTab,null);
 });
 
 /* ═══════════════════════════════════════════
@@ -1453,12 +1456,14 @@ document.addEventListener('DOMContentLoaded',()=>{
    ═══════════════════════════════════════════ */
 window.showIntTab=function(tab,btn){
   document.querySelectorAll('.int-tab-btn').forEach(b=>b.classList.remove('active'));
-  if(btn) btn.classList.add('active');
+  const activeBtn=btn||Array.from(document.querySelectorAll('.int-tab-btn')).find(b=>(b.getAttribute('onclick')||'').includes("'"+tab+"'"));
+  if(activeBtn) activeBtn.classList.add('active');
   const myQ=document.getElementById('int-tab-myq');
   const theyAsk=document.getElementById('int-tab-theyask');
   if(myQ) myQ.hidden=(tab!=='myq');
   if(theyAsk) theyAsk.hidden=(tab!=='theyask');
   if(tab==='theyask') renderInterviewQA();
+  LS.set('dune_int_tab_v1',tab);
 };
 
 function renderInterviewQA(){
