@@ -1088,12 +1088,30 @@ function renderATACoverage(entries){
       if(val!==undefined) el.value=val;
     });
   }
+  let finIndTimer;
+  function flashSavedInd(){
+    const ind=document.getElementById('fin-saved-ind');
+    if(!ind) return;
+    ind.style.opacity='1';
+    clearTimeout(finIndTimer);
+    finIndTimer=setTimeout(()=>{ind.style.opacity='0';},1600);
+  }
   window.finInputChange=function(phase,field,val){
     const v=getInputs();
     if(!v[phase]) v[phase]={};
     v[phase][field]=parseFloat(val)||0;
     saveInputs(v);
     renderOutputs();
+    flashSavedInd();
+    if(typeof bumpChangeCount==='function') bumpChangeCount();
+  };
+  window.saveFinanceNow=function(){
+    // values are already persisted on every keystroke — this re-writes and confirms
+    saveInputs(getInputs());
+    renderOutputs();
+    flashSavedInd();
+    if(typeof showBackupToast==='function') showBackupToast('✓ Numbers saved on this device — use ☁ Gist sync to share across devices');
+    if(typeof renderHome==='function') try{renderHome();}catch(e){}
   };
   window.setFinScenario=function(s,btn){
     document.querySelectorAll('.fin-scenario').forEach(b=>b.classList.remove('active'));

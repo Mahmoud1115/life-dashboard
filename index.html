@@ -554,7 +554,13 @@
       <div class="fin-field"><label>MAI Fees (₽/month)</label><input id="fin-r-mai" type="number" oninput="finInputChange('russia','mai',this.value)" /></div>
       <div class="fin-field"><label>USD Rate (₽)</label><input id="fin-r-usd_rate" type="number" oninput="finInputChange('russia','usd_rate',this.value)" /></div>
     </div>
-    <div class="fin-outputs"><div id="fin-russia-out"></div></div>
+    <div class="fin-outputs"><div id="fin-russia-out"></div>
+      <div style="display:flex;align-items:center;gap:12px;margin-top:14px">
+        <button class="lb-btn lb-btn-add" onclick="saveFinanceNow()">💾 Save Numbers</button>
+        <span id="fin-saved-ind" style="font-family:var(--mono);font-size:10px;color:var(--green);opacity:0;transition:opacity .3s">✓ saved on this device</span>
+      </div>
+      <p style="font-family:var(--mono);font-size:9.5px;color:var(--tx3);margin-top:10px;line-height:1.6">Numbers auto-save in this browser as you type. To see them on your phone too: 📦 Backup → ☁ Save to Gist here, then ☁ Load from Gist on the phone.</p>
+    </div>
   </div>
 </div>
 </section>
