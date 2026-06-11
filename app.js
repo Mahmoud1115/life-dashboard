@@ -24,7 +24,7 @@ window.addEventListener('scroll',()=>{
    ═══════════════════════════════════════════ */
 const NAV_GROUPS={
   home:     {primary:'home',      subs:[]},
-  plan:     {primary:'moscow',    subs:[]},
+  plan:     {primary:'moscow',    subs:[{id:'aboutyou',label:'About You'}]},
   career:   {primary:'easa',      subs:[{id:'logbook',label:'Logbook'}]},
   documents:{primary:'passport',  subs:[{id:'claims',label:'Claims'},{id:'deadlines',label:'Deadlines'}]},
   money:    {primary:'finance',   subs:[{id:'progress',label:'Goals'}]},
@@ -386,6 +386,7 @@ function show(id,e){
    ═══════════════════════════════════════════ */
 const SEC_LABELS={
   moscow:'🧭 Plan — Moscow Build Mode',
+  aboutyou:'🧭 Plan — About You',
   passport:'🛂 Documents',
   todo:'✅ Mission Control',
   progress:'✅ Goals',
@@ -398,6 +399,7 @@ const SEC_LABELS={
 };
 
 const GROUP_PILLS={
+  moscow:[{id:'aboutyou',label:'About You'}],
   easa:[{id:'logbook',label:'Logbook'}],
   passport:[{id:'claims',label:'Claims'},{id:'deadlines',label:'Deadlines'}],
   finance:[{id:'progress',label:'Goals'}],
