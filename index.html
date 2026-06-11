@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Dune — Moscow Build Mode 2026</title>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,300;1,400&family=DM+Mono:wght@300;400;500&family=Outfit:wght@300;400;500;600&family=Plus+Jakarta+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="styles.css?v=phase1">
 </head>
 <body>
 <div id="prog"></div>
@@ -31,8 +31,11 @@
       <button class="nmb active" data-group="home" onclick="showGroup('home')">
         <span class="nmb-emoji">📅</span><span class="nmb-label">Today</span>
       </button>
-      <button class="nmb" data-group="plan" onclick="showGroup('plan')">
-        <span class="nmb-emoji">🧭</span><span class="nmb-label">Plan</span>
+      <button class="nmb" data-group="money" onclick="showGroup('money')">
+        <span class="nmb-emoji">💰</span><span class="nmb-label">Money</span>
+      </button>
+      <button class="nmb" data-group="goals" onclick="showGroup('goals')">
+        <span class="nmb-emoji">🎯</span><span class="nmb-label">Goals</span>
       </button>
       <button class="nmb" data-group="career" onclick="showGroup('career')">
         <span class="nmb-emoji">✈️</span><span class="nmb-label">Career</span>
@@ -40,17 +43,11 @@
       <button class="nmb" data-group="documents" onclick="showGroup('documents')">
         <span class="nmb-emoji">🛂</span><span class="nmb-label">Documents</span>
       </button>
-      <button class="nmb" data-group="money" onclick="showGroup('money')">
-        <span class="nmb-emoji">💰</span><span class="nmb-label">Money</span>
+      <button class="nmb" data-group="about" onclick="showGroup('about')">
+        <span class="nmb-emoji">🧭</span><span class="nmb-label">About</span>
       </button>
-      <button class="nmb" data-group="risks" onclick="showGroup('risks')">
-        <span class="nmb-emoji">⚠️</span><span class="nmb-label">Risks</span>
-      </button>
-      <button class="nmb" data-group="mission" onclick="showGroup('mission')">
-        <span class="nmb-emoji">✅</span><span class="nmb-label">Mission</span>
-      </button>
-      <button class="nmb nmb-util" onclick="toggleSearch()">
-        <span class="nmb-emoji">⌕</span><span class="nmb-label">Search</span>
+      <button class="nmb" data-group="review" onclick="showGroup('review')">
+        <span class="nmb-emoji">📓</span><span class="nmb-label">Review</span>
       </button>
       <button class="nmb nmb-util" id="privacy-btn" onclick="togglePrivacy()">
         <span class="nmb-emoji">👁</span><span class="nmb-label">Private</span>
@@ -71,18 +68,12 @@
   <div id="phb" style="display:flex;gap:6px;flex-wrap:wrap"></div>
 </div>
 
-<!-- Search Bar -->
-<div id="search-wrap" class="search-bar" role="search" aria-label="Search dashboard" style="flex-wrap:wrap">
-  <input id="search-input" type="text" placeholder="Search sections, topics, decisions…" oninput="doSearch(event)" style="flex:1;min-width:200px">
-  <button onclick="toggleSearch()" style="background:none;border:1px solid var(--bdr);border-radius:2px;padding:6px 12px;font-family:var(--mono);font-size:10px;color:var(--tx3);cursor:pointer">✕ Close</button>
-  <div id="search-results" class="search-results" style="width:100%;padding:8px 0 0"></div>
-</div>
-
 <main class="main">
 
-<!-- HOME — MISSION CONTROL -->
+<!-- TODAY — COMMAND CENTER -->
 <section class="sec" id="home">
-<div class="sec-hd"><div class="sec-num">📅 Today</div><h2 class="sec-title">Mission Control —<br><em>Your Life OS</em></h2></div>
+<div class="sec-hd"><div class="sec-num">📅 Today</div><h2 class="sec-title">Today —<br><em>Command Center</em></h2><p class="sec-intro">What matters right now. Everything on this page reads from one source — change a number in Money, and every card here updates instantly.</p></div>
+
 <div class="home-phase">
   <div>
     <div class="home-phase-label">Current Phase</div>
@@ -96,8 +87,19 @@
   </div>
 </div>
 
-<!-- Metric Cards -->
+<!-- Reactive metric cards -->
 <div id="home-metrics" class="home-metrics"></div>
+
+<!-- Daily Focus -->
+<div class="card today-focus-card">
+  <div class="ctitle">Daily Focus — Your Top 3 Today</div>
+  <p style="font-size:12px;color:var(--tx3);margin:-4px 0 14px">If you only do these three things today, today was a win. Editable. Auto-saves.</p>
+  <div class="focus-list">
+    <div class="focus-row"><span class="focus-num">1</span><input class="focus-input" data-focus-idx="0" placeholder="Most important thing today…"></div>
+    <div class="focus-row"><span class="focus-num">2</span><input class="focus-input" data-focus-idx="1" placeholder="Second priority…"></div>
+    <div class="focus-row"><span class="focus-num">3</span><input class="focus-input" data-focus-idx="2" placeholder="Third priority…"></div>
+  </div>
+</div>
 
 <!-- Calendar + Upcoming -->
 <div class="home-cal-row">
@@ -121,70 +123,168 @@
   </div>
 </div>
 
-<div class="home-bottom-grid">
-  <div class="home-savings">
-    <div class="home-section-title">Savings Goals</div>
-    <div class="home-savings-row">
-      <div class="home-savings-label">55k Monthly Habit</div>
-      <div class="home-savings-track"><div class="home-savings-fill" id="home-savings-fill-go10"></div></div>
-      <div class="home-savings-pct" id="home-savings-go10">0%</div>
-    </div>
-    <div class="home-savings-row">
-      <div class="home-savings-label">Emergency Fund</div>
-      <div class="home-savings-track"><div class="home-savings-fill" id="home-savings-fill-go11"></div></div>
-      <div class="home-savings-pct" id="home-savings-go11">0%</div>
-    </div>
-    <div class="home-savings-row">
-      <div class="home-savings-label">Settlement Fund</div>
-      <div class="home-savings-track"><div class="home-savings-fill" id="home-savings-fill-go12"></div></div>
-      <div class="home-savings-pct" id="home-savings-go12">0%</div>
-    </div>
-    <div class="home-savings-row">
-      <div class="home-savings-label">EASA / Certificates Fund</div>
-      <div class="home-savings-track"><div class="home-savings-fill" id="home-savings-fill-go13"></div></div>
-      <div class="home-savings-pct" id="home-savings-go13">0%</div>
-    </div>
-  </div>
-  <div class="home-risks">
-    <div class="home-section-title">Top Risks</div>
-    <div id="home-risk-list"></div>
+<!-- Active Goals Strip -->
+<div class="card">
+  <div class="ctitle">Active Goals — At A Glance</div>
+  <div id="today-goals-strip" class="today-goals-strip"></div>
+</div>
+
+<!-- Quick Actions -->
+<div class="card">
+  <div class="ctitle">Quick Actions</div>
+  <div class="quick-actions">
+    <button class="qa-btn" onclick="show('logbook',event)">+ Logbook Entry</button>
+    <button class="qa-btn" onclick="show('qatar',event)">💰 Add to Qatar Fund</button>
+    <button class="qa-btn" onclick="show('review',event)">📓 Weekly Review</button>
+    <button class="qa-btn" onclick="show('deadlines',event)">⏱ Add Deadline</button>
   </div>
 </div>
 </section>
 
-<!-- THE PLAN — MOSCOW BUILD MODE -->
-<section class="sec" id="moscow">
-<div class="sec-hd"><div class="sec-num">🧭 Plan</div><h2 class="sec-title">Moscow Build Mode —<br><em>The Whole Plan On One Page</em></h2><p class="sec-intro">The old 10-year roadmap is gone. This is the new deal: one job, one savings number, one study pipeline. Simple enough to execute every single week without thinking about it.</p></div>
+<!-- QATAR VISIT GOAL — first-class financial goal -->
+<section class="sec" id="qatar">
+<div class="sec-hd"><div class="sec-num">🎯 Goals — Visit Mom in Qatar</div><h2 class="sec-title">Visit Mom in Qatar —<br><em>Save Until You Can Hold Her Again</em></h2><p class="sec-intro">The Qatar trip is its own first-class goal. Every number here is connected to your Money tab — if salary or expenses change, this forecast updates automatically.</p></div>
 
-<div class="card"><div class="ctitle">The Mission — Three Pillars</div>
-<p><strong>1. Master the engine.</strong> АэроТраст, Sheremetyevo — CFM56-5B overhaul from disassembly to test. <span data-private-val="130,000 ₽ net per month" data-mask="[•••]">130,000 ₽ net per month</span>. Show up as the most prepared technician in the shop. Volunteer for borescope, defectation, assembly. Every task goes into the English logbook the same day.</p>
-<p><strong>2. Save 55,000 ₽ every month — no exceptions.</strong> That is 42% of net income, 660,000 ₽ per year. Auto-transfer on payday, before anything else touches the account. Live well on the remaining 75k — that's still a comfortable Moscow life if rent stays ≤28k.</p>
-<p><strong>3. Build yourself.</strong> EASA Part-66 modules on off days (2 modules per 4 months, M15 first). Every certificate АэроТраст offers — type courses, Human Factors, Fuel Tank Safety, EWIS. ФАВТ Category A after one year. MAI Master's in September. The savings exist to fund the certificates, not the other way around.</p></div>
+<div class="card"><div class="ctitle">Trip Plan</div>
+<div class="qatar-grid">
+  <div class="lb-field"><label>From airport</label><input id="q-from" data-q-field="from_airport" type="text" placeholder="SVO"></div>
+  <div class="lb-field"><label>To airport</label><input id="q-to" data-q-field="to_airport" type="text" placeholder="DOH"></div>
+  <div class="lb-field"><label>Expected travel month</label><input id="q-month" data-q-field="travel_month" type="month"></div>
+</div>
+</div>
 
-<div class="card"><div class="ctitle">The Money System — Where Every Ruble Goes</div>
-<p><strong>Payday split:</strong> 55,000 ₽ → savings, immediately. ~75,000 ₽ → life (rent ≤28k, food ~16k, transport ~5k, utilities + phone ~5k, everything else ~20k buffer).</p>
-<p><strong>Savings buckets, in order:</strong> ① Emergency fund — 3 months expenses (~225k ₽) by end of 2026. ② Egyptian settlement fund — $7,000+ ready the day the program opens. ③ EASA exam &amp; certificates fund — €3,000–5,000. ④ Free capital after that.</p>
-<p><strong>Storage:</strong> 60% USDT, 30% physical USD / bank, 10% RUB buffer. Track totals in USD, not rubles. Never one platform.</p></div>
+<div class="card"><div class="ctitle">Budget Breakdown (₽)</div>
+<div class="qatar-grid">
+  <div class="lb-field"><label>Flights (round trip)</label><input id="q-flights" data-q-field="flights" type="number"></div>
+  <div class="lb-field"><label>Hotel / stay</label><input id="q-hotel" data-q-field="hotel" type="number"></div>
+  <div class="lb-field"><label>Food</label><input id="q-food" data-q-field="food" type="number"></div>
+  <div class="lb-field"><label>Local transport</label><input id="q-transport" data-q-field="transport" type="number"></div>
+  <div class="lb-field"><label>Misc</label><input id="q-misc" data-q-field="misc" type="number"></div>
+  <div class="lb-field"><label>Emergency reserve</label><input id="q-emergency" data-q-field="emergency" type="number"></div>
+</div>
+<p style="font-family:var(--mono);font-size:10px;color:var(--tx3);margin-top:14px">All numbers are estimates you can refine as the trip approaches. Hotel can be ₽0 if you're staying with mom.</p>
+</div>
 
-<div class="card"><div class="ctitle">The Study Pipeline — EASA &amp; Certificates</div>
-<p><strong>Module order:</strong> M15 (Gas Turbines — you live this daily now) → M9 (Human Factors) → M10 (Aviation Legislation) → M7 (Maintenance Practices) → M11A → the rest. Two modules per four months. Fixed study blocks on off days — don't negotiate with yourself each week.</p>
-<p><strong>At work:</strong> ask the training department what's available — every internal course and stamp compounds. <strong>MAI Master's</strong> runs in parallel: real qualification + passport shield.</p></div>
+<div class="card qatar-status-card"><div class="ctitle">Status — Live</div>
+<div class="qatar-status-grid">
+  <div class="qatar-stat"><div class="qs-label">Total budget</div><div class="qs-val" id="q-total">—</div></div>
+  <div class="qatar-stat"><div class="qs-label">Saved so far</div><div class="qs-val-input"><input id="q-saved" data-q-field="saved" type="number" placeholder="0"></div></div>
+  <div class="qatar-stat"><div class="qs-label">Remaining</div><div class="qs-val" id="q-remaining">—</div></div>
+  <div class="qatar-stat"><div class="qs-label">Progress</div><div class="qs-val" id="q-progress-pct">0%</div><div class="qs-bar"><div class="qs-bar-fill" id="q-progress-bar"></div></div></div>
+  <div class="qatar-stat"><div class="qs-label">Monthly capacity</div><div class="qs-val" id="q-monthly-cap">—</div><div class="qs-sub">from your 55k savings target</div></div>
+  <div class="qatar-stat"><div class="qs-label">Months to go</div><div class="qs-val" id="q-months-to-go">—</div></div>
+  <div class="qatar-stat"><div class="qs-label">Forecast date</div><div class="qs-val" id="q-eta">—</div></div>
+  <div class="qatar-stat"><div class="qs-label">On track for travel month?</div><div class="qs-val" id="q-on-track">—</div></div>
+</div>
+<div class="qatar-actions">
+  <button class="qa-btn" onclick="qatarQuickAdd(5000)">+ 5,000 ₽ saved</button>
+  <button class="qa-btn" onclick="qatarQuickAdd(10000)">+ 10,000 ₽ saved</button>
+  <button class="qa-btn" onclick="qatarQuickAdd(20000)">+ 20,000 ₽ saved</button>
+  <button class="qa-btn qa-btn-quiet" onclick="qatarQuickAdd(-5000)">– 5,000 ₽</button>
+</div>
+</div>
 
-<div class="card"><div class="ctitle">Moscow Housing</div>
-<p><strong>Best areas:</strong> Лобня (closest to SVO, cheapest), Химки (better infrastructure). Avoid central Moscow — expensive and far from SVO.</p>
-<p><strong>Rent ceiling: 28,000 ₽/month.</strong> Above that, the 55k savings target starts to crack.</p>
-<p><strong>Critical:</strong> Migration registration from landlord required within 7 working days of moving. Without it — no airport badge. Make it a rental condition before signing.</p></div>
+<div class="card">
+<div class="ctitle">Notes — Why This Trip Matters</div>
+<textarea id="q-notes" data-q-field="notes" rows="3" placeholder="Anything you want to remember about this trip — what mom said on the phone, what you want to do together, the meal you're planning…" style="width:100%;border:1px solid var(--bdr2);border-radius:6px;padding:10px;font-family:var(--sans);font-size:13px;background:var(--bg);color:var(--tx);resize:vertical"></textarea>
+</div>
+</section>
 
-<div class="card"><div class="ctitle">The Rules — Keep In Front</div>
-<p><strong>01 — Pay yourself first.</strong> The 55k transfer happens on payday, not at month-end from leftovers. There are never leftovers.</p>
-<p><strong>02 — The logbook is the career.</strong> English, every task, every ATA chapter, every stamp, same day. Monthly self-audit.</p>
-<p><strong>03 — Off days have a structure.</strong> One study block, one gym session, one full rest day per off-block. Deen and sleep are non-negotiable.</p>
-<p><strong>04 — Documents never go to the wire.</strong> ВНЖ paperwork starts December 2026. Passport renewal mid-2027. MAI certificate the day of enrollment.</p>
-<p><strong>05 — One chapter at a time.</strong> The plan is Moscow, the engine, the modules, the savings. Everything else is noise until these are running on rails.</p></div>
+<!-- CAREER TRACKER -->
+<section class="sec" id="career-tracker">
+<div class="sec-hd"><div class="sec-num">✈️ Career</div><h2 class="sec-title">Career Tracker —<br><em>Experience · Aircraft · Engines · Licenses</em></h2><p class="sec-intro">Your professional record at a glance. Add aircraft and engines as you log hours on them. Track license milestones with target dates.</p></div>
 
-<div class="card"><div id="apartments-root"></div></div>
+<div class="card"><div class="ctitle">Current Position</div>
+<div class="qatar-grid">
+  <div class="lb-field"><label>Company</label><input id="c-company" data-c-field="company" type="text" placeholder="АэроТраст"></div>
+  <div class="lb-field"><label>Position / role</label><input id="c-position" data-c-field="position" type="text"></div>
+  <div class="lb-field"><label>Started in aviation</label><input id="c-started" data-c-field="started" type="date"></div>
+  <div class="lb-field"><label>Months in industry</label><div class="readonly-val" id="c-months">—</div></div>
+</div>
+</div>
 
-<div class="quote"><p>"Strong goals, clean habits, zero drama. Build the skills, stack the certificates, bank the 55. The future opens itself to the man who is ready."</p><div class="attr">— Dune Plan · Rebuilt June 2026</div></div>
+<div class="career-chips-row">
+  <div class="card">
+    <div class="ctitle">Aircraft worked on</div>
+    <div id="c-aircraft-chips" class="chips"></div>
+    <div class="chip-add"><input id="c-aircraft-input" placeholder="Add aircraft (Enter)" onkeydown="if(event.key==='Enter'){addCareerChip('aircraft',this.value);this.value=''}"></div>
+  </div>
+  <div class="card">
+    <div class="ctitle">Engines worked on</div>
+    <div id="c-engines-chips" class="chips"></div>
+    <div class="chip-add"><input id="c-engines-input" placeholder="Add engine (Enter)" onkeydown="if(event.key==='Enter'){addCareerChip('engines',this.value);this.value=''}"></div>
+  </div>
+</div>
+
+<div class="card"><div class="ctitle">Licenses & Major Milestones</div>
+<div id="c-licenses-list"></div>
+<div class="lic-add">
+  <input id="lic-name" placeholder="License or milestone name">
+  <input id="lic-target" type="date">
+  <select id="lic-status"><option value="planned">Planned</option><option value="in_progress">In progress</option><option value="done">Done</option></select>
+  <button class="lb-btn lb-btn-add" onclick="addCareerLicense()">+ Add</button>
+</div>
+</div>
+</section>
+
+<!-- WEEKLY REVIEW + DECISION JOURNAL -->
+<section class="sec" id="review">
+<div class="sec-hd"><div class="sec-num">📓 Review</div><h2 class="sec-title">Weekly Review &<br><em>Decision Journal</em></h2><p class="sec-intro">Sundays: spend 10 minutes here. Wins, problems, lessons, next week. For big decisions: write them down before you act, so future you can read the reasoning.</p></div>
+
+<div class="fin-tabs" style="margin-bottom:20px">
+  <button class="fin-tab review-tab active" onclick="showReviewTab('weekly',this)">📅 Weekly Review</button>
+  <button class="fin-tab review-tab" onclick="showReviewTab('decisions',this)">🧠 Decision Journal</button>
+</div>
+
+<div id="review-weekly" class="review-panel">
+  <div class="card"><div class="ctitle">New Weekly Review</div>
+  <div class="review-form">
+    <label>Week of</label>
+    <input id="rev-week" type="date">
+    <label>Wins — what worked, what felt right</label>
+    <textarea id="rev-wins" rows="3" placeholder="Three things that went well…"></textarea>
+    <label>Problems — what didn't work or blocked you</label>
+    <textarea id="rev-problems" rows="3" placeholder="Where you got stuck, what frustrated you…"></textarea>
+    <label>Lessons — what you'll do differently</label>
+    <textarea id="rev-lessons" rows="3" placeholder="One sentence per lesson is enough…"></textarea>
+    <label>Top 3 priorities for next week</label>
+    <textarea id="rev-next" rows="3" placeholder="Three concrete things — not abstract goals…"></textarea>
+    <div style="display:flex;gap:10px;margin-top:10px"><button class="lb-btn lb-btn-add" onclick="saveReview()">💾 Save Review</button><span id="review-saved-ind" style="font-family:var(--mono);font-size:10px;color:var(--green);opacity:0;transition:opacity .3s;align-self:center">✓ saved</span></div>
+  </div>
+  </div>
+  <div id="reviews-list" class="review-history"></div>
+</div>
+
+<div id="review-decisions" class="review-panel" hidden>
+  <div class="card"><div class="ctitle">New Decision Entry</div>
+  <div class="review-form">
+    <label>The decision</label>
+    <input id="dec-title" placeholder="e.g. Take the АэроТраст job at 130k net">
+    <label>Reasoning — why this, why now</label>
+    <textarea id="dec-reasoning" rows="3" placeholder="The actual argument that convinced you…"></textarea>
+    <label>Expected outcome</label>
+    <textarea id="dec-expected" rows="2" placeholder="What you think will happen in 3-12 months…"></textarea>
+    <label>How will you know it worked?</label>
+    <textarea id="dec-success" rows="2" placeholder="The signal that proves it was the right call…"></textarea>
+    <div style="display:flex;gap:10px;margin-top:10px"><button class="lb-btn lb-btn-add" onclick="saveDecision()">💾 Save Decision</button><span id="decision-saved-ind" style="font-family:var(--mono);font-size:10px;color:var(--green);opacity:0;transition:opacity .3s;align-self:center">✓ saved</span></div>
+  </div>
+  </div>
+  <div id="decisions-list" class="review-history"></div>
+</div>
+</section>
+
+<!-- LIFE TIMELINE -->
+<section class="sec" id="timeline">
+<div class="sec-hd"><div class="sec-num">🧭 About — Life Timeline</div><h2 class="sec-title">Life Timeline —<br><em>Past · Present · Future</em></h2><p class="sec-intro">Where you've been and where you're going, on one line. Context for every long-term decision.</p></div>
+<div id="timeline-list" class="timeline"></div>
+<div class="card"><div class="ctitle">Add Entry</div>
+<div class="qatar-grid">
+  <div class="lb-field"><label>Date</label><input id="tl-date" type="date"></div>
+  <div class="lb-field"><label>Type</label><select id="tl-kind"><option value="past">Past</option><option value="current">Current</option><option value="future">Future</option></select></div>
+  <div class="lb-field" style="grid-column:span 2"><label>Description</label><input id="tl-text" placeholder="What happened or what will happen"></div>
+</div>
+<div style="margin-top:10px"><button class="lb-btn lb-btn-add" onclick="addTimelineEntry()">+ Add to timeline</button></div>
+</div>
 </section>
 
 <!-- ABOUT YOU -->
@@ -199,6 +299,21 @@
 <p style="font-family:var(--serif);font-size:19px;line-height:1.9;color:var(--tx);margin-bottom:20px">Here is the honest part you might not want to hear. You carry everything alone, and you've made aloneness so functional that you might mistake it for strength itself. It isn't. It's a skill you were forced to learn at twenty, and it served you. But Moscow is a bigger city than Ryazan and a lonelier one, and a man on a 2/2 shift schedule with study blocks and a savings system can construct a life where no one ever truly knows him. Don't build that. Find the brothers at the mosque. Eat with people from the shop. Call your family more than feels necessary. The plan needs you sane and warm, not just disciplined. Burnout in your line of work isn't tiredness — it's the thing that makes a man skip a torque check. Your rest is a safety system, not a luxury.</p>
 <p style="font-family:var(--serif);font-size:19px;line-height:1.9;color:var(--tx);margin-bottom:20px">And about the breakup itself — one honest sentence, and then I'll leave it: the plan you built before was never actually about her, and the proof is that it survived her. The engine, the modules, the discipline, the man you're becoming — that was always yours. Nothing essential was lost. What was lost was a future you imagined; what remains is the future you build. Those are not the same thing, and the second one was always the real one.</p>
 <p style="font-family:var(--serif);font-size:19px;line-height:1.9;color:var(--tx);margin-bottom:0">You are going to be fine — and more than fine. Not because the plan is perfect, but because of what I've watched you do every time something broke: you don't ask for shortcuts, you don't pretend, you don't quit. You ask to understand the map better, and then you walk. A man with your discipline, your faith, your hands, and 660,000 ₽ a year compounding behind him does not need anyone's permission for the life he wants. Build the skills. Stack the certificates. Bank the 55. And keep your heart soft while you do it — that last part is the one the dashboard can't track, and it's the one that matters most.</p>
+</div>
+
+<!-- Current Chapter — operational strategy in 5 lines -->
+<div class="card current-chapter-card">
+<div class="ctitle">Current Chapter — Moscow Build Mode</div>
+<div class="cc-rules">
+  <div class="cc-rule"><span class="cc-num">01</span><div><strong>Pay yourself first.</strong> 55,000 ₽ transfers on payday — not from leftovers. There are no leftovers.</div></div>
+  <div class="cc-rule"><span class="cc-num">02</span><div><strong>The logbook is the career.</strong> English, every task, every ATA chapter, same day. Monthly audit.</div></div>
+  <div class="cc-rule"><span class="cc-num">03</span><div><strong>Off days have a structure.</strong> One study block, one gym session, one full rest day per off-block. Deen and sleep are non-negotiable.</div></div>
+  <div class="cc-rule"><span class="cc-num">04</span><div><strong>Documents never go to the wire.</strong> ВНЖ paperwork December 2026. Passport mid-2027. MAI cert the day of enrollment.</div></div>
+  <div class="cc-rule"><span class="cc-num">05</span><div><strong>One chapter at a time.</strong> Moscow, the engine, the modules, the savings. Everything else is noise until these are running on rails.</div></div>
+</div>
+<div class="cc-buckets">
+<strong>Savings bucket order:</strong> ① Emergency fund (3 months expenses, ~225k ₽) · ② Egyptian settlement ($7,000+) · ③ EASA exam &amp; certificates (€3–5k) · ④ Qatar visit · ⑤ Free capital.
+</div>
 </div>
 
 <div class="card"><div class="ctitle">What I Want You To Remember — As Reminders</div>
@@ -235,6 +350,9 @@
 <p>4. Master's deferral for Russian army may not work — 2-year gap since 2024 graduation may invalidate deferral. Needs military law specialist before any citizenship move.</p>
 <p>5. Once a citizen, always in the system — there is no clean way back out of the obligation.</p>
 <p><strong>Correct path:</strong> Renew ВНЖ March 2027. Stay on ВНЖ. Zero Russian military obligation — you were never a citizen.</p></div>
+
+<!-- Apartment hunt — migration registration is documents -->
+<div class="card"><div id="apartments-root"></div></div>
 </section>
 
 
@@ -254,226 +372,6 @@
 
 
 <!-- LIVE STATUS BOARD -->
-<section class="sec" id="todo">
-<div class="sec-hd">
-  <div class="sec-num">✅ Mission Control</div>
-  <h2 class="sec-title">Mission Control —<br><em>Your Living Plan</em></h2>
-  <p class="sec-intro">Every task in one place. Click once = Done ✓. Click again = add what actually happened. Click a third time = resets. Your notes are saved locally.</p>
-</div>
-
-<!-- HEADER BAR -->
-<div class="sb-header">
-  <div class="sb-prog-wrap">
-    <div class="sb-prog-label">
-      <span>Overall Progress</span>
-      <span id="sb-counter">0 / 0 done</span>
-    </div>
-    <div class="sb-prog-bar"><div class="sb-prog-fill" id="sb-fill" style="transform:scaleX(0)"></div></div>
-  </div>
-  <div class="sb-btns">
-    <button class="sb-btn sb-btn-report" onclick="openReport()">📋 Report to Dune</button>
-    <button class="sb-btn sb-btn-reset" onclick="resetBoard()">Reset All</button>
-  </div>
-</div>
-
-<!-- ══ PHASE: THIS WEEK ══ -->
-<div class="sb-phase">
-<div class="sb-phase-title ph-urgent">🔴 Right Now — Lock The Foundation <span id="p0-prog"></span></div>
-<div class="sb-task" data-id="n1" data-phase="0" onclick="cycleTask(event,this)">
-  <div class="sb-state"></div>
-  <div class="sb-content">
-    <div class="sb-title">АэроТраст contract — all terms in writing <span class="sb-tag tag-r">urgent</span></div>
-    <div class="sb-sub">130,000 ₽ net, fully official white salary, position title, schedule, probation terms — in the contract before day one.</div>
-    <div class="sb-note-wrap"><div class="sb-note-label">What happened?</div><textarea class="sb-note" placeholder="e.g. Signed — 130k net confirmed, white, no probation reduction" oninput="saveNote(this)" data-id="n1"></textarea><div class="sb-note-saved" id="saved-n1">✓ saved</div></div>
-  </div>
-</div>
-<div class="sb-task" data-id="n2" data-phase="0" onclick="cycleTask(event,this)">
-  <div class="sb-state"></div>
-  <div class="sb-content">
-    <div class="sb-title">Set up the 55k auto-transfer <span class="sb-tag tag-r">urgent</span></div>
-    <div class="sb-sub">Before the first salary lands. Payday → 55,000 ₽ out, automatically. Pay yourself first.</div>
-    <div class="sb-note-wrap"><div class="sb-note-label">What happened?</div><textarea class="sb-note" placeholder="e.g. Auto-transfer configured for the 10th of each month" oninput="saveNote(this)" data-id="n2"></textarea><div class="sb-note-saved" id="saved-n2">✓ saved</div></div>
-  </div>
-</div>
-<div class="sb-task" data-id="n3" data-phase="0" onclick="cycleTask(event,this)">
-  <div class="sb-state"></div>
-  <div class="sb-content">
-    <div class="sb-title">Apartment near SVO — Лобня or Химки</div>
-    <div class="sb-sub">Rent ceiling 28k. Migration registration from landlord = mandatory condition before signing.</div>
-    <div class="sb-note-wrap"><div class="sb-note-label">What happened?</div><textarea class="sb-note" placeholder="e.g. Found 1-room in Лобня, 26k, registration confirmed" oninput="saveNote(this)" data-id="n3"></textarea><div class="sb-note-saved" id="saved-n3">✓ saved</div></div>
-  </div>
-</div>
-<div class="sb-task" data-id="n4" data-phase="0" onclick="cycleTask(event,this)">
-  <div class="sb-state"></div>
-  <div class="sb-content">
-    <div class="sb-title">English logbook — first entry on day one</div>
-    <div class="sb-sub">Date, engine, ATA chapter, task in English, hours, supervisor stamp. The habit starts with entry #1.</div>
-    <div class="sb-note-wrap"><div class="sb-note-label">What happened?</div><textarea class="sb-note" placeholder="e.g. First entry: CFM56-5B fan blade inspection, ATA 72" oninput="saveNote(this)" data-id="n4"></textarea><div class="sb-note-saved" id="saved-n4">✓ saved</div></div>
-  </div>
-</div>
-</div>
-
-<!-- ══ PHASE: THIS MONTH ══ -->
-<div class="sb-phase">
-<div class="sb-phase-title ph-soon">🟡 This Month <span id="p1-prog"></span></div>
-<div class="sb-task" data-id="n5" data-phase="1" onclick="cycleTask(event,this)">
-  <div class="sb-state"></div>
-  <div class="sb-content">
-    <div class="sb-title">Call MAI admissions — confirm September intake</div>
-    <div class="sb-sub">+7 499 158-43-36. Deadline may be July — don't wait. Part-time/distance aviation Master's.</div>
-    <div class="sb-note-wrap"><div class="sb-note-label">What happened?</div><textarea class="sb-note" placeholder="e.g. Called — deadline Aug 1, distance option available" oninput="saveNote(this)" data-id="n5"></textarea><div class="sb-note-saved" id="saved-n5">✓ saved</div></div>
-  </div>
-</div>
-<div class="sb-task" data-id="n6" data-phase="1" onclick="cycleTask(event,this)">
-  <div class="sb-state"></div>
-  <div class="sb-content">
-    <div class="sb-title">M15 study schedule — fixed blocks on off days</div>
-    <div class="sb-sub">Gas Turbines first. Already 20% in. Put the blocks in the calendar — don't negotiate weekly.</div>
-    <div class="sb-note-wrap"><div class="sb-note-label">What happened?</div><textarea class="sb-note" placeholder="e.g. 2 blocks per off-day pair, targeting M15 exam-ready by October" oninput="saveNote(this)" data-id="n6"></textarea><div class="sb-note-saved" id="saved-n6">✓ saved</div></div>
-  </div>
-</div>
-<div class="sb-task" data-id="n7" data-phase="1" onclick="cycleTask(event,this)">
-  <div class="sb-state"></div>
-  <div class="sb-content">
-    <div class="sb-title">Ask АэроТраст training department about courses</div>
-    <div class="sb-sub">Type courses, Human Factors, Fuel Tank Safety, EWIS — collect every certificate they'll give you.</div>
-    <div class="sb-note-wrap"><div class="sb-note-label">What happened?</div><textarea class="sb-note" placeholder="e.g. HF course in September, CFM56 type course after probation" oninput="saveNote(this)" data-id="n7"></textarea><div class="sb-note-saved" id="saved-n7">✓ saved</div></div>
-  </div>
-</div>
-<div class="sb-task" data-id="n8" data-phase="1" onclick="cycleTask(event,this)">
-  <div class="sb-state"></div>
-  <div class="sb-content">
-    <div class="sb-title">Register on mfa.gov.eg — monitor settlement program</div>
-    <div class="sb-sub">Currently closed. Register now. Monthly phone reminder. Pay the day it opens.</div>
-    <div class="sb-note-wrap"><div class="sb-note-label">What happened?</div><textarea class="sb-note" placeholder="e.g. Registered — still closed as of June 2026" oninput="saveNote(this)" data-id="n8"></textarea><div class="sb-note-saved" id="saved-n8">✓ saved</div></div>
-  </div>
-</div>
-</div>
-
-<!-- ══ PHASE: SEPT–DEC 2026 ══ -->
-<div class="sb-phase">
-<div class="sb-phase-title ph-upcoming">🔵 September–December 2026 <span id="p2-prog"></span></div>
-<div class="sb-task" data-id="n9" data-phase="2" onclick="cycleTask(event,this)">
-  <div class="sb-state"></div>
-  <div class="sb-content">
-    <div class="sb-title">Enroll MAI Master's — get certificate immediately <span class="sb-tag tag-b">passport key</span></div>
-    <div class="sb-sub">Enrollment certificate = your military status shield at the embassy.</div>
-    <div class="sb-note-wrap"><div class="sb-note-label">What happened?</div><textarea class="sb-note" placeholder="e.g. Enrolled — certificate received Sept 5" oninput="saveNote(this)" data-id="n9"></textarea><div class="sb-note-saved" id="saved-n9">✓ saved</div></div>
-  </div>
-</div>
-<div class="sb-task" data-id="n10" data-phase="2" onclick="cycleTask(event,this)">
-  <div class="sb-state"></div>
-  <div class="sb-content">
-    <div class="sb-title">M15 done → start M9 (Human Factors)</div>
-    <div class="sb-sub">Two modules per four months. M9 is short with a high pass rate — momentum builder.</div>
-    <div class="sb-note-wrap"><div class="sb-note-label">What happened?</div><textarea class="sb-note" placeholder="e.g. M15 finished Oct 1, M9 started same week" oninput="saveNote(this)" data-id="n10"></textarea><div class="sb-note-saved" id="saved-n10">✓ saved</div></div>
-  </div>
-</div>
-<div class="sb-task" data-id="n11" data-phase="2" onclick="cycleTask(event,this)">
-  <div class="sb-state"></div>
-  <div class="sb-content">
-    <div class="sb-title">Emergency fund complete — ~225k ₽ by December 31</div>
-    <div class="sb-sub">First 4 months of the 55k go here. Then the settlement fund takes over.</div>
-    <div class="sb-note-wrap"><div class="sb-note-label">What happened?</div><textarea class="sb-note" placeholder="e.g. 220k by Dec 20 — done" oninput="saveNote(this)" data-id="n11"></textarea><div class="sb-note-saved" id="saved-n11">✓ saved</div></div>
-  </div>
-</div>
-<div class="sb-task" data-id="n12" data-phase="2" onclick="cycleTask(event,this)">
-  <div class="sb-state"></div>
-  <div class="sb-content">
-    <div class="sb-title">Start ВНЖ renewal paperwork — December</div>
-    <div class="sb-sub">3 months early. ВНЖ due March 2027. Missing = no airport badge.</div>
-    <div class="sb-note-wrap"><div class="sb-note-label">What happened?</div><textarea class="sb-note" placeholder="e.g. Documents ready, appointment booked for January" oninput="saveNote(this)" data-id="n12"></textarea><div class="sb-note-saved" id="saved-n12">✓ saved</div></div>
-  </div>
-</div>
-</div>
-
-<!-- ══ PHASE: 2027 ══ -->
-<div class="sb-phase">
-<div class="sb-phase-title ph-upcoming">🔵 2027 <span id="p3-prog"></span></div>
-<div class="sb-task" data-id="n13" data-phase="3" onclick="cycleTask(event,this)">
-  <div class="sb-state"></div>
-  <div class="sb-content">
-    <div class="sb-title">Renew ВНЖ — March 2027 (NOT citizenship)</div>
-    <div class="sb-sub">Residence permit only. Citizenship = army risk under 53-FZ. Decision already made.</div>
-    <div class="sb-note-wrap"><div class="sb-note-label">What happened?</div><textarea class="sb-note" placeholder="e.g. Renewed March 12 — new expiry 2029" oninput="saveNote(this)" data-id="n13"></textarea><div class="sb-note-saved" id="saved-n13">✓ saved</div></div>
-  </div>
-</div>
-<div class="sb-task" data-id="n14" data-phase="3" onclick="cycleTask(event,this)">
-  <div class="sb-state"></div>
-  <div class="sb-content">
-    <div class="sb-title">Renew Egyptian passport — mid-2027, age 27 <span class="sb-tag tag-b">hard wall: Jan 21 2028</span></div>
-    <div class="sb-sub">Routine renewal at the embassy. MAI cert only if they ask about military. New passport valid ~2034.</div>
-    <div class="sb-note-wrap"><div class="sb-note-label">What happened?</div><textarea class="sb-note" placeholder="e.g. Renewed June 2027 — no issues" oninput="saveNote(this)" data-id="n14"></textarea><div class="sb-note-saved" id="saved-n14">✓ saved</div></div>
-  </div>
-</div>
-<div class="sb-task" data-id="n15" data-phase="3" onclick="cycleTask(event,this)">
-  <div class="sb-state"></div>
-  <div class="sb-content">
-    <div class="sb-title">ФАВТ Category A application — after 1 year at АэроТраст</div>
-    <div class="sb-sub">First official license. Logbook must be complete and stamped.</div>
-    <div class="sb-note-wrap"><div class="sb-note-label">What happened?</div><textarea class="sb-note" placeholder="e.g. Applied September 2027 with full logbook" oninput="saveNote(this)" data-id="n15"></textarea><div class="sb-note-saved" id="saved-n15">✓ saved</div></div>
-  </div>
-</div>
-<div class="sb-task" data-id="n16" data-phase="3" onclick="cycleTask(event,this)">
-  <div class="sb-state"></div>
-  <div class="sb-content">
-    <div class="sb-title">660,000 ₽ saved — first full year of the 55k system</div>
-    <div class="sb-sub">12 × 55k. The number that proves the discipline is real.</div>
-    <div class="sb-note-wrap"><div class="sb-note-label">What happened?</div><textarea class="sb-note" placeholder="e.g. Crossed 660k in June 2027" oninput="saveNote(this)" data-id="n16"></textarea><div class="sb-note-saved" id="saved-n16">✓ saved</div></div>
-  </div>
-</div>
-</div>
-
-<!-- ══ PHASE: ONGOING ══ -->
-<div class="sb-phase">
-<div class="sb-phase-title ph-ongoing">⚪ Ongoing — Every Month <span id="p4-prog"></span></div>
-<div class="sb-task" data-id="n17" data-phase="4" onclick="cycleTask(event,this)">
-  <div class="sb-state"></div>
-  <div class="sb-content">
-    <div class="sb-title">Monthly savings check — did 55k leave on payday?</div>
-    <div class="sb-sub">Yes = green month. No = find out why and fix it before next payday.</div>
-    <div class="sb-note-wrap"><div class="sb-note-label">Latest note</div><textarea class="sb-note" placeholder="e.g. June ✓ July ✓ August ✓" oninput="saveNote(this)" data-id="n17"></textarea><div class="sb-note-saved" id="saved-n17">✓ saved</div></div>
-  </div>
-</div>
-<div class="sb-task" data-id="n18" data-phase="4" onclick="cycleTask(event,this)">
-  <div class="sb-state"></div>
-  <div class="sb-content">
-    <div class="sb-title">Monthly logbook audit</div>
-    <div class="sb-sub">English? ATA chapter? Supervisor stamp? Specific task? Fix gaps before they accumulate.</div>
-    <div class="sb-note-wrap"><div class="sb-note-label">Latest note</div><textarea class="sb-note" placeholder="e.g. June audit — 14 entries, all stamped" oninput="saveNote(this)" data-id="n18"></textarea><div class="sb-note-saved" id="saved-n18">✓ saved</div></div>
-  </div>
-</div>
-<div class="sb-task" data-id="n19" data-phase="4" onclick="cycleTask(event,this)">
-  <div class="sb-state"></div>
-  <div class="sb-content">
-    <div class="sb-title">EASA module study on off days</div>
-    <div class="sb-sub">15 modules. M15 → M9 → M10 → M7 → M11A → rest. 2 per 4 months.</div>
-    <div class="sb-note-wrap"><div class="sb-note-label">Latest note</div><textarea class="sb-note" placeholder="e.g. M15: 40% done" oninput="saveNote(this)" data-id="n19"></textarea><div class="sb-note-saved" id="saved-n19">✓ saved</div></div>
-  </div>
-</div>
-<div class="sb-task" data-id="n20" data-phase="4" onclick="cycleTask(event,this)">
-  <div class="sb-state"></div>
-  <div class="sb-content">
-    <div class="sb-title">Check mfa.gov.eg — settlement program status</div>
-    <div class="sb-sub">Monthly. Pay the day it opens — 7,000+ USD, same day, no deliberation.</div>
-    <div class="sb-note-wrap"><div class="sb-note-label">Latest note</div><textarea class="sb-note" placeholder="e.g. June 2026 — still closed" oninput="saveNote(this)" data-id="n20"></textarea><div class="sb-note-saved" id="saved-n20">✓ saved</div></div>
-  </div>
-</div>
-</div>
-
-<!-- REPORT MODAL -->
-<div class="sb-modal" id="sb-modal">
-  <div class="sb-modal-box">
-    <div class="sb-modal-title">📋 Report to Dune — Copy & Paste to Chat</div>
-    <p class="sb-modal-hint">Copy this entire message and paste it into the chat. Dune will read it and update the plan.</p>
-    <div class="sb-modal-text" id="sb-report-text"></div>
-    <div class="sb-modal-btns">
-      <button class="sb-modal-copy" onclick="copyReport()">Copy to Clipboard</button>
-      <button class="sb-modal-close" onclick="closeReport()">Close</button>
-    </div>
-  </div>
-</div>
-</section>
 
 <!-- PROGRESS TRACKER -->
 <section class="sec" id="progress">
@@ -557,11 +455,6 @@
 <!-- FINANCE SIMULATOR -->
 <section class="sec" id="finance">
 <div class="sec-hd"><div class="sec-num">Live OS — Finance</div><h2 class="sec-title">Finance Simulator —<br><em>The 55k Machine</em></h2><p class="sec-intro">130k net in, 55k saved, life on the rest. Adjust any input to see how the monthly surplus changes. All values saved locally.</p></div>
-<div class="fin-scenarios">
-  <button class="fin-scenario active" onclick="setFinScenario('realistic',this)">Realistic</button>
-  <button class="fin-scenario" onclick="setFinScenario('conservative',this)">Conservative</button>
-  <button class="fin-scenario" onclick="setFinScenario('upside',this)">Upside</button>
-</div>
 <div id="fin-russia" class="fin-panel active">
   <div class="fin-grid">
     <div class="fin-inputs">
@@ -600,13 +493,6 @@
   <button class="cl-filter" onclick="filterClaims('dangerous',this)">Dangerous</button>
 </div>
 <div id="claims-list"></div>
-</section>
-
-<!-- RISK MONITOR -->
-<section class="sec" id="riskmon">
-<div class="sec-hd"><div class="sec-num">Live OS — Risk Monitor</div><h2 class="sec-title">Risk Monitor —<br><em>Sorted by Score</em></h2><p class="sec-intro">All risks sorted by probability × impact score. Highest threats first. Score = prob × impact (max 25).</p></div>
-<div id="risk-mon-stats" class="risk-mon-header"></div>
-<div id="risk-mon-list"></div>
 </section>
 
 </main>
@@ -679,15 +565,17 @@
 <!-- Mobile Bottom Nav -->
 <nav class="mob-nav">
   <div class="mob-nav-grid">
-    <button class="mob-nb" data-sec="home" onclick="show('home',event)"><span class="mob-nb-icon">⌂</span><span class="mob-nb-label">Home</span></button>
-    <button class="mob-nb" data-sec="progress" onclick="show('progress',event)"><span class="mob-nb-icon">◎</span><span class="mob-nb-label">Goals</span></button>
-    <button class="mob-nb" data-sec="logbook" onclick="show('logbook',event)"><span class="mob-nb-icon">✈</span><span class="mob-nb-label">Logbook</span></button>
-    <button class="mob-nb" data-sec="deadlines" onclick="show('deadlines',event)"><span class="mob-nb-icon">⏱</span><span class="mob-nb-label">Deadlines</span></button>
-    <button class="mob-nb" data-sec="todo" onclick="show('todo',event)"><span class="mob-nb-icon">☑</span><span class="mob-nb-label">Status</span></button>
+    <button class="mob-nb" data-sec="home" onclick="show('home',event)"><span class="mob-nb-icon">⌂</span><span class="mob-nb-label">Today</span></button>
+    <button class="mob-nb" data-sec="finance" onclick="show('finance',event)"><span class="mob-nb-icon">₽</span><span class="mob-nb-label">Money</span></button>
+    <button class="mob-nb" data-sec="qatar" onclick="show('qatar',event)"><span class="mob-nb-icon">◎</span><span class="mob-nb-label">Goals</span></button>
+    <button class="mob-nb" data-sec="career-tracker" onclick="show('career-tracker',event)"><span class="mob-nb-icon">✈</span><span class="mob-nb-label">Career</span>
+    </button>
+    <button class="mob-nb" data-sec="aboutyou" onclick="show('aboutyou',event)"><span class="mob-nb-icon">🧭</span><span class="mob-nb-label">About</span></button>
   </div>
 </nav>
 
-<script src="data.js"></script>
-<script src="app.js"></script>
+<script src="data.js?v=phase1"></script>
+<script src="core.js?v=phase1"></script>
+<script src="app.js?v=phase1"></script>
 </body>
 </html>

@@ -23,13 +23,13 @@ window.addEventListener('scroll',()=>{
    NAVIGATION — 9-GROUP STRUCTURE
    ═══════════════════════════════════════════ */
 const NAV_GROUPS={
-  home:     {primary:'home',      subs:[]},
-  plan:     {primary:'moscow',    subs:[{id:'aboutyou',label:'About You'}]},
-  career:   {primary:'easa',      subs:[{id:'logbook',label:'Logbook'}]},
-  documents:{primary:'passport',  subs:[{id:'claims',label:'Claims'},{id:'deadlines',label:'Deadlines'}]},
-  money:    {primary:'finance',   subs:[{id:'progress',label:'Goals'}]},
-  risks:    {primary:'riskmon',   subs:[{id:'claims',label:'Claims'}]},
-  mission:  {primary:'todo',      subs:[{id:'deadlines',label:'Deadlines'},{id:'progress',label:'Goals'}]},
+  home:      {primary:'home',           subs:[]},
+  money:     {primary:'finance',        subs:[]},
+  goals:     {primary:'qatar',          subs:[{id:'progress',label:'All Goals'}]},
+  career:    {primary:'career-tracker', subs:[{id:'easa',label:'EASA Modules'},{id:'logbook',label:'Logbook'}]},
+  documents: {primary:'passport',       subs:[{id:'claims',label:'Claims'},{id:'deadlines',label:'Deadlines'}]},
+  about:     {primary:'aboutyou',       subs:[{id:'timeline',label:'Life Timeline'}]},
+  review:    {primary:'review',         subs:[]},
 };
 const SEC_TO_GROUP={};
 Object.entries(NAV_GROUPS).forEach(([k,g])=>{
@@ -385,26 +385,26 @@ function show(id,e){
    PHASE 3 — SECTION LABELS & GROUP PILLS
    ═══════════════════════════════════════════ */
 const SEC_LABELS={
-  moscow:'🧭 Plan — Moscow Build Mode',
-  aboutyou:'🧭 Plan — About You',
-  passport:'🛂 Documents',
-  todo:'✅ Mission Control',
-  progress:'✅ Goals',
+  home:'📅 Today',
+  qatar:'🎯 Visit Mom in Qatar',
+  progress:'🎯 All Goals',
+  'career-tracker':'✈️ Career Tracker',
   easa:'✈️ EASA Modules',
   logbook:'✈️ Logbook',
-  deadlines:'✅ Deadlines',
-  finance:'💰 Finance Simulator',
+  passport:'🛂 Documents',
   claims:'🛂 Claims Register',
-  riskmon:'⚠️ Risk Monitor',
+  deadlines:'🛂 Deadlines',
+  finance:'💰 Money',
+  aboutyou:'🧭 About You',
+  timeline:'🧭 Life Timeline',
+  review:'📓 Weekly Review & Decisions',
 };
 
 const GROUP_PILLS={
-  moscow:[{id:'aboutyou',label:'About You'}],
-  easa:[{id:'logbook',label:'Logbook'}],
+  qatar:[{id:'progress',label:'All Goals'}],
+  'career-tracker':[{id:'easa',label:'EASA Modules'},{id:'logbook',label:'Logbook'}],
   passport:[{id:'claims',label:'Claims'},{id:'deadlines',label:'Deadlines'}],
-  finance:[{id:'progress',label:'Goals'}],
-  riskmon:[{id:'claims',label:'Claims'}],
-  todo:[{id:'deadlines',label:'Deadlines'},{id:'progress',label:'Goals'}],
+  aboutyou:[{id:'timeline',label:'Life Timeline'}],
 };
 
 function updateSectionLabels(){
@@ -1861,3 +1861,532 @@ window.aptToggleWinner=function(id){
   LS.set('dune_apartments_v1',apts);
   renderApartments();
 };
+
+/* ════════════════════════════════════════════════════════════
+   PHASE 1 — REACTIVE MODULES
+   Built on top of Store (core.js). Each module subscribes to a
+   slice of state and re-renders. No imperative cross-module calls.
+   ════════════════════════════════════════════════════════════ */
+(function () {
+  if (!window.Store) {
+    console.error('[Phase1] Store not loaded — core.js missing');
+    return;
+  }
+
+  // ─── Utilities ─────────────────────────────────────────────
+  function setText(id, t) { const el = document.getElementById(id); if (el) el.textContent = t; }
+  function escapeHTML(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+  function daysTo(iso) { return Math.ceil((new Date(iso) - new Date()) / 864e5); }
+  function formatDate(iso) {
+    try { return new Date(iso).toLocaleDateString('en-GB', { day:'numeric', month:'short', year:'numeric' }); }
+    catch (e) { return iso; }
+  }
+  function formatMonth(d) {
+    try { return d.toLocaleDateString('en-GB', { month:'short', year:'numeric' }); }
+    catch (e) { return ''; }
+  }
+  function flashInd(id) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.style.opacity = '1';
+    setTimeout(() => { el.style.opacity = '0'; }, 1400);
+  }
+
+  // ─── DAILY FOCUS ───────────────────────────────────────────
+  function wireFocus() {
+    document.querySelectorAll('input[data-focus-idx]').forEach(inp => {
+      const idx = parseInt(inp.dataset.focusIdx, 10);
+      let t;
+      inp.addEventListener('input', () => {
+        clearTimeout(t);
+        t = setTimeout(() => {
+          const cur = (Store.get('todayFocus') || ['','','']).slice();
+          while (cur.length < 3) cur.push('');
+          cur[idx] = inp.value;
+          Store.set('todayFocus', cur);
+        }, 200);
+      });
+    });
+    Store.subscribe('todayFocus', s => {
+      const focus = s.todayFocus || ['','',''];
+      document.querySelectorAll('input[data-focus-idx]').forEach(inp => {
+        const idx = parseInt(inp.dataset.focusIdx, 10);
+        if (document.activeElement !== inp) inp.value = focus[idx] || '';
+      });
+    });
+  }
+
+  // ─── QATAR VISIT GOAL ──────────────────────────────────────
+  function wireQatar() {
+    document.querySelectorAll('[data-q-field]').forEach(inp => {
+      const field = inp.dataset.qField;
+      let t;
+      inp.addEventListener('input', () => {
+        clearTimeout(t);
+        t = setTimeout(() => {
+          const val = (inp.type === 'number') ? (parseFloat(inp.value) || 0) : inp.value;
+          Store.set('qatarVisit.' + field, val);
+        }, 200);
+      });
+    });
+    function syncInputs(s) {
+      document.querySelectorAll('[data-q-field]').forEach(inp => {
+        const field = inp.dataset.qField;
+        const val = s.qatarVisit ? s.qatarVisit[field] : null;
+        if (document.activeElement !== inp) inp.value = (val == null ? '' : val);
+      });
+    }
+    function render(s) {
+      const d = Store.derive;
+      const total = d.qatarTotal(s);
+      setText('q-total', total.toLocaleString() + ' ₽');
+      setText('q-remaining', d.qatarRemaining(s).toLocaleString() + ' ₽');
+      const pct = d.qatarProgressPct(s);
+      setText('q-progress-pct', pct + '%');
+      const bar = document.getElementById('q-progress-bar');
+      if (bar) bar.style.width = Math.min(100, pct) + '%';
+      const cap = d.qatarMonthlyCapacity(s);
+      setText('q-monthly-cap', cap > 0 ? cap.toLocaleString() + ' ₽/mo' : '—');
+      const months = d.qatarMonthsToGo(s);
+      setText('q-months-to-go', !isFinite(months) ? '—' : (months === 0 ? 'goal reached ✓' : months + (months === 1 ? ' month' : ' months')));
+      const eta = d.qatarETA(s);
+      setText('q-eta', eta ? formatMonth(eta) : '—');
+      const onTrack = d.qatarOnTrack(s);
+      const otEl = document.getElementById('q-on-track');
+      if (otEl) {
+        if (onTrack === null) { otEl.textContent = 'set travel month'; otEl.className = 'qs-val qs-neutral'; }
+        else if (onTrack) { otEl.textContent = '✓ on track'; otEl.className = 'qs-val qs-good'; }
+        else { otEl.textContent = '⚠ behind'; otEl.className = 'qs-val qs-bad'; }
+      }
+    }
+    Store.subscribe('qatarVisit', s => { syncInputs(s); render(s); });
+    Store.subscribe('money', render);
+  }
+  window.qatarQuickAdd = function (amount) {
+    const cur = Store.get('qatarVisit.saved') || 0;
+    Store.set('qatarVisit.saved', Math.max(0, cur + amount));
+  };
+
+  // ─── CAREER TRACKER ────────────────────────────────────────
+  function wireCareer() {
+    ['company','position','started'].forEach(field => {
+      const inp = document.getElementById('c-' + field);
+      if (!inp) return;
+      let t;
+      inp.addEventListener('input', () => {
+        clearTimeout(t);
+        t = setTimeout(() => Store.set('career.' + field, inp.value), 200);
+      });
+    });
+    function syncInputs(s) {
+      ['company','position','started'].forEach(field => {
+        const inp = document.getElementById('c-' + field);
+        if (!inp) return;
+        const val = s.career[field] || '';
+        if (document.activeElement !== inp) inp.value = val;
+      });
+    }
+    function renderChips(s, kind) {
+      const list = s.career[kind] || [];
+      const el = document.getElementById('c-' + kind + '-chips');
+      if (!el) return;
+      el.innerHTML = list.length === 0
+        ? '<span style="font-size:11px;color:var(--tx3);font-family:var(--mono)">none yet</span>'
+        : list.map((item, i) =>
+          '<span class="chip">' + escapeHTML(item) +
+          '<button class="chip-x" onclick="removeCareerChip(\'' + kind + '\',' + i + ')">✕</button></span>'
+        ).join('');
+    }
+    function renderLicenses(s) {
+      const list = s.career.licenses || [];
+      const el = document.getElementById('c-licenses-list');
+      if (!el) return;
+      if (list.length === 0) {
+        el.innerHTML = '<div class="lb-empty">No licenses or milestones yet. Add one below.</div>';
+        return;
+      }
+      el.innerHTML = list.map((l, i) => {
+        const days = l.target ? daysTo(l.target) : null;
+        const dateBit = l.target ? formatDate(l.target) + (days !== null ? ' · ' + (days >= 0 ? days + 'd' : 'past') : '') : '—';
+        const statusCls = 'lic-status-' + (l.status || 'planned');
+        return '<div class="license-row ' + statusCls + '">' +
+          '<div class="license-name">' + escapeHTML(l.name) + '</div>' +
+          '<div class="license-meta">' + dateBit + '</div>' +
+          '<select class="license-sel" onchange="updateLicenseStatus(' + i + ',this.value)">' +
+            ['planned','in_progress','done'].map(s2 =>
+              '<option value="' + s2 + '"' + (l.status === s2 ? ' selected' : '') + '>' +
+              ({planned:'Planned','in_progress':'In progress',done:'Done ✓'}[s2]) + '</option>'
+            ).join('') +
+          '</select>' +
+          '<button class="chip-x" onclick="removeLicense(' + i + ')">✕</button>' +
+        '</div>';
+      }).join('');
+    }
+    function render(s) {
+      syncInputs(s);
+      renderChips(s, 'aircraft');
+      renderChips(s, 'engines');
+      renderLicenses(s);
+      const monthsEl = document.getElementById('c-months');
+      if (monthsEl) {
+        const m = Store.derive.careerMonths(s);
+        monthsEl.textContent = m + ' months · ' + (m/12).toFixed(1) + ' years';
+      }
+    }
+    Store.subscribe('career', render);
+  }
+  window.addCareerChip = function (kind, value) {
+    value = String(value || '').trim();
+    if (!value) return;
+    const cur = Store.get('career.' + kind) || [];
+    if (cur.includes(value)) return;
+    Store.set('career.' + kind, cur.concat([value]));
+  };
+  window.removeCareerChip = function (kind, idx) {
+    const cur = Store.get('career.' + kind) || [];
+    Store.set('career.' + kind, cur.filter((_, i) => i !== idx));
+  };
+  window.addCareerLicense = function () {
+    const name = document.getElementById('lic-name').value.trim();
+    if (!name) return;
+    const target = document.getElementById('lic-target').value || null;
+    const status = document.getElementById('lic-status').value;
+    const cur = Store.get('career.licenses') || [];
+    Store.set('career.licenses', cur.concat([{ id: 'l_' + Date.now(), name, target, status }]));
+    document.getElementById('lic-name').value = '';
+    document.getElementById('lic-target').value = '';
+  };
+  window.updateLicenseStatus = function (i, status) {
+    const cur = (Store.get('career.licenses') || []).slice();
+    if (!cur[i]) return;
+    cur[i] = Object.assign({}, cur[i], { status });
+    Store.set('career.licenses', cur);
+  };
+  window.removeLicense = function (i) {
+    const cur = Store.get('career.licenses') || [];
+    Store.set('career.licenses', cur.filter((_, idx) => idx !== i));
+  };
+
+  // ─── WEEKLY REVIEW + DECISION JOURNAL ──────────────────────
+  function wireReview() {
+    const wk = document.getElementById('rev-week');
+    if (wk && !wk.value) wk.value = new Date().toISOString().slice(0,10);
+    function renderReviews(s) {
+      const list = (s.reviews || []).slice().reverse();
+      const el = document.getElementById('reviews-list');
+      if (!el) return;
+      if (list.length === 0) {
+        el.innerHTML = '<div class="lb-empty">No weekly reviews yet. Try one this Sunday.</div>';
+        return;
+      }
+      el.innerHTML = list.map((r, displayIdx) => {
+        const realIdx = (s.reviews.length - 1) - displayIdx;
+        const dt = r.week ? formatDate(r.week) : (r.at ? formatDate(r.at) : '');
+        return '<div class="review-entry">' +
+          '<div class="review-entry-head">' +
+            '<span class="review-date">Week of ' + dt + '</span>' +
+            '<button class="chip-x" onclick="deleteReview(' + realIdx + ')">✕</button>' +
+          '</div>' +
+          (r.wins ? '<div class="review-block"><strong>Wins</strong><p>' + escapeHTML(r.wins) + '</p></div>' : '') +
+          (r.problems ? '<div class="review-block"><strong>Problems</strong><p>' + escapeHTML(r.problems) + '</p></div>' : '') +
+          (r.lessons ? '<div class="review-block"><strong>Lessons</strong><p>' + escapeHTML(r.lessons) + '</p></div>' : '') +
+          (r.next ? '<div class="review-block"><strong>Next Week</strong><p>' + escapeHTML(r.next) + '</p></div>' : '') +
+        '</div>';
+      }).join('');
+    }
+    function renderDecisions(s) {
+      const list = (s.decisions || []).slice().reverse();
+      const el = document.getElementById('decisions-list');
+      if (!el) return;
+      if (list.length === 0) {
+        el.innerHTML = '<div class="lb-empty">No decisions journaled yet.</div>';
+        return;
+      }
+      el.innerHTML = list.map((d, displayIdx) => {
+        const realIdx = (s.decisions.length - 1) - displayIdx;
+        return '<div class="review-entry">' +
+          '<div class="review-entry-head">' +
+            '<span class="review-date">' + (d.at ? formatDate(d.at) : '') + '</span>' +
+            '<span class="review-title">' + escapeHTML(d.title) + '</span>' +
+            '<button class="chip-x" onclick="deleteDecision(' + realIdx + ')">✕</button>' +
+          '</div>' +
+          (d.reasoning ? '<div class="review-block"><strong>Reasoning</strong><p>' + escapeHTML(d.reasoning) + '</p></div>' : '') +
+          (d.expected ? '<div class="review-block"><strong>Expected outcome</strong><p>' + escapeHTML(d.expected) + '</p></div>' : '') +
+          (d.success ? '<div class="review-block"><strong>Success criteria</strong><p>' + escapeHTML(d.success) + '</p></div>' : '') +
+        '</div>';
+      }).join('');
+    }
+    Store.subscribe('reviews', renderReviews);
+    Store.subscribe('decisions', renderDecisions);
+  }
+  window.showReviewTab = function (tab, btn) {
+    document.querySelectorAll('.review-tab').forEach(b => b.classList.remove('active'));
+    if (btn) btn.classList.add('active');
+    const w = document.getElementById('review-weekly');
+    const d = document.getElementById('review-decisions');
+    if (w) w.hidden = tab !== 'weekly';
+    if (d) d.hidden = tab !== 'decisions';
+  };
+  window.saveReview = function () {
+    const r = {
+      at: new Date().toISOString(),
+      week: document.getElementById('rev-week').value,
+      wins: document.getElementById('rev-wins').value.trim(),
+      problems: document.getElementById('rev-problems').value.trim(),
+      lessons: document.getElementById('rev-lessons').value.trim(),
+      next: document.getElementById('rev-next').value.trim()
+    };
+    if (!r.wins && !r.problems && !r.lessons && !r.next) {
+      alert('Add at least one note before saving.');
+      return;
+    }
+    const cur = Store.get('reviews') || [];
+    Store.set('reviews', cur.concat([r]));
+    ['rev-wins','rev-problems','rev-lessons','rev-next'].forEach(id => {
+      const e = document.getElementById(id); if (e) e.value = '';
+    });
+    flashInd('review-saved-ind');
+  };
+  window.saveDecision = function () {
+    const d = {
+      at: new Date().toISOString(),
+      title: document.getElementById('dec-title').value.trim(),
+      reasoning: document.getElementById('dec-reasoning').value.trim(),
+      expected: document.getElementById('dec-expected').value.trim(),
+      success: document.getElementById('dec-success').value.trim()
+    };
+    if (!d.title) { alert('Add a title for the decision.'); return; }
+    const cur = Store.get('decisions') || [];
+    Store.set('decisions', cur.concat([d]));
+    ['dec-title','dec-reasoning','dec-expected','dec-success'].forEach(id => {
+      const e = document.getElementById(id); if (e) e.value = '';
+    });
+    flashInd('decision-saved-ind');
+  };
+  window.deleteReview = function (i) {
+    if (!confirm('Delete this review?')) return;
+    const cur = Store.get('reviews') || [];
+    Store.set('reviews', cur.filter((_, idx) => idx !== i));
+  };
+  window.deleteDecision = function (i) {
+    if (!confirm('Delete this decision?')) return;
+    const cur = Store.get('decisions') || [];
+    Store.set('decisions', cur.filter((_, idx) => idx !== i));
+  };
+
+  // ─── LIFE TIMELINE ─────────────────────────────────────────
+  function wireTimeline() {
+    function render(s) {
+      const list = (s.timeline || []).slice().sort((a, b) => new Date(a.at) - new Date(b.at));
+      const el = document.getElementById('timeline-list');
+      if (!el) return;
+      if (list.length === 0) { el.innerHTML = '<div class="lb-empty">Empty timeline.</div>'; return; }
+      el.innerHTML = list.map(t => {
+        return '<div class="tl-row tl-' + (t.kind || 'past') + '">' +
+          '<div class="tl-dot tl-' + (t.kind || 'past') + '-dot"></div>' +
+          '<div class="tl-when">' + formatDate(t.at) + '</div>' +
+          '<div class="tl-what">' + escapeHTML(t.text) + '</div>' +
+          '<button class="chip-x" onclick="deleteTimeline(\'' + t.id + '\')">✕</button>' +
+        '</div>';
+      }).join('');
+    }
+    Store.subscribe('timeline', render);
+  }
+  window.addTimelineEntry = function () {
+    const at = document.getElementById('tl-date').value;
+    const kind = document.getElementById('tl-kind').value;
+    const text = document.getElementById('tl-text').value.trim();
+    if (!at || !text) { alert('Date and description required.'); return; }
+    const cur = Store.get('timeline') || [];
+    Store.set('timeline', cur.concat([{ id: 'tl_' + Date.now(), at, kind, text }]));
+    document.getElementById('tl-text').value = '';
+  };
+  window.deleteTimeline = function (id) {
+    if (!confirm('Delete?')) return;
+    const cur = Store.get('timeline') || [];
+    Store.set('timeline', cur.filter(t => t.id !== id));
+  };
+
+  // ─── TODAY — REACTIVE COMMAND CENTER ───────────────────────
+  function wireToday() {
+    function renderMetrics(s) {
+      const el = document.getElementById('home-metrics');
+      if (!el) return;
+      const d = Store.derive;
+      const surplus = d.monthlySurplus(s);
+      const target = s.money.save_target || 55000;
+      const targetPct = d.saveTargetHitPct(s);
+      const easa = d.easaProgress(s);
+      const careerM = d.careerMonths(s);
+      const qatarPct = d.qatarProgressPct(s);
+      const qatarMonths = d.qatarMonthsToGo(s);
+      const dPass = daysTo('2028-01-21');
+      const dMAI = daysTo('2026-07-15');
+      const cards = [
+        {emoji:'💰', label:'Monthly Surplus', value: (surplus >= 0 ? '+' : '') + surplus.toLocaleString() + ' ₽',
+          sub: targetPct + '% of 55k target',
+          color: surplus >= target ? 'var(--green)' : surplus >= target*0.7 ? 'var(--amber)' : 'var(--red)'},
+        {emoji:'🎯', label:'Qatar Visit', value: qatarPct + '%',
+          sub: !isFinite(qatarMonths) ? 'increase savings to start' : (qatarMonths === 0 ? 'goal reached ✓' : qatarMonths + ' months at pace'),
+          color: qatarPct >= 100 ? 'var(--green)' : qatarPct > 0 ? 'var(--amber)' : 'var(--tx3)'},
+        {emoji:'📚', label:'EASA B1.1', value: easa.done + '/15',
+          sub: easa.pct + '% average progress',
+          color: easa.done >= 10 ? 'var(--green)' : easa.done >= 5 ? 'var(--amber)' : 'var(--tx3)'},
+        {emoji:'✈️', label:'Career', value: careerM + ' mo',
+          sub: (s.career.aircraft||[]).length + ' aircraft · ' + (s.career.engines||[]).length + ' engines',
+          color: 'var(--gold2)'},
+        {emoji:'🛂', label:'Passport Wall', value: dPass + 'd',
+          sub: 'Jan 21 2028 · renew before age 28',
+          color: dPass <= 90 ? 'var(--red)' : dPass <= 365 ? 'var(--amber)' : 'var(--tx2)'},
+        {emoji:'🎓', label:'MAI Deadline', value: dMAI < 0 ? '✓' : (dMAI + 'd'),
+          sub: dMAI < 0 ? 'past · enroll if not yet' : 'July 15 · enrollment app',
+          color: dMAI < 0 ? 'var(--green)' : dMAI <= 30 ? 'var(--red)' : 'var(--tx2)'},
+      ];
+      el.innerHTML = cards.map(c =>
+        '<div class="metric-card">' +
+          '<div class="metric-emoji">' + c.emoji + '</div>' +
+          '<div class="metric-value" style="color:' + c.color + '">' + c.value + '</div>' +
+          '<div class="metric-label">' + c.label + '</div>' +
+          '<div class="metric-sub">' + c.sub + '</div>' +
+        '</div>'
+      ).join('');
+    }
+    function renderGoalsStrip(s) {
+      const el = document.getElementById('today-goals-strip');
+      if (!el) return;
+      const d = Store.derive;
+      const qatarPct = d.qatarProgressPct(s);
+      const easa = d.easaProgress(s);
+      const surplusPct = Math.min(100, d.saveTargetHitPct(s));
+      const surplus = d.monthlySurplus(s);
+      const target = s.money.save_target || 55000;
+      const items = [
+        { name: '55k Monthly Savings', pct: surplusPct,
+          sub: surplus.toLocaleString() + ' ₽ surplus · target ' + target.toLocaleString() + ' ₽' },
+        { name: 'Visit Mom in Qatar', pct: qatarPct,
+          sub: d.qatarRemaining(s).toLocaleString() + ' ₽ remaining' +
+            (s.qatarVisit.travel_month ? ' · target ' + s.qatarVisit.travel_month : '') },
+        { name: 'EASA Part-66 B1.1', pct: easa.pct,
+          sub: easa.done + ' of 15 modules done · ' + (15 - easa.done) + ' to go' },
+      ];
+      el.innerHTML = items.map(g =>
+        '<div class="today-goal-row">' +
+          '<div class="tg-name">' + g.name + '</div>' +
+          '<div class="tg-bar"><div class="tg-fill" style="width:' + Math.min(100, g.pct) + '%"></div></div>' +
+          '<div class="tg-pct">' + g.pct + '%</div>' +
+          '<div class="tg-sub">' + g.sub + '</div>' +
+        '</div>'
+      ).join('');
+    }
+    function renderPhase(s) {
+      const now = new Date();
+      const foundationEnd = new Date('2026-09-01');
+      const phEl = document.getElementById('home-phase-name');
+      const subEl = document.getElementById('home-phase-sub');
+      if (phEl) phEl.textContent = now < foundationEnd ? 'Foundation' : 'Build Mode';
+      if (subEl) subEl.textContent = now < foundationEnd
+        ? 'АэроТраст start · 55k system live · logbook day one · MAI application'
+        : 'CFM56 mastery · EASA modules · certificates · 55k every month';
+    }
+    Store.subscribe('*', s => {
+      try { renderMetrics(s); renderGoalsStrip(s); renderPhase(s); }
+      catch (e) { console.warn('[Today] render:', e); }
+    });
+  }
+
+  // ─── FINANCE ↔ STORE BRIDGE ────────────────────────────────
+  // The existing finance simulator reads/writes localStorage 'dune_finance_v1'.
+  // We mirror those changes into Store.money so everything else stays reactive.
+  function bridgeFinance() {
+    const fieldMap = {
+      salary: 'money.salary_net',
+      rent: 'money.expenses.rent',
+      food: 'money.expenses.food',
+      transport: 'money.expenses.transport',
+      utilities: 'money.expenses.utilities',
+      phone: 'money.expenses.phone',
+      family_transfer: 'money.expenses.family_transfer',
+      other: 'money.expenses.other',
+      mai: 'money.expenses.mai',
+      usd_rate: 'money.usd_rate'
+    };
+    const orig = window.finInputChange;
+    window.finInputChange = function (phase, field, val) {
+      if (typeof orig === 'function') orig.call(this, phase, field, val);
+      if (phase === 'russia' && fieldMap[field]) {
+        Store.set(fieldMap[field], parseFloat(val) || 0);
+      }
+    };
+    function pushStoreToInputs(s) {
+      const m = s.money;
+      const map = [
+        ['fin-r-salary', m.salary_net],
+        ['fin-r-rent', m.expenses.rent],
+        ['fin-r-food', m.expenses.food],
+        ['fin-r-transport', m.expenses.transport],
+        ['fin-r-utilities', m.expenses.utilities],
+        ['fin-r-phone', m.expenses.phone],
+        ['fin-r-family_transfer', m.expenses.family_transfer],
+        ['fin-r-other', m.expenses.other],
+        ['fin-r-mai', m.expenses.mai],
+        ['fin-r-usd_rate', m.usd_rate]
+      ];
+      map.forEach(([id, val]) => {
+        const el = document.getElementById(id);
+        if (el && document.activeElement !== el && val != null) el.value = val;
+      });
+      // Also write back to legacy key for the original render function
+      try {
+        const legacy = JSON.parse(localStorage.getItem('dune_finance_v1') || '{}');
+        legacy.russia = legacy.russia || {};
+        legacy.russia.salary = m.salary_net;
+        legacy.russia.usd_rate = m.usd_rate;
+        legacy.russia.save_target = m.save_target;
+        Object.assign(legacy.russia, m.expenses);
+        localStorage.setItem('dune_finance_v1', JSON.stringify(legacy));
+      } catch (e) { /* ignore */ }
+    }
+    Store.subscribe('money', pushStoreToInputs);
+  }
+
+  // ─── ABOUT — META DATA STRIP ───────────────────────────────
+  function wireAboutMeta() {
+    function inject(s) {
+      const sec = document.getElementById('aboutyou');
+      if (!sec) return;
+      let meta = sec.querySelector('.about-meta-strip');
+      const a = s.about || {};
+      const html = '<span class="amm-pill">v' + (a.version || 1) + '</span>' +
+        '<span class="amm-sep">·</span>' +
+        '<span>Created ' + (a.createdAt || '—') + '</span>' +
+        '<span class="amm-sep">·</span>' +
+        '<span>Last updated ' + (a.lastUpdated || '—') + '</span>';
+      if (!meta) {
+        meta = document.createElement('div');
+        meta.className = 'about-meta-strip';
+        const hd = sec.querySelector('.sec-hd');
+        if (hd) hd.appendChild(meta);
+      }
+      meta.innerHTML = html;
+    }
+    Store.subscribe('about', inject);
+  }
+
+  // ─── INIT ──────────────────────────────────────────────────
+  function init() {
+    try { wireFocus(); } catch (e) { console.error(e); }
+    try { wireQatar(); } catch (e) { console.error(e); }
+    try { wireCareer(); } catch (e) { console.error(e); }
+    try { wireReview(); } catch (e) { console.error(e); }
+    try { wireTimeline(); } catch (e) { console.error(e); }
+    try { wireToday(); } catch (e) { console.error(e); }
+    try { bridgeFinance(); } catch (e) { console.error(e); }
+    try { wireAboutMeta(); } catch (e) { console.error(e); }
+    console.log('[Phase1] reactive modules wired. Schema v' + Store.SCHEMA_VERSION);
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+})();
