@@ -1437,7 +1437,7 @@ window.clearGistToken=function(){
   showBackupToast('Token removed');
 };
 
-window.saveToGist=async function(){
+window.saveToGist=async function(isRetry){
   const token=LS.get('dune_github_token_v1','');
   if(!token){showBackupToast('⚠ No token saved');return;}
   const status=document.getElementById('gist-status');
@@ -1455,9 +1455,13 @@ window.saveToGist=async function(){
       body:JSON.stringify({description:'Dune Life OS — Auto Backup',public:false,files:{'dune-backup.json':{content}}})
     });
     if(!res.ok){
+      // 404 with a saved gist id = stale id → clear it and retry ONCE as a create.
+      // 404 on create (or on the retry) = token lacks the gist scope — do NOT loop.
+      if(res.status===404&&gistId&&!isRetry){LS.set('dune_gist_id_v1','');return window.saveToGist(true);}
       const err=await res.json().catch(()=>({}));
-      const msg=res.status===401?'Invalid token — check it has gist scope':res.status===404?'Gist not found — will create a new one':(err.message||'HTTP '+res.status);
-      if(res.status===404){LS.set('dune_gist_id_v1','');return window.saveToGist();}
+      const msg=(res.status===401||res.status===403||res.status===404)
+        ?'Token can\'t access Gists — generate a new token (classic) with the "gist" scope ticked'
+        :(err.message||'HTTP '+res.status);
       if(status) status.textContent='⚠ '+msg;
       showBackupToast('⚠ '+msg);return;
     }
