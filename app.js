@@ -24,14 +24,12 @@ window.addEventListener('scroll',()=>{
    ═══════════════════════════════════════════ */
 const NAV_GROUPS={
   home:     {primary:'home',      subs:[]},
-  career:   {primary:'career',    subs:[{id:'interviews',label:'Interviews'},{id:'decisions',label:'Decisions'},{id:'logbook',label:'Logbook'},{id:'easa',label:'EASA'},{id:'jobs',label:'Jobs'}]},
+  plan:     {primary:'moscow',    subs:[]},
+  career:   {primary:'easa',      subs:[{id:'logbook',label:'Logbook'}]},
   documents:{primary:'passport',  subs:[{id:'claims',label:'Claims'},{id:'deadlines',label:'Deadlines'}]},
-  gulf:     {primary:'gulf',      subs:[{id:'finance',label:'Finance'},{id:'monitor',label:'Monitor'}]},
-  passport2:{primary:'australia', subs:[{id:'canada',label:'Canada 🇨🇦'},{id:'usa',label:'USA 🇺🇸'},{id:'myoption',label:'My Opinion'},{id:'timeline',label:'Timeline'}]},
-  money:    {primary:'money',     subs:[{id:'finance',label:'Simulator'},{id:'progress',label:'Goals'}]},
-  life:     {primary:'moscow',    subs:[{id:'dtbureau',label:'🧸 Elisa'},{id:'cards',label:'Keep In Front'},{id:'questions',label:'Questions'},{id:'aboutyou',label:'About You'}]},
-  risks:    {primary:'riskmon',   subs:[{id:'risks',label:'Risk Cards'},{id:'claims',label:'Claims'},{id:'monitor',label:'Monitor'}]},
-  mission:  {primary:'todo',      subs:[{id:'timeline',label:'Timeline'},{id:'deadlines',label:'Deadlines'},{id:'progress',label:'Goals'}]},
+  money:    {primary:'finance',   subs:[{id:'progress',label:'Goals'}]},
+  risks:    {primary:'riskmon',   subs:[{id:'claims',label:'Claims'}]},
+  mission:  {primary:'todo',      subs:[{id:'deadlines',label:'Deadlines'},{id:'progress',label:'Goals'}]},
 };
 const SEC_TO_GROUP={};
 Object.entries(NAV_GROUPS).forEach(([k,g])=>{
@@ -86,7 +84,8 @@ function show(id,e){
   document.body.style.minHeight=document.documentElement.scrollHeight+'px';
 
   document.querySelectorAll('.sec').forEach(s=>s.classList.remove('active'));
-  const sec=document.getElementById(id);
+  let sec=document.getElementById(id);
+  if(!sec){id='home';sec=document.getElementById('home');} // stale saved section from old plan
   if(sec) sec.classList.add('active');
 
   const pos=_secScroll[id]!==undefined?_secScroll[id]:prevY;
@@ -130,10 +129,10 @@ function show(id,e){
     const el=document.getElementById('phb');
     if(!el)return;
     el.innerHTML=[
-      countdown('Interview 1','2026-06-02'),
-      countdown('Interview 2','2026-06-04'),
+      pill('Savings','55K/MO','var(--gold3)','var(--gold2)'),
       pill('Settlement','CLOSED','var(--bg3)','var(--tx3)'),
       countdown('MAI Deadline','2026-07-15'),
+      countdown('M15 Target','2026-10-01'),
       countdown('ВНЖ Renewal','2027-03-01'),
       countdown('Passport Wall','2028-01-21'),
     ].join('');
@@ -386,44 +385,24 @@ function show(id,e){
    PHASE 3 — SECTION LABELS & GROUP PILLS
    ═══════════════════════════════════════════ */
 const SEC_LABELS={
-  decisions:'✈️ Career — Decisions',
-  moscow:'💍 Life — Moscow',
-  interviews:'✈️ Career — Interviews',
-  career:'✈️ Career',
+  moscow:'🧭 Plan — Moscow Build Mode',
   passport:'🛂 Documents',
-  gulf:'🇦🇪 Gulf',
-  australia:'🌍 2nd Passport',
-  canada:'🌍 Canada',
-  usa:'🌍 USA',
-  myoption:'🌍 My Opinion',
-  money:'💰 Money',
-  timeline:'✅ Mission — Timeline',
-  monitor:'🇦🇪 Gulf — Monitor',
-  cards:'💍 Life — Keep In Front',
-  risks:'⚠️ Risk Cards',
-  questions:'💍 Life — Questions',
   todo:'✅ Mission Control',
-  aboutyou:'💍 About You',
-  dtbureau:'💍 Life — 🧸',
   progress:'✅ Goals',
   easa:'✈️ EASA Modules',
   logbook:'✈️ Logbook',
   deadlines:'✅ Deadlines',
   finance:'💰 Finance Simulator',
-  jobs:'✈️ Job Pipeline',
   claims:'🛂 Claims Register',
   riskmon:'⚠️ Risk Monitor',
 };
 
 const GROUP_PILLS={
-  career:[{id:'interviews',label:'Interviews'},{id:'decisions',label:'Decisions'},{id:'logbook',label:'Logbook'},{id:'easa',label:'EASA'},{id:'jobs',label:'Jobs'}],
+  easa:[{id:'logbook',label:'Logbook'}],
   passport:[{id:'claims',label:'Claims'},{id:'deadlines',label:'Deadlines'}],
-  gulf:[{id:'finance',label:'Finance'},{id:'monitor',label:'Monitor'}],
-  australia:[{id:'canada',label:'Canada 🇨🇦'},{id:'usa',label:'USA 🇺🇸'},{id:'myoption',label:'My Opinion'},{id:'timeline',label:'Timeline'}],
-  money:[{id:'finance',label:'Simulator'},{id:'progress',label:'Goals'}],
-  moscow:[{id:'dtbureau',label:'🧸 Elisa'},{id:'cards',label:'Keep In Front'},{id:'questions',label:'Questions'},{id:'aboutyou',label:'About You'}],
-  riskmon:[{id:'risks',label:'Risk Cards'},{id:'claims',label:'Claims'},{id:'monitor',label:'Monitor'}],
-  todo:[{id:'timeline',label:'Timeline'},{id:'deadlines',label:'Deadlines'},{id:'progress',label:'Goals'}],
+  finance:[{id:'progress',label:'Goals'}],
+  riskmon:[{id:'claims',label:'Claims'}],
+  todo:[{id:'deadlines',label:'Deadlines'},{id:'progress',label:'Goals'}],
 };
 
 function updateSectionLabels(){
@@ -569,8 +548,10 @@ function renderMetricCards(){
   // Finance monthly savings
   const fin=LS.get('dune_finance_v1',D.finance);
   const r=fin.russia||D.finance.russia;
-  const mSav=(parseFloat(r.salary)||0)-(parseFloat(r.rent)||0)-(parseFloat(r.food)||0)-(parseFloat(r.transport)||0)-(parseFloat(r.other)||0)-(parseFloat(r.mai)||0);
+  const mSav=(parseFloat(r.salary)||0)-(parseFloat(r.rent)||0)-(parseFloat(r.food)||0)-(parseFloat(r.transport)||0)-(parseFloat(r.utilities)||0)-(parseFloat(r.phone)||0)-(parseFloat(r.family_transfer)||0)-(parseFloat(r.other)||0)-(parseFloat(r.mai)||0);
   const mSavUSD=Math.round(mSav/(parseFloat(r.usd_rate)||88));
+  const target=parseFloat(r.save_target)||55000;
+  const targetPct=Math.max(0,Math.round(mSav/target*100));
 
   function card(emoji,label,value,sub,color,priv){
     return '<div class="metric-card"'+(priv?' data-private="true"':'')+'>'+
@@ -581,40 +562,39 @@ function renderMetricCards(){
     '</div>';
   }
 
-  const d1=daysTo('2026-06-02');
-  const d2=daysTo('2026-06-04');
   const dPass=daysTo('2028-01-21');
   const dMAI=daysTo('2026-07-15');
+  const dM15=daysTo('2026-10-01');
 
   el.innerHTML=[
-    card('✈️','Interview 1',
-      d1<0?'✓':d1+'d',
-      d1<0?'Done · Аэрофлот':'June 2 · Аэрофлот Техникс',
-      d1<0?'var(--green)':d1<=7?'var(--red)':'var(--amber)',false),
-    card('✈️','Interview 2',
-      d2<0?'✓':d2+'d',
-      d2<0?'Done · АэроТраст':'June 4 · АэроТраст',
-      d2<0?'var(--green)':d2<=7?'var(--red)':'var(--amber)',false),
-    card('🛂','Passport Wall',
-      dPass+'d',
-      'Jan 21, 2028 · renew before age 28',
-      dPass<=90?'var(--red)':dPass<=365?'var(--amber)':'var(--tx2)',false),
-    card('🎓','MAI Deadline',
-      dMAI<0?'✓':dMAI+'d',
-      dMAI<0?'Done':'July 15 · enrollment application',
-      dMAI<0?'var(--green)':dMAI<=14?'var(--red)':dMAI<=30?'var(--amber)':'var(--tx2)',false),
+    card('💼','АэроТраст',
+      'Active',
+      'CFM56-5B overhaul · 130k ₽ net',
+      'var(--green)',true),
+    card('💰','Savings vs 55k',
+      mSav>0?'₽'+Math.round(mSav/1000)+'k':'₽—',
+      mSav>0?targetPct+'% of target · ≈ $'+mSavUSD+'/mo':'Set numbers in Finance tab',
+      mSav>=target?'var(--green)':mSav>=target*0.7?'var(--amber)':mSav>0?'var(--red)':'var(--tx3)',true),
     card('📚','EASA B1.1',
       easaDone+'/15',
-      easaDone===0?'Not started · begin Module 7':easaDone+' done · '+(15-easaDone)+' remaining',
+      easaDone===0?'M15 in progress · exam-ready Oct':easaDone+' done · '+(15-easaDone)+' remaining',
       easaDone>=10?'var(--green)':easaDone>=5?'var(--amber)':'var(--tx3)',false),
+    card('⏱','M15 Target',
+      dM15<0?'✓':dM15+'d',
+      dM15<0?'Done':'Oct 1 · Gas Turbines exam-ready',
+      dM15<0?'var(--green)':dM15<=14?'var(--red)':dM15<=45?'var(--amber)':'var(--tx2)',false),
     card('✈️','Logbook',
       lb.length===0?'0h':parseFloat(lbHours.toFixed(1))+'h',
       lb.length===0?'No entries · start day one':lb.length+' entries logged',
       lbHours>500?'var(--green)':lbHours>0?'var(--amber)':'var(--tx3)',false),
-    card('💰','Monthly Savings',
-      mSav>0?'₽'+Math.round(mSav/1000)+'k':'₽—',
-      mSav>0?'≈ $'+mSavUSD+'/mo · adjust in Finance':'Set salary in Finance tab',
-      mSav>=40000?'var(--green)':mSav>=20000?'var(--amber)':mSav>0?'var(--red)':'var(--tx3)',true),
+    card('🎓','MAI Deadline',
+      dMAI<0?'✓':dMAI+'d',
+      dMAI<0?'Done':'July 15 · enrollment application',
+      dMAI<0?'var(--green)':dMAI<=14?'var(--red)':dMAI<=30?'var(--amber)':'var(--tx2)',false),
+    card('🛂','Passport Wall',
+      dPass+'d',
+      'Jan 21, 2028 · renew before age 28',
+      dPass<=90?'var(--red)':dPass<=365?'var(--amber)':'var(--tx2)',false),
   ].join('');
 }
 
@@ -624,12 +604,10 @@ function renderMetricCards(){
 function renderHome(){
   // Phase widget
   const now=new Date();
-  const june2026End=new Date('2026-09-01');
-  const moscow2028=new Date('2028-06-01');
+  const foundationEnd=new Date('2026-09-01');
   let phase,phaseSub;
-  if(now<june2026End){phase='Moscow Foundation';phaseSub='June 2026 — Secure job, start logbook, enroll MAI';}
-  else if(now<moscow2028){phase='Moscow Build';phaseSub='Building logbook · EASA study · Passport renewal · Gulf prep';}
-  else{phase='Gulf Launch';phaseSub='Etihad Engineering · EASA modules · UAE family settled';}
+  if(now<foundationEnd){phase='Foundation';phaseSub='АэроТраст start · 55k system live · logbook day one · MAI application';}
+  else{phase='Build Mode';phaseSub='CFM56 mastery · EASA modules · certificates · 55k every month';}
   const phEl=document.getElementById('home-phase-name');
   const phSub=document.getElementById('home-phase-sub');
   if(phEl) phEl.textContent=phase;
@@ -651,7 +629,7 @@ function renderHome(){
 
   // Savings widgets
   const goals=LS.get('dune_goals_v1',{});
-  ['go16','go17','go18','go19'].forEach(gid=>{
+  ['go10','go11','go12','go13'].forEach(gid=>{
     const stored=goals[gid]||{};
     const g=D.goals.find(x=>x.id===gid);
     if(!g) return;
@@ -1070,19 +1048,12 @@ function renderATACoverage(entries){
     const usd=parseFloat(v.usd_rate)||88;
     return {gross,expenses,net,netUSD:(net/usd).toFixed(0),annualUSD:((net*12)/usd).toFixed(0)};
   }
-  function calcGulf(v){
-    const aed=parseFloat(v.salary_aed)||0;
-    const exp=(parseFloat(v.housing)||0)+(parseFloat(v.transport)||0)+(parseFloat(v.food)||0)+(parseFloat(v.dep_cost)||0)+(parseFloat(v.remittance)||0)+(parseFloat(v.easa_monthly)||0);
-    const net=aed-exp;
-    const rate=parseFloat(v.usd_rate)||3.67;
-    return {gross:aed,expenses:exp,net,netUSD:(net/rate).toFixed(0),annualUSD:((net*12)/rate).toFixed(0)};
-  }
   function renderOutputs(){
     const v=getInputs();
-    const r=calcRussia(v.russia||D.finance.russia);
-    const g=calcGulf(v.gulf||D.finance.gulf);
+    const rIn=v.russia||D.finance.russia;
+    const r=calcRussia(rIn);
+    const target=parseFloat(rIn.save_target)||55000;
     const rOut=document.getElementById('fin-russia-out');
-    const gOut=document.getElementById('fin-gulf-out');
     function headline(value,sub,cls){
       return '<div class="fin-headline">'+
         '<div class="fin-headline-label">Monthly Net Savings</div>'+
@@ -1090,26 +1061,19 @@ function renderATACoverage(entries){
         '<div class="fin-headline-sub">'+sub+'</div>'+
       '</div>';
     }
+    const hit=r.net>=target;
     if(rOut) rOut.innerHTML=
       headline(
         (r.net>0?'+':'')+Math.round(r.net).toLocaleString()+' ₽',
         '≈ $'+r.netUSD+'/mo · $'+r.annualUSD+'/yr',
         r.net>0?'positive':'negative')+
       '<div class="fin-section-title">Breakdown</div>'+
-      row('Monthly gross',r.gross.toLocaleString()+' ₽')+
+      row('Net salary',r.gross.toLocaleString()+' ₽')+
       row('Monthly expenses',r.expenses.toLocaleString()+' ₽')+
-      row('Monthly savings',r.net.toLocaleString()+' ₽',r.net>0?'positive':'negative')+
-      row('Gulf move fund (120k ₽)',r.net>0?Math.ceil(120000/r.net)+' months':'-');
-    if(gOut) gOut.innerHTML=
-      headline(
-        (g.net>0?'+':'')+Math.round(g.net).toLocaleString()+' AED',
-        '≈ $'+g.netUSD+'/mo · $'+g.annualUSD+'/yr',
-        g.net>0?'positive':'negative')+
-      '<div class="fin-section-title">Breakdown</div>'+
-      row('Monthly gross','AED '+g.gross.toLocaleString())+
-      row('Monthly expenses','AED '+g.expenses.toLocaleString())+
-      row('Monthly savings','AED '+g.net.toLocaleString(),g.net>0?'positive':'negative')+
-      row('2-year savings','$'+(parseInt(g.annualUSD)*2).toLocaleString());
+      row('Monthly surplus',r.net.toLocaleString()+' ₽',r.net>0?'positive':'negative')+
+      row('55k target',hit?'✓ HIT — '+Math.round(r.net/target*100)+'%':Math.max(0,Math.round(r.net/target*100))+'% — cut '+Math.max(0,target-r.net).toLocaleString()+' ₽',hit?'positive':'negative')+
+      row('Saved per year at 55k','660,000 ₽ · ≈ $'+Math.round(660000/(parseFloat(rIn.usd_rate)||88)).toLocaleString())+
+      row('Emergency fund (225k ₽)',r.net>0?Math.ceil(225000/Math.min(r.net,target))+' months':'-');
   }
   function row(label,val,cls){
     return '<div class="fin-result"><span class="fin-result-label">'+label+'</span><span class="fin-result-val'+(cls?' '+cls:'')+'">'+val+'</span></div>';
@@ -1117,17 +1081,10 @@ function renderATACoverage(entries){
   function syncInputs(){
     const v=getInputs();
     const rd=D.finance.russia;
-    const gd=D.finance.gulf;
     ['salary','rent','food','transport','utilities','phone','family_transfer','other','mai','usd_rate'].forEach(k=>{
       const el=document.getElementById('fin-r-'+k);
       if(!el) return;
       const val=(v.russia&&v.russia[k]!==undefined)?v.russia[k]:rd[k];
-      if(val!==undefined) el.value=val;
-    });
-    ['salary_aed','housing','transport','food','dep_cost','remittance','easa_monthly'].forEach(k=>{
-      const el=document.getElementById('fin-g-'+k);
-      if(!el) return;
-      const val=(v.gulf&&v.gulf[k]!==undefined)?v.gulf[k]:gd[k];
       if(val!==undefined) el.value=val;
     });
   }
@@ -1142,114 +1099,19 @@ function renderATACoverage(entries){
     document.querySelectorAll('.fin-scenario').forEach(b=>b.classList.remove('active'));
     if(btn) btn.classList.add('active');
     const presets={
-      conservative:{russia:{salary:85000,rent:28000,food:18000,transport:6000,utilities:4000,phone:1500,family_transfer:0,other:7000,mai:16000},gulf:{salary_aed:10000,housing:6500,transport:1200,food:2500,dep_cost:0,remittance:500,easa_monthly:300}},
-      realistic:{russia:{salary:100000,rent:26000,food:15000,transport:5000,utilities:3500,phone:1500,family_transfer:0,other:5000,mai:14000},gulf:{salary_aed:12000,housing:6000,transport:1200,food:2000,dep_cost:0,remittance:500,easa_monthly:300}},
-      upside:{russia:{salary:120000,rent:24000,food:12000,transport:4000,utilities:3000,phone:1200,family_transfer:0,other:4000,mai:0},gulf:{salary_aed:16000,housing:6000,transport:1000,food:2000,dep_cost:0,remittance:500,easa_monthly:200}},
-      gulf_wife:{russia:{salary:100000,rent:26000,food:15000,transport:5000,utilities:3500,phone:1500,family_transfer:0,other:5000,mai:14000},gulf:{salary_aed:12000,housing:8000,transport:1500,food:3000,dep_cost:2000,remittance:500,easa_monthly:300}},
+      conservative:{russia:{salary:130000,rent:30000,food:20000,transport:6000,utilities:4500,phone:1500,family_transfer:0,other:12000,mai:14000}},
+      realistic:{russia:{salary:130000,rent:26000,food:16000,transport:5000,utilities:3500,phone:1500,family_transfer:0,other:8000,mai:14000}},
+      upside:{russia:{salary:145000,rent:24000,food:14000,transport:4000,utilities:3000,phone:1200,family_transfer:0,other:6000,mai:0}},
     };
     if(presets[s]){
       const v=getInputs();
       if(presets[s].russia) v.russia=Object.assign(v.russia||{},presets[s].russia);
-      if(presets[s].gulf) v.gulf=Object.assign(v.gulf||{},presets[s].gulf);
       saveInputs(v);
       syncInputs();
       renderOutputs();
     }
   };
   document.addEventListener('DOMContentLoaded',()=>{ syncInputs(); renderOutputs(); });
-})();
-
-/* ═══════════════════════════════════════════
-   JOB APPLICATION CRM
-   ═══════════════════════════════════════════ */
-(function(){
-  const STORE='dune_crm_v1';
-  let crmFilter='all';
-  let selectedJob=null;
-  function getData(){
-    const stored=LS.get(STORE,null);
-    if(!stored) return D.companies.map(c=>({...c}));
-    // merge stored status/notes with default data
-    return D.companies.map(c=>{
-      const s=stored.find(x=>x.id===c.id);
-      return s?{...c,...s}:c;
-    });
-  }
-  function saveData(arr){LS.set(STORE,arr);}
-  function fitClass(fit){return fit>=8?'crm-fit-high':fit>=6?'crm-fit-med':'crm-fit-low';}
-  function statusCols(){return ['target','applied','interview','offer','rejected'];}
-  function renderCRM(filter){
-    crmFilter=filter||crmFilter;
-    const data=getData();
-    const container=document.getElementById('crm-pipeline');
-    if(!container) return;
-    const filtered=crmFilter==='all'?data:data.filter(c=>c.region===crmFilter||c.status===crmFilter);
-    container.innerHTML=statusCols().map(status=>{
-      const cards=filtered.filter(c=>c.status===status);
-      return '<div class="crm-col crm-col-'+status+'">'+
-        '<div class="crm-col-title">'+status.charAt(0).toUpperCase()+status.slice(1)+' ('+cards.length+')</div>'+
-        cards.map(c=>'<div class="crm-card" onclick="openCRMDetail(\''+c.id+'\')">'+
-          '<div class="crm-card-company">'+c.company+'</div>'+
-          '<div class="crm-card-role">'+c.city+', '+c.country+'</div>'+
-          '<div class="crm-card-meta">'+
-            '<span class="crm-fit '+fitClass(c.fit||0)+'">Fit: '+(c.fit||0)+'/10</span>'+
-            '<span class="crm-region">'+c.region+'</span>'+
-          '</div>'+
-        '</div>').join('')+
-      '</div>';
-    }).join('');
-  }
-  window.filterCRM=function(f,btn){
-    document.querySelectorAll('.crm-filter').forEach(b=>b.classList.remove('active'));
-    if(btn) btn.classList.add('active');
-    renderCRM(f);
-    document.getElementById('crm-detail').classList.remove('open');
-  };
-  window.openCRMDetail=function(id){
-    selectedJob=id;
-    const data=getData();
-    const c=data.find(x=>x.id===id);
-    if(!c) return;
-    const det=document.getElementById('crm-detail');
-    if(!det) return;
-    det.innerHTML=
-      '<div class="crm-detail-title">'+c.company+' — '+c.role+'</div>'+
-      '<div class="crm-detail-grid">'+
-        field('Country',c.country+', '+c.city)+
-        field('Aircraft',c.aircraft)+
-        field('Salary',c.salary)+
-        field('Fit Score',c.fit+'/10')+
-        '<div class="crm-detail-field"><div class="crm-detail-label">Status</div>'+
-          '<select class="crm-status-select" onchange="updateCRMStatus(\''+id+'\',this.value)">'+
-            statusCols().map(s=>'<option value="'+s+'"'+(c.status===s?' selected':'')+'>'+s.charAt(0).toUpperCase()+s.slice(1)+'</option>').join('')+
-          '</select>'+
-        '</div>'+
-        field('Applied',c.applied||'—')+
-        field('Contact',c.contact||'—')+
-        field('Next Follow-up',c.nextFollowup||'—')+
-      '</div>'+
-      '<div class="crm-detail-field" style="margin-top:12px"><div class="crm-detail-label">Notes</div>'+
-        '<textarea style="width:100%;border:1px solid var(--bdr2);border-radius:8px;padding:8px;font-family:var(--sans);font-size:12.5px;color:var(--tx);background:var(--bg);resize:vertical;min-height:60px;outline:none" onchange="updateCRMNotes(\''+id+'\',this.value)">'+(c.notes||'')+'</textarea>'+
-      '</div>';
-    det.classList.add('open');
-  };
-  function field(label,val){
-    return '<div class="crm-detail-field"><div class="crm-detail-label">'+label+'</div><div class="crm-detail-val">'+val+'</div></div>';
-  }
-  window.updateCRMStatus=function(id,status){
-    const data=getData();
-    const c=data.find(x=>x.id===id);
-    if(c) c.status=status;
-    saveData(data);
-    renderCRM();
-  };
-  window.updateCRMNotes=function(id,notes){
-    const data=getData();
-    const c=data.find(x=>x.id===id);
-    if(c) c.notes=notes;
-    saveData(data);
-  };
-  document.addEventListener('DOMContentLoaded',()=>renderCRM());
 })();
 
 /* ═══════════════════════════════════════════
@@ -1351,79 +1213,6 @@ function renderRiskMonitor(){
 document.addEventListener('DOMContentLoaded',renderRiskMonitor);
 
 /* ═══════════════════════════════════════════
-   DECISION ENGINE
-   ═══════════════════════════════════════════ */
-(function(){
-  const STORE='dune_decide_v1';
-  function getData(){
-    const stored=LS.get(STORE,null);
-    if(!stored) return D.decision.criteria.map(c=>({...c}));
-    return D.decision.criteria.map(c=>{
-      const s=stored.find(x=>x.id===c.id);
-      return s?{...c,...s}:c;
-    });
-  }
-  function saveData(arr){LS.set(STORE,arr);}
-  function calcScore(criteria){
-    const maxWt=criteria.reduce((a,c)=>a+(c.weight||0),0)||1;
-    const scoreA=criteria.reduce((a,c)=>a+(c.weight||0)*(c.a||0),0)/(maxWt*10)*100;
-    const scoreB=criteria.reduce((a,c)=>a+(c.weight||0)*(c.b||0),0)/(maxWt*10)*100;
-    return {a:Math.round(scoreA),b:Math.round(scoreB)};
-  }
-  function renderDecide(){
-    const criteria=getData();
-    const scores=calcScore(criteria);
-    const aWins=scores.a>=scores.b;
-    const headA=document.getElementById('decide-score-a');
-    const headB=document.getElementById('decide-score-b');
-    const boxA=document.getElementById('decide-box-a');
-    const boxB=document.getElementById('decide-box-b');
-    if(headA) headA.textContent=scores.a+'%';
-    if(headB) headB.textContent=scores.b+'%';
-    if(boxA){boxA.classList.toggle('winner',aWins);}
-    if(boxB){boxB.classList.toggle('winner',!aWins);}
-    const table=document.getElementById('decide-table');
-    if(table) table.innerHTML=criteria.map(c=>{
-      const aColor=c.a>=7?'var(--green)':c.a>=4?'var(--amber)':'var(--red)';
-      const bColor=c.b>=7?'var(--green)':c.b>=4?'var(--amber)':'var(--red)';
-      return '<div class="decide-criteria-row" title="'+c.note+'">'+
-        '<div class="dc-label">'+c.label+'</div>'+
-        '<div class="dc-weight"><input type="number" min="0" max="10" value="'+c.weight+'" onchange="updateDecideWeight(\''+c.id+'\',this.value)" /></div>'+
-        '<div class="dc-score"><input type="number" min="0" max="10" value="'+c.a+'" style="border-color:'+aColor+'" onchange="updateDecideScore(\''+c.id+'\',\'a\',this.value)" /></div>'+
-        '<div class="dc-score"><input type="number" min="0" max="10" value="'+c.b+'" style="border-color:'+bColor+'" onchange="updateDecideScore(\''+c.id+'\',\'b\',this.value)" /></div>'+
-      '</div>';
-    }).join('');
-    const rec=document.getElementById('decide-recommend');
-    if(rec){
-      rec.classList.add('show');
-      const winner=aWins?D.decision.optA:D.decision.optB;
-      const margin=Math.abs(scores.a-scores.b);
-      const strength=margin>=15?'strongly':margin>=8?'clearly':'slightly';
-      rec.innerHTML='<div class="decide-rec-title">Recommendation</div>'+
-        '<div class="decide-rec-body"><strong>→ '+winner+'</strong> is '+strength+' preferred ('+scores.a+'% vs '+scores.b+'%).<br>'+
-        (aWins?'Whole-aircraft B1.1 breadth outweighs engine depth for Gulf and EASA positioning. Unless Аэрофлот confirms Superjet, this remains the correct choice.':
-        'Engine depth and salary advantage make АэроТраст the better option at current weights. Verify CFM56 scope and company stability before committing.')+
-        '</div>';
-    }
-  }
-  window.updateDecideWeight=function(id,val){
-    const data=getData();
-    const c=data.find(x=>x.id===id);
-    if(c) c.weight=parseInt(val)||0;
-    saveData(data);
-    renderDecide();
-  };
-  window.updateDecideScore=function(id,opt,val){
-    const data=getData();
-    const c=data.find(x=>x.id===id);
-    if(c) c[opt]=parseInt(val)||0;
-    saveData(data);
-    renderDecide();
-  };
-  document.addEventListener('DOMContentLoaded',renderDecide);
-})();
-
-/* ═══════════════════════════════════════════
    FIN TABS
    ═══════════════════════════════════════════ */
 window.showFinTab=function(tab,btn){
@@ -1446,129 +1235,21 @@ document.addEventListener('DOMContentLoaded',()=>{
   const sub=document.getElementById('nav-sub');
   if(sub&&NAV_GROUPS[lastGroup]){sub.dataset.group=lastGroup;}
   show(last||'home');
-  const savedIntTab=LS.get('dune_int_tab_v1','myq');
-  if(savedIntTab!=='myq') showIntTab(savedIntTab,null);
   const savedLbTab=LS.get('dune_logbook_tab_v1','tracker');
   if(savedLbTab!=='tracker') showLbTab(savedLbTab,null);
-  renderInterviewChecklist();
   renderApartments();
   initBackupSystem();
 });
 
 /* ═══════════════════════════════════════════
-   FEATURE 1 — INTERVIEW DAY CHECKLIST
-   ═══════════════════════════════════════════ */
-function renderInterviewChecklist(){
-  const root=document.getElementById('interview-checklist-root');
-  if(!root) return;
-  const state=LS.get('dune_int_checklist_v1',{});
-  const results=LS.get('dune_int_results_v1',{});
-  const now=new Date();
-
-  function countdown(dateStr,timeStr){
-    const dt=new Date(dateStr+'T'+timeStr);
-    const diff=dt-now;
-    if(diff<0) return null;
-    const days=Math.floor(diff/86400000);
-    const hours=Math.floor((diff%86400000)/3600000);
-    if(days>0) return days+'d';
-    return hours+'h';
-  }
-
-  const html=(D.interview_checklists||[]).map(intv=>{
-    const cd=countdown(intv.date,intv.time);
-    const isPast=new Date(intv.date+'T'+intv.time)<now;
-    const done=intv.items.filter(it=>state[it.id]).length;
-    const total=intv.items.length;
-    const allDone=done===total;
-    const borderColor=intv.border==='red'?'var(--red)':'var(--amber)';
-    const todayStr=now.toISOString().slice(0,10);
-    const isToday=intv.date===todayStr;
-
-    if(isPast){
-      return `<div class="icl-card icl-done">
-        <div class="icl-done-row">
-          <span class="icl-done-check">✓</span>
-          <span class="icl-done-title">${intv.company}</span>
-          <span class="icl-done-meta">${intv.date} · ${intv.time} · ${done}/${total} готово</span>
-          <button class="icl-expand-btn" onclick="this.closest('.icl-card').classList.toggle('icl-expanded')">▼</button>
-        </div>
-        <div class="icl-collapse-body">
-          <div class="icl-items">${intv.items.map(it=>`<div class="icl-item ${state[it.id]?'icl-checked':''}"><span class="icl-cb">${state[it.id]?'✓':'○'}</span><span>${it.text}</span></div>`).join('')}</div>
-          ${results[intv.id]?`<div class="icl-result-display"><span class="icl-result-label">Результат</span><p>${results[intv.id]}</p></div>`:''}
-        </div>
-      </div>`;
-    }
-
-    return `<div class="icl-card" style="border-left:3px solid ${borderColor}">
-      <div class="icl-header">
-        <div>
-          <div class="icl-company">${intv.company}</div>
-          <div class="icl-meta">${intv.address} · ${intv.time}</div>
-        </div>
-        <div class="icl-right">
-          ${isToday?'<span class="icl-today">⚠ TODAY</span>':cd?`<span class="icl-countdown">${cd}</span>`:''}
-          <span class="icl-progress ${allDone?'icl-prog-done':''}">${done}/${total}</span>
-        </div>
-      </div>
-      <div class="icl-items">${intv.items.map(it=>`
-        <label class="icl-item ${state[it.id]?'icl-checked':''}">
-          <input type="checkbox" ${state[it.id]?'checked':''} onchange="iciToggle('${it.id}',this.checked)" style="display:none">
-          <span class="icl-cb">${state[it.id]?'✓':'○'}</span>
-          <span>${it.text}</span>
-        </label>`).join('')}
-      </div>
-      <div class="icl-result-wrap">
-        <div class="icl-result-label">Результат / Outcome</div>
-        <textarea class="sb-note icl-result-ta" data-iid="${intv.id}" placeholder="После интервью: флот подтверждён, зарплата, следующий шаг…">${results[intv.id]||''}</textarea>
-        <div class="iqa-saved" id="icl-saved-${intv.id}">✓ сохранено</div>
-      </div>
-    </div>`;
-  }).join('');
-
-  root.innerHTML=`<div class="icl-grid">${html}</div>`;
-
-  root.querySelectorAll('.icl-result-ta').forEach(ta=>{
-    let t;
-    ta.addEventListener('input',()=>{
-      clearTimeout(t);
-      t=setTimeout(()=>{
-        const res=LS.get('dune_int_results_v1',{});
-        res[ta.dataset.iid]=ta.value;
-        LS.set('dune_int_results_v1',res);
-        const ind=document.getElementById('icl-saved-'+ta.dataset.iid);
-        if(ind){ind.style.opacity='1';setTimeout(()=>ind.style.opacity='0',1200);}
-      },800);
-    });
-  });
-}
-
-window.iciToggle=function(id,checked){
-  const state=LS.get('dune_int_checklist_v1',{});
-  state[id]=checked;
-  LS.set('dune_int_checklist_v1',state);
-  bumpChangeCount();
-  const label=document.querySelector(`[onchange*="${id}"]`)?.closest('.icl-item');
-  if(label){label.classList.toggle('icl-checked',checked);label.querySelector('.icl-cb').textContent=checked?'✓':'○';}
-  const card=document.querySelector(`[onchange*="${id}"]`)?.closest('.icl-card');
-  if(card){
-    const all=card.querySelectorAll('input[type=checkbox]');
-    const done=[...all].filter(c=>c.checked).length;
-    const prog=card.querySelector('.icl-progress');
-    if(prog){prog.textContent=done+'/'+all.length;prog.classList.toggle('icl-prog-done',done===all.length);}
-  }
-};
-
-/* ═══════════════════════════════════════════
    FEATURE 2 — BACKUP & RESTORE SYSTEM
    ═══════════════════════════════════════════ */
 const BACKUP_KEYS=[
-  'dune_int_checklist_v1','dune_int_results_v1',
-  'dune_interview_qa_notes_v1','dune_finance_v1',
-  'dune_sb_tasks_v1','dune_goals_v1','dune_easa_v1',
-  'dune_crm_v1','dune_logbook_v1','dune_deadlines_ext_v1',
+  'dune_finance_v1','dune_sb_v1',
+  'dune_goals_v1','dune_easa_v1',
+  'dune_logbook_v1','dune_deadlines_ext_v1',
   'dune_apartments_v1','dune_logbook_entries_v1','dune_logbook_tab_v1',
-  'dune_decision_weights_v1'
+  'dune_claims_v1'
 ];
 
 function getAllBackupData(){
@@ -1687,7 +1368,6 @@ function processImport(text){
 function summarizeBackup(data){
   const out=[];
   if(data.dune_logbook_entries_v1) out.push(['Logbook',(data.dune_logbook_entries_v1||[]).length+' entries']);
-  if(data.dune_interview_qa_notes_v1) out.push(['Q&A notes',Object.keys(data.dune_interview_qa_notes_v1||{}).length]);
   if(data.dune_apartments_v1) out.push(['Apartments',(data.dune_apartments_v1||[]).length]);
   if(data.dune_goals_v1) out.push(['Goals',Object.keys(data.dune_goals_v1||{}).length]);
   return out;
@@ -2156,129 +1836,4 @@ window.aptToggleWinner=function(id){
   const apts=LS.get('dune_apartments_v1',[]).map(a=>({...a,winner:a.id===id?!a.winner:false}));
   LS.set('dune_apartments_v1',apts);
   renderApartments();
-};
-
-/* ═══════════════════════════════════════════
-   INTERVIEW Q&A MASTER
-   ═══════════════════════════════════════════ */
-window.showIntTab=function(tab,btn){
-  document.querySelectorAll('.int-tab-btn').forEach(b=>b.classList.remove('active'));
-  const activeBtn=btn||Array.from(document.querySelectorAll('.int-tab-btn')).find(b=>(b.getAttribute('onclick')||'').includes("'"+tab+"'"));
-  if(activeBtn) activeBtn.classList.add('active');
-  const myQ=document.getElementById('int-tab-myq');
-  const theyAsk=document.getElementById('int-tab-theyask');
-  if(myQ) myQ.hidden=(tab!=='myq');
-  if(theyAsk) theyAsk.hidden=(tab!=='theyask');
-  if(tab==='theyask') renderInterviewQA();
-  LS.set('dune_int_tab_v1',tab);
-};
-
-function renderInterviewQA(){
-  const root=document.getElementById('interview-qa-root');
-  if(!root||root.dataset.rendered==='1') return;
-  root.dataset.rendered='1';
-
-  const savedNotes=LS.get('dune_interview_qa_notes_v1',{});
-  const ORDER=['p0','p1','p3','p2','p5','p4','p7','p6'];
-  const partMap={};
-  (D.interview_parts||[]).forEach(p=>{ partMap[p.id]=p; });
-
-  const diffBadge={low:'🟢 Low',med:'🟡 Med',high:'🔴 High'};
-  const compBadge={both:'Both','aeroflot':'Аэрофлот','aerotrust':'АэроТраст'};
-
-  // count per difficulty
-  const counts={all:0,high:0,med:0,low:0};
-  (D.interview_qa||[]).forEach(q=>{counts.all++;if(q.difficulty)counts[q.difficulty]=(counts[q.difficulty]||0)+1;});
-
-  let html=`<div class="iqa-filters">
-    <button class="iqa-filter-btn active" onclick="iqaFilter('all',this)">All <span class="iqa-filter-count">${counts.all}</span></button>
-    <button class="iqa-filter-btn iqa-f-high" onclick="iqaFilter('high',this)">🔴 High <span class="iqa-filter-count">${counts.high||0}</span></button>
-    <button class="iqa-filter-btn iqa-f-med" onclick="iqaFilter('med',this)">🟡 Med <span class="iqa-filter-count">${counts.med||0}</span></button>
-    <button class="iqa-filter-btn iqa-f-low" onclick="iqaFilter('low',this)">🟢 Low <span class="iqa-filter-count">${counts.low||0}</span></button>
-  </div>`;
-
-  ORDER.forEach(pid=>{
-    const part=partMap[pid];
-    if(!part) return;
-    const qs=(D.interview_qa||[]).filter(q=>q.part===pid);
-    if(!qs.length) return;
-
-    html+=`<div class="iqa-part-header" data-part="${pid}">
-      <span class="iqa-part-tag">${part.tag}</span>
-      <span class="iqa-part-title">${part.title}</span>
-      <span class="iqa-part-sub">${part.title_en}</span>
-    </div>`;
-
-    qs.forEach(q=>{
-      const isCrit=(q.tag==='CRITICAL');
-      const note=savedNotes[q.id]||'';
-      html+=`<div class="iqa-card${isCrit?' iqa-critical':''}" data-difficulty="${q.difficulty}" data-part="${pid}">
-        <div class="iqa-meta">
-          <span class="iqa-tag">${q.tag||''}</span>
-          <span class="iqa-diff">${diffBadge[q.difficulty]||''}</span>
-          <span class="iqa-comp">${compBadge[q.company]||''}</span>
-        </div>
-        <div class="iqa-q-ru">${q.q_ru}</div>
-        <div class="iqa-q-en">${q.q_en}</div>
-        <div class="iqa-answer-wrap" id="ans-wrap-${q.id}">
-          <div class="iqa-answer-ru">${(q.answer_ru||'').replace(/\n/g,'<br>')}</div>
-          ${q.answer_en?`<div class="iqa-answer-en"><span class="iqa-en-label">EN KEYWORDS</span>${q.answer_en}</div>`:''}
-        </div>
-        <button class="iqa-toggle" onclick="iqaToggle('${q.id}',this)">▲ Hide answer</button>
-        <div class="iqa-note-wrap">
-          <div class="iqa-note-label">Мои заметки / My notes</div>
-          <textarea class="sb-note iqa-note" data-qid="${q.id}" placeholder="Пиши здесь после прочтения…">${note}</textarea>
-          <div class="iqa-saved" id="iqa-saved-${q.id}">✓ сохранено</div>
-        </div>
-      </div>`;
-    });
-  });
-  root.innerHTML=html;
-
-  // note saving
-  root.querySelectorAll('.iqa-note').forEach(ta=>{
-    let t;
-    ta.addEventListener('input',()=>{
-      clearTimeout(t);
-      const ind=document.getElementById('iqa-saved-'+ta.dataset.qid);
-      if(ind) ind.style.opacity='0';
-      t=setTimeout(()=>{
-        try{
-          const notes=LS.get('dune_interview_qa_notes_v1',{});
-          notes[ta.dataset.qid]=ta.value;
-          LS.set('dune_interview_qa_notes_v1',notes);
-          if(ind){ind.style.opacity='1';setTimeout(()=>ind.style.opacity='0',1200);}
-        }catch(e){
-          if(e.name==='QuotaExceededError'&&ind){ind.textContent='⚠ storage full';ind.style.opacity='1';}
-        }
-      },800);
-    });
-  });
-}
-
-window.iqaToggle=function(id,btn){
-  const wrap=document.getElementById('ans-wrap-'+id);
-  if(!wrap) return;
-  const hidden=wrap.style.display==='none';
-  wrap.style.display=hidden?'block':'none';
-  btn.textContent=hidden?'▲ Hide answer':'▼ Show answer';
-};
-
-window.iqaFilter=function(diff,btn){
-  document.querySelectorAll('.iqa-filter-btn').forEach(b=>b.classList.remove('active'));
-  if(btn) btn.classList.add('active');
-  // show/hide cards
-  document.querySelectorAll('.iqa-card[data-difficulty]').forEach(card=>{
-    card.style.display=(diff==='all'||card.dataset.difficulty===diff)?'':'none';
-  });
-  // hide part headers when all their cards are hidden
-  document.querySelectorAll('.iqa-part-header[data-part]').forEach(header=>{
-    let el=header.nextElementSibling;
-    let hasVisible=false;
-    while(el&&!el.classList.contains('iqa-part-header')){
-      if(el.classList.contains('iqa-card')&&el.style.display!=='none'){hasVisible=true;break;}
-      el=el.nextElementSibling;
-    }
-    header.style.display=hasVisible?'':'none';
-  });
 };
