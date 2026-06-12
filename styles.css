@@ -1171,10 +1171,11 @@ body.public-mode [data-private="true"]{display:none !important}
 #aboutyou .card .ctitle{color:#e9c98a;border-color:rgba(255,255,255,.1)}
 #aboutyou .card p{color:#d8cdba}
 #aboutyou .card p strong,#aboutyou .about-essay strong{color:#f3ead8}
-#aboutyou .cc-rule strong{color:#f3ead8}
-#aboutyou .cc-rule{color:#d8cdba}
-#aboutyou .cc-num{color:#bfa063}
-#aboutyou .cc-buckets{color:#c2b8a4;border-color:rgba(255,255,255,.1)}
+#aboutyou .cc-rule > div{color:#d3c8b3}
+#aboutyou .cc-rule strong{color:#f6efe0}
+#aboutyou .cc-num{color:#e9c98a;background:rgba(191,160,99,.16)}
+#aboutyou .cc-buckets{color:#d3c8b3;background:rgba(191,160,99,.1);border-color:rgba(255,255,255,.1)}
+#aboutyou .cc-buckets strong{color:#f6efe0}
 #aboutyou .current-chapter-card{background:rgba(191,160,99,.07);border-color:rgba(191,160,99,.3)}
 .about-meta{display:flex;flex-wrap:wrap;gap:18px;font-family:var(--mono);font-size:10px;letter-spacing:.5px;
   color:#a89a80;margin:-8px 0 22px;padding-bottom:16px;border-bottom:1px solid rgba(255,255,255,.08)}
