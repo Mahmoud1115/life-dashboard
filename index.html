@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Dune — Moscow Build Mode 2026</title>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,300;1,400&family=DM+Mono:wght@300;400;500&family=Outfit:wght@300;400;500;600&family=Plus+Jakarta+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=phase3g">
+<link rel="stylesheet" href="styles.css?v=phase3h">
 </head>
 <body>
 <div id="prog"></div>
@@ -48,6 +48,9 @@
       </button>
       <button class="nmb" data-group="review" onclick="showGroup('review')">
         <span class="nmb-emoji">📓</span><span class="nmb-label">Review</span>
+      </button>
+      <button class="nmb" data-group="sync" onclick="showGroup('sync')">
+        <span class="nmb-emoji">☁</span><span class="nmb-label">Sync</span>
       </button>
       <button class="nmb nmb-util" id="privacy-btn" onclick="togglePrivacy()">
         <span class="nmb-emoji">👁</span><span class="nmb-label">Private</span>
@@ -490,24 +493,13 @@
     </div>
     <div class="fin-outputs"><div id="fin-russia-out"></div>
 
-      <!-- Save panel: local + GitHub Gist sync, right next to your numbers -->
-      <div class="fin-save-panel">
-        <div class="fin-save-row">
-          <button class="fin-save-btn fin-save-local" onclick="saveFinanceNow()">💾 Save on this device</button>
-          <span id="fin-saved-ind" class="fin-save-flash">✓ saved</span>
+      <!-- Compact pointer — full save/sync UI lives in the dedicated Sync section -->
+      <div class="fin-save-panel" style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap">
+        <div>
+          <div style="font-family:var(--mono);font-size:10px;letter-spacing:.5px;color:var(--gold2);margin-bottom:4px">AUTO-SAVE ON</div>
+          <div style="font-family:var(--mono);font-size:11px;color:var(--tx2);line-height:1.5">Numbers save instantly in this browser. To carry them between Mac and phone, set up Gist sync.</div>
         </div>
-        <div class="fin-save-hint">Numbers auto-save in this browser the instant you type — the button above just confirms it visually.</div>
-
-        <div class="fin-save-divider">☁ &nbsp;Sync across devices via GitHub Gist</div>
-        <div id="fin-gist-status" class="fin-gist-status">Checking token…</div>
-        <div class="fin-save-row" id="fin-gist-action-row">
-          <button class="fin-save-btn fin-save-gist" id="fin-save-gist-btn" onclick="saveToGist()">☁ Save to Gist</button>
-          <button class="fin-save-btn fin-save-gist-quiet" id="fin-load-gist-btn" onclick="loadFromGist()">☁ Load from Gist</button>
-        </div>
-        <div class="fin-save-hint">
-          One-time setup: open <strong>📦 Backup</strong> (top-right nav) → paste a GitHub token with the <code>gist</code> scope → come back here.
-          After that, save here on your Mac and load here on your phone — your numbers travel with you.
-        </div>
+        <button class="fin-save-btn fin-save-gist" onclick="show('sync',event)">☁ Open Sync →</button>
       </div>
     </div>
   </div>
@@ -526,6 +518,54 @@
   <button class="cl-filter" onclick="filterClaims('dangerous',this)">Dangerous</button>
 </div>
 <div id="claims-list"></div>
+</section>
+
+<!-- BACKUP & SYNC — dedicated section, accessible from main nav -->
+<section class="sec" id="sync">
+<div class="sec-hd"><div class="sec-num">☁ Sync</div><h2 class="sec-title">Backup &amp;<br><em>Sync Across Devices</em></h2><p class="sec-intro">Your dashboard auto-saves everything in this browser. To carry your data between Mac and phone, sync it through a private GitHub Gist — your data stays yours, just stored in a private file you own.</p></div>
+
+<div class="card">
+  <div class="ctitle">💾 Save to This Device</div>
+  <p style="font-size:13px;color:var(--tx2);margin:-2px 0 12px;line-height:1.6">Everything auto-saves the instant you type — but tap this if you want a visual confirmation that your latest changes are stored locally.</p>
+  <div class="fin-save-row">
+    <button class="fin-save-btn fin-save-local" onclick="saveFinanceNow()">💾 Save on this device</button>
+    <span id="sync-saved-ind" class="fin-save-flash">✓ all saved</span>
+  </div>
+</div>
+
+<div class="card">
+  <div class="ctitle">☁ GitHub Gist Sync</div>
+  <p style="font-size:13px;color:var(--tx2);margin:-2px 0 12px;line-height:1.6">Stores your full backup in a private Gist on your own GitHub account. Save here on your Mac → load here on your phone. Your numbers, your goals, your reviews — everything travels with you.</p>
+
+  <div id="sync-gist-status" class="fin-gist-status">Checking token…</div>
+
+  <div class="fin-save-row">
+    <button class="fin-save-btn fin-save-gist" id="sync-save-gist-btn" onclick="saveToGist()">☁ Save to Gist</button>
+    <button class="fin-save-btn fin-save-gist-quiet" id="sync-load-gist-btn" onclick="loadFromGist()">☁ Load from Gist</button>
+  </div>
+
+  <div class="fin-save-divider" style="margin-top:18px">One-time setup</div>
+  <ol style="font-size:13px;color:var(--tx2);line-height:1.7;padding-left:20px;margin:6px 0">
+    <li>Go to <strong>github.com/settings/tokens</strong> → Generate new token (<strong>classic</strong>)</li>
+    <li>Tick the <code style="background:var(--gold3);color:var(--gold2);padding:1px 6px;border-radius:4px;font-family:var(--mono);font-size:11px">gist</code> scope (and <code style="background:var(--gold3);color:var(--gold2);padding:1px 6px;border-radius:4px;font-family:var(--mono);font-size:11px">repo</code> if you want)</li>
+    <li>Copy the token, then open <strong>📦 Backup</strong> in the top-right nav → paste it</li>
+    <li>Come back here → tap <strong>☁ Save to Gist</strong></li>
+    <li>On your phone: same one-time setup, then tap <strong>☁ Load from Gist</strong></li>
+  </ol>
+</div>
+
+<div class="card">
+  <div class="ctitle">📁 Export / Import (JSON)</div>
+  <p style="font-size:13px;color:var(--tx2);margin:-2px 0 12px;line-height:1.6">Download a full JSON backup, or import one you saved before. Useful as a manual safety net or to migrate between browsers.</p>
+  <div class="fin-save-row">
+    <button class="fin-save-btn fin-save-gist-quiet" onclick="exportBackup()">⬇ Download JSON</button>
+    <button class="fin-save-btn fin-save-gist-quiet" onclick="copyBackupToClipboard()">📋 Copy to Clipboard</button>
+    <button class="fin-save-btn fin-save-gist-quiet" onclick="triggerImportFile()">⬆ Import JSON</button>
+    <button class="fin-save-btn fin-save-gist-quiet" onclick="importFromClipboard()">📋 Paste &amp; Import</button>
+  </div>
+  <input id="backup-file-input" type="file" accept=".json" style="display:none" onchange="handleImportFile(this)">
+  <p style="font-family:var(--mono);font-size:10px;color:var(--tx3);margin-top:10px;line-height:1.6">⚠ Importing overwrites your current data. Your current state is auto-saved as a pre-import snapshot first, so you can recover.</p>
+</div>
 </section>
 
 </main>
@@ -607,8 +647,8 @@
   </div>
 </nav>
 
-<script src="data.js?v=phase3g"></script>
-<script src="core.js?v=phase3g"></script>
-<script src="app.js?v=phase3g"></script>
+<script src="data.js?v=phase3h"></script>
+<script src="core.js?v=phase3h"></script>
+<script src="app.js?v=phase3h"></script>
 </body>
 </html>

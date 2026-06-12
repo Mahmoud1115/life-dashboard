@@ -29,6 +29,7 @@ const NAV_GROUPS={
   career:    {primary:'career-tracker', subs:[{id:'easa',label:'EASA Modules'},{id:'logbook',label:'Logbook'}]},
   documents: {primary:'passport',       subs:[{id:'claims',label:'Claims'},{id:'deadlines',label:'Deadlines'}]},
   about:     {primary:'aboutyou',       subs:[{id:'timeline',label:'Life Timeline'}]},
+  sync:      {primary:'sync',           subs:[]},
   review:    {primary:'review',         subs:[]},
 };
 const SEC_TO_GROUP={};
@@ -396,6 +397,7 @@ const SEC_LABELS={
   deadlines:'🛂 Deadlines',
   finance:'💰 Money',
   aboutyou:'🧭 About You',
+  sync:'☁ Backup & Sync',
   timeline:'🧭 Life Timeline',
   review:'📓 Weekly Review & Decisions',
 };
@@ -1174,37 +1176,43 @@ function renderATACoverage(entries){
   };
   document.addEventListener('DOMContentLoaded',()=>{ syncInputs(); renderOutputs(); refreshFinGistStatus(); });
 
-  // Reflect Gist sync state right next to the Finance save buttons.
+  // Reflect Gist sync state in both the Finance pointer and the dedicated Sync section.
   function refreshFinGistStatus(){
-    const el=document.getElementById('fin-gist-status');
-    const saveBtn=document.getElementById('fin-save-gist-btn');
-    const loadBtn=document.getElementById('fin-load-gist-btn');
-    if(!el) return;
     const token=LS.get('dune_github_token_v1','');
     const gistId=LS.get('dune_gist_id_v1','');
     const lastSync=LS.get('dune_last_gist_sync_v1','');
+
+    let cls, html, disabled;
     if(!token){
-      el.className='fin-gist-status fgs-warn';
-      el.innerHTML='⚠ No GitHub token saved yet — open <strong>📦 Backup</strong> in the top nav to add one (needs the <code>gist</code> scope).';
-      if(saveBtn) saveBtn.disabled=true;
-      if(loadBtn) loadBtn.disabled=true;
+      cls='fin-gist-status fgs-warn';
+      html='⚠ No GitHub token saved yet — open <strong>📦 Backup</strong> in the top-right nav to add one (needs the <code>gist</code> scope).';
+      disabled=true;
     } else if(lastSync){
       const when=new Date(lastSync);
-      el.className='fin-gist-status fgs-ok';
-      el.innerHTML='✓ Token saved · Last synced '+when.toLocaleString()+(gistId?' · Gist <code>'+gistId.slice(0,8)+'…</code>':'');
-      if(saveBtn) saveBtn.disabled=false;
-      if(loadBtn) loadBtn.disabled=false;
+      cls='fin-gist-status fgs-ok';
+      html='✓ Token saved · Last synced '+when.toLocaleString()+(gistId?' · Gist <code>'+gistId.slice(0,8)+'…</code>':'');
+      disabled=false;
     } else {
-      el.className='fin-gist-status';
-      el.innerHTML='Token saved — not synced yet. Click <strong>☁ Save to Gist</strong> to create your first cloud backup.';
-      if(saveBtn) saveBtn.disabled=false;
-      if(loadBtn) loadBtn.disabled=false;
+      cls='fin-gist-status';
+      html='Token saved — not synced yet. Click <strong>☁ Save to Gist</strong> to create your first cloud backup.';
+      disabled=false;
     }
+
+    // paint every status mirror that exists on the page
+    ['fin-gist-status','sync-gist-status'].forEach(id=>{
+      const el=document.getElementById(id);
+      if(el){ el.className=cls; el.innerHTML=html; }
+    });
+    ['fin-save-gist-btn','sync-save-gist-btn','fin-load-gist-btn','sync-load-gist-btn'].forEach(id=>{
+      const b=document.getElementById(id);
+      if(b) b.disabled=disabled;
+    });
   }
-  // Re-check the status whenever the user returns to the Finance section
+  // Re-check the status whenever the user enters Finance or Sync
   document.addEventListener('click',e=>{
-    const target=e.target.closest('[onclick*="finance"]')||e.target.closest('.nmb[data-group="money"]');
-    if(target) setTimeout(refreshFinGistStatus,60);
+    const t=e.target.closest('[onclick*="finance"]')||e.target.closest('[onclick*="sync"]')
+      ||e.target.closest('.nmb[data-group="money"]')||e.target.closest('.nmb[data-group="sync"]');
+    if(t) setTimeout(refreshFinGistStatus,60);
   });
   // Also refresh after any save/load action completes
   window._refreshFinGistStatus=refreshFinGistStatus;
