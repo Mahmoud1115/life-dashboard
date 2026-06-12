@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Dune — Moscow Build Mode 2026</title>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,300;1,400&family=DM+Mono:wght@300;400;500&family=Outfit:wght@300;400;500;600&family=Plus+Jakarta+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=phase3f">
+<link rel="stylesheet" href="styles.css?v=phase3g">
 </head>
 <body>
 <div id="prog"></div>
@@ -489,11 +489,26 @@
       <div class="fin-field"><label>USD Rate (₽)</label><input id="fin-r-usd_rate" type="number" oninput="finInputChange('russia','usd_rate',this.value)" /></div>
     </div>
     <div class="fin-outputs"><div id="fin-russia-out"></div>
-      <div style="display:flex;align-items:center;gap:12px;margin-top:14px">
-        <button class="lb-btn lb-btn-add" onclick="saveFinanceNow()">💾 Save Numbers</button>
-        <span id="fin-saved-ind" style="font-family:var(--mono);font-size:10px;color:var(--green);opacity:0;transition:opacity .3s">✓ saved on this device</span>
+
+      <!-- Save panel: local + GitHub Gist sync, right next to your numbers -->
+      <div class="fin-save-panel">
+        <div class="fin-save-row">
+          <button class="fin-save-btn fin-save-local" onclick="saveFinanceNow()">💾 Save on this device</button>
+          <span id="fin-saved-ind" class="fin-save-flash">✓ saved</span>
+        </div>
+        <div class="fin-save-hint">Numbers auto-save in this browser the instant you type — the button above just confirms it visually.</div>
+
+        <div class="fin-save-divider">☁ &nbsp;Sync across devices via GitHub Gist</div>
+        <div id="fin-gist-status" class="fin-gist-status">Checking token…</div>
+        <div class="fin-save-row" id="fin-gist-action-row">
+          <button class="fin-save-btn fin-save-gist" id="fin-save-gist-btn" onclick="saveToGist()">☁ Save to Gist</button>
+          <button class="fin-save-btn fin-save-gist-quiet" id="fin-load-gist-btn" onclick="loadFromGist()">☁ Load from Gist</button>
+        </div>
+        <div class="fin-save-hint">
+          One-time setup: open <strong>📦 Backup</strong> (top-right nav) → paste a GitHub token with the <code>gist</code> scope → come back here.
+          After that, save here on your Mac and load here on your phone — your numbers travel with you.
+        </div>
       </div>
-      <p style="font-family:var(--mono);font-size:9.5px;color:var(--tx3);margin-top:10px;line-height:1.6">Numbers auto-save in this browser as you type. To see them on your phone too: 📦 Backup → ☁ Save to Gist here, then ☁ Load from Gist on the phone.</p>
     </div>
   </div>
 </div>
@@ -592,8 +607,8 @@
   </div>
 </nav>
 
-<script src="data.js?v=phase3f"></script>
-<script src="core.js?v=phase3f"></script>
-<script src="app.js?v=phase3f"></script>
+<script src="data.js?v=phase3g"></script>
+<script src="core.js?v=phase3g"></script>
+<script src="app.js?v=phase3g"></script>
 </body>
 </html>

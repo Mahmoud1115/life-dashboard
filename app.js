@@ -1172,7 +1172,42 @@ function renderATACoverage(entries){
       renderOutputs();
     }
   };
-  document.addEventListener('DOMContentLoaded',()=>{ syncInputs(); renderOutputs(); });
+  document.addEventListener('DOMContentLoaded',()=>{ syncInputs(); renderOutputs(); refreshFinGistStatus(); });
+
+  // Reflect Gist sync state right next to the Finance save buttons.
+  function refreshFinGistStatus(){
+    const el=document.getElementById('fin-gist-status');
+    const saveBtn=document.getElementById('fin-save-gist-btn');
+    const loadBtn=document.getElementById('fin-load-gist-btn');
+    if(!el) return;
+    const token=LS.get('dune_github_token_v1','');
+    const gistId=LS.get('dune_gist_id_v1','');
+    const lastSync=LS.get('dune_last_gist_sync_v1','');
+    if(!token){
+      el.className='fin-gist-status fgs-warn';
+      el.innerHTML='⚠ No GitHub token saved yet — open <strong>📦 Backup</strong> in the top nav to add one (needs the <code>gist</code> scope).';
+      if(saveBtn) saveBtn.disabled=true;
+      if(loadBtn) loadBtn.disabled=true;
+    } else if(lastSync){
+      const when=new Date(lastSync);
+      el.className='fin-gist-status fgs-ok';
+      el.innerHTML='✓ Token saved · Last synced '+when.toLocaleString()+(gistId?' · Gist <code>'+gistId.slice(0,8)+'…</code>':'');
+      if(saveBtn) saveBtn.disabled=false;
+      if(loadBtn) loadBtn.disabled=false;
+    } else {
+      el.className='fin-gist-status';
+      el.innerHTML='Token saved — not synced yet. Click <strong>☁ Save to Gist</strong> to create your first cloud backup.';
+      if(saveBtn) saveBtn.disabled=false;
+      if(loadBtn) loadBtn.disabled=false;
+    }
+  }
+  // Re-check the status whenever the user returns to the Finance section
+  document.addEventListener('click',e=>{
+    const target=e.target.closest('[onclick*="finance"]')||e.target.closest('.nmb[data-group="money"]');
+    if(target) setTimeout(refreshFinGistStatus,60);
+  });
+  // Also refresh after any save/load action completes
+  window._refreshFinGistStatus=refreshFinGistStatus;
 })();
 
 /* ═══════════════════════════════════════════
@@ -1464,6 +1499,8 @@ function updateGistUI(){
     </div>`;
     if(btns) btns.style.display='none';
   }
+  // Mirror the same status into the inline Finance save panel.
+  if(typeof window._refreshFinGistStatus==='function') try{window._refreshFinGistStatus();}catch(e){}
 }
 
 window.saveGistToken=function(){

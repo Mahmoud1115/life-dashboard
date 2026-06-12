@@ -1309,3 +1309,37 @@ body.public-mode [data-private="true"]{display:none !important}
 @media(max-width:640px){
   .cal-nav-btn{min-height:44px;min-width:44px;padding:8px 14px;font-size:16px}
 }
+
+/* ── FINANCE INLINE SAVE PANEL (local + Gist sync) ── */
+.fin-save-panel{margin-top:16px;padding:18px;border:1px solid var(--bdr2);border-radius:14px;
+  background:linear-gradient(180deg,var(--bg2),var(--bg3))}
+.fin-save-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px}
+.fin-save-btn{display:inline-flex;align-items:center;gap:6px;font-family:var(--sans);
+  font-size:12.5px;font-weight:600;padding:10px 16px;border-radius:10px;cursor:pointer;
+  border:1px solid var(--bdr2);background:var(--bg2);color:var(--tx);min-height:42px;
+  transition:transform .12s ease,background .15s ease,border-color .15s ease,box-shadow .15s ease}
+.fin-save-btn:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(26,24,20,.08)}
+.fin-save-btn:active{transform:scale(.97)}
+.fin-save-local{background:var(--gold);border-color:var(--gold);color:#fff}
+.fin-save-local:hover{background:var(--gold2);border-color:var(--gold2)}
+.fin-save-gist{background:var(--blue2);border-color:var(--blue);color:var(--blue)}
+.fin-save-gist:hover{background:var(--blue);color:#fff}
+.fin-save-gist-quiet{background:var(--bg2);border-color:var(--bdr2);color:var(--tx2)}
+.fin-save-gist-quiet:hover{border-color:var(--blue);color:var(--blue)}
+.fin-save-flash{font-family:var(--mono);font-size:10px;letter-spacing:.5px;color:var(--green);
+  opacity:0;transition:opacity .3s ease}
+.fin-save-hint{font-family:var(--mono);font-size:10px;letter-spacing:.2px;color:var(--tx3);
+  line-height:1.65;margin:6px 0 4px}
+.fin-save-hint code{background:var(--gold3);color:var(--gold2);padding:1px 5px;border-radius:4px;font-size:10px}
+.fin-save-hint strong{color:var(--tx2)}
+.fin-save-divider{font-family:var(--mono);font-size:10px;letter-spacing:1.5px;text-transform:uppercase;
+  color:var(--gold2);margin:14px 0 8px;padding-top:14px;border-top:1px solid var(--bdr)}
+.fin-gist-status{font-family:var(--mono);font-size:10.5px;color:var(--tx2);margin:6px 0 10px;
+  padding:8px 12px;background:rgba(0,0,0,.025);border-radius:8px;line-height:1.5}
+.fin-gist-status.fgs-ok{color:var(--green);background:var(--green2)}
+.fin-gist-status.fgs-warn{color:var(--amber);background:var(--amber2)}
+.fin-gist-status.fgs-bad{color:var(--red);background:var(--red2)}
+@media(max-width:640px){
+  .fin-save-btn{flex:1 1 calc(50% - 6px);min-width:0;justify-content:center}
+  .fin-save-local{flex-basis:100%}
+}
