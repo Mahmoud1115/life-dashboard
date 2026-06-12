@@ -10,7 +10,7 @@
   // ──────────────────────────────────────────────
   // SCHEMA
   // ──────────────────────────────────────────────
-  const SCHEMA_VERSION = 5;
+  const SCHEMA_VERSION = 6;
   const STATE_KEY = 'dune_state_v4';
   const SNAPSHOTS_KEY = 'dune_snapshots_v1';
   const MAX_SNAPSHOTS = 8;
@@ -56,7 +56,7 @@
         aircraft: ['An-28'],
         engines: ['TVD-10', 'CFM56-5B'],
         licenses: [
-          { id: 'l_favt_a', name: 'ФАВТ Category A', status: 'planned', target: '2027-09-01' }
+          { id: 'l_eng_auth', name: 'CFM56-5B engine certifying authorization (Part-145)', status: 'planned', target: '2027-09-01' }
         ],
         certificates: [],
         milestones: [
@@ -76,7 +76,7 @@
         { id: 't_moscow', at: '2026-06-15', kind: 'current', text: 'АэроТраст · CFM56-5B overhaul · 130k net' },
         { id: 't_vnzh', at: '2027-03-01', kind: 'future', text: 'ВНЖ renewal' },
         { id: 't_pass', at: '2027-06-01', kind: 'future', text: 'Egyptian passport renewal (age 27)' },
-        { id: 't_cata', at: '2027-09-01', kind: 'future', text: 'ФАВТ Category A application' },
+        { id: 't_cata', at: '2027-09-01', kind: 'future', text: 'CFM56-5B engine certifying authorization' },
         { id: 't_easa', at: '2029-06-01', kind: 'future', text: 'EASA Part-66 B1.1 — all 15 modules' }
       ],
       about: {
@@ -171,6 +171,22 @@
       s.about.lastUpdated = '11 June 2026';
     }
     if (!s.career) s.career = def.career;
+    // v5 → v6: Category A is line/whole-aircraft only; engine-shop work can't earn it.
+    // Replace it with the engine certifying authorization.
+    if (s.career && Array.isArray(s.career.licenses)) {
+      s.career.licenses = s.career.licenses.map(l =>
+        (l.id === 'l_favt_a' || /Category A/i.test(l.name || ''))
+          ? { id: 'l_eng_auth', name: 'CFM56-5B engine certifying authorization (Part-145)', status: l.status || 'planned', target: l.target || '2027-09-01' }
+          : l);
+    }
+    if (s.career && Array.isArray(s.career.milestones)) {
+      s.career.milestones = s.career.milestones.map(m =>
+        /Category A/i.test(m.text || '') ? { ...m, text: 'CFM56-5B engine certifying authorization' } : m);
+    }
+    if (Array.isArray(s.timeline)) {
+      s.timeline = s.timeline.map(t =>
+        /Category A/i.test(t.text || '') ? { ...t, text: 'CFM56-5B engine certifying authorization' } : t);
+    }
     if (!s.qatarVisit) s.qatarVisit = def.qatarVisit;
     s.meta.version = SCHEMA_VERSION;
     s.meta.lastUpdated = nowISO();

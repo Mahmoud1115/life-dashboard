@@ -1157,8 +1157,11 @@ body.public-mode [data-private="true"]{display:none !important}
 .goal-pct-static{font-family:var(--num);font-size:13px;font-weight:600;color:var(--gold2);min-width:42px;text-align:right}
 
 /* ── ABOUT ME — READING MODE ── */
-#aboutyou{--bg:#211c15;--bg2:#2a241b;background:linear-gradient(180deg,#211c15,#1b1710);
-  color:#e9e0d0;border-radius:0}
+#aboutyou{--bg:#211c15;--bg2:#2a241b;color:#e9e0d0;
+  /* full-bleed dark reading band — breaks out of the 960px column, then re-contains content */
+  position:relative;width:100vw;left:50%;right:50%;margin-left:-50vw;margin-right:-50vw;
+  background:linear-gradient(180deg,#231e16 0%,#1b1710 100%);
+  padding:54px max(20px,calc(50vw - 460px)) 72px;box-sizing:border-box}
 #aboutyou .sec-title,#aboutyou .sec-title em{color:#f3ead8}
 #aboutyou .sec-num{color:#bfa063}
 #aboutyou .sec-intro{color:#c2b8a4}

@@ -17,7 +17,7 @@ D.deadlines = [
   { id:'dl07', title:'ВНЖ renewal paperwork start', date:'2026-12-01', cat:'legal', importance:'high', consequence:'Legal status risk, no airport badge', note:'Start 3 months early. ВНЖ due March 2027.', private:false },
   { id:'dl08', title:'ВНЖ renewal deadline', date:'2027-03-01', cat:'legal', importance:'critical', consequence:'Illegal status, no airport badge', note:'NOT citizenship — just residence permit renewal.', private:false },
   { id:'dl09', title:'Egyptian passport renewal target', date:'2027-06-01', cat:'passport', importance:'critical', consequence:'Risk crossing age-28 wall with military complications', note:'Routine renewal. MAI cert only if asked about army.', private:false },
-  { id:'dl10', title:'ФАВТ Category A application — after 1 year at АэроТраст', date:'2027-09-01', cat:'career', importance:'high', consequence:'First official license milestone slips', note:'1 year minimum experience required. Logbook must be complete.', private:false },
+  { id:'dl10', title:'CFM56-5B engine certifying authorization — apply after 1 year', date:'2027-09-01', cat:'career', importance:'high', consequence:'First official engine credential slips', note:'Company / Part-145 certifying authorization for engine tasks. Requires complete stamped logbook + type training.', private:false },
   { id:'dl11', title:'⚠ PASSPORT HARD WALL — Age 28', date:'2028-01-21', cat:'passport', importance:'critical', consequence:'Military clearance required for renewal — extremely complex process', note:'DO NOT cross this without a valid renewed passport.', private:false },
 ];
 
@@ -52,7 +52,7 @@ D.goals = [
   // Career
   { id:'go01', title:'Excel at АэроТраст — CFM56-5B overhaul competence', cat:'career', status:'active', progress:5, deadline:'2027-06-01', risk:'low', note:'130k ₽ net. Learn the engine from disassembly to test. Volunteer for borescope, defectation, assembly.', nextAction:'First 90 days: AMM before every task, ask why not just what' },
   { id:'go02', title:'English logbook — every task from day one', cat:'career', status:'active', progress:0, deadline:'2026-07-01', risk:'high', note:'Date, engine/aircraft, ATA, description, hours, supervisor stamp. No exceptions.', nextAction:'First day of work — first entry' },
-  { id:'go03', title:'Russian ФАВТ Category A license', cat:'career', status:'planned', progress:0, deadline:'2027-12-01', risk:'low', note:'1 year minimum experience required.', nextAction:'Accumulate hours, apply at CAA after year one' },
+  { id:'go03', title:'CFM56-5B engine certifying authorization (Part-145)', cat:'career', status:'planned', progress:0, deadline:'2027-12-01', risk:'low', note:'Engine-shop credential — NOT Category A (that needs whole-aircraft line work, which engine-only does not cover). Company authorization to certify CFM56 tasks.', nextAction:'Complete CFM56 type training + stamped logbook, then apply through АэроТраст quality dept' },
   { id:'go04', title:'EASA Part-66 — 15 module exams', cat:'career', status:'active', progress:5, deadline:'2029-06-01', risk:'medium', note:'2 modules per 4 months. M15 → M9 → M10 → M7 → M11A → rest. Budget €3,000–5,000.', nextAction:'M15 study blocks on off days — already 20% in' },
   // Education
   { id:'go05', title:'MAI Master\'s enrolled', cat:'education', status:'active', progress:25, deadline:'2026-07-15', risk:'medium', note:'September 2026 intake. Part-time aviation Master\'s. Passport shield + real qualification.', nextAction:'Call MAI: +7 499 158-43-36' },
