@@ -10,7 +10,7 @@
   // ──────────────────────────────────────────────
   // SCHEMA
   // ──────────────────────────────────────────────
-  const SCHEMA_VERSION = 4;
+  const SCHEMA_VERSION = 5;
   const STATE_KEY = 'dune_state_v4';
   const SNAPSHOTS_KEY = 'dune_snapshots_v1';
   const MAX_SNAPSHOTS = 8;
@@ -80,9 +80,9 @@
         { id: 't_easa', at: '2029-06-01', kind: 'future', text: 'EASA Part-66 B1.1 — all 15 modules' }
       ],
       about: {
-        version: 1,
-        createdAt: '2026-06-12',
-        lastUpdated: '2026-06-12',
+        version: 2,
+        createdAt: 'June 2026',
+        lastUpdated: '11 June 2026',
         strengths: [
           'Metabolize pain into structure',
           'Vision plus precision — ambitious and meticulous',
@@ -164,6 +164,12 @@
     if (!Array.isArray(s.reviews)) s.reviews = [];
     if (!Array.isArray(s.decisions)) s.decisions = [];
     if (!s.about) s.about = def.about;
+    // about v1 → v2: switch to friendly date labels + version
+    if (s.about && (s.about.version || 1) < 2) {
+      s.about.version = 2;
+      s.about.createdAt = 'June 2026';
+      s.about.lastUpdated = '11 June 2026';
+    }
     if (!s.career) s.career = def.career;
     if (!s.qatarVisit) s.qatarVisit = def.qatarVisit;
     s.meta.version = SCHEMA_VERSION;

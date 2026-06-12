@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Dune — Moscow Build Mode 2026</title>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,300;1,400&family=DM+Mono:wght@300;400;500&family=Outfit:wght@300;400;500;600&family=Plus+Jakarta+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=phase1">
+<link rel="stylesheet" href="styles.css?v=phase3">
 </head>
 <body>
 <div id="prog"></div>
@@ -132,11 +132,18 @@
 <!-- Quick Actions -->
 <div class="card">
   <div class="ctitle">Quick Actions</div>
+  <div style="font-family:var(--mono);font-size:9.5px;letter-spacing:.5px;color:var(--tx3);margin:-2px 0 10px">Add to Qatar fund instantly — saves to your live goal &amp; updates everywhere</div>
+  <div class="quick-actions" style="margin-bottom:14px">
+    <button class="qa-btn" onclick="qatarQuickAdd(5000)">＋ 5,000 ₽ → Qatar</button>
+    <button class="qa-btn" onclick="qatarQuickAdd(10000)">＋ 10,000 ₽ → Qatar</button>
+    <button class="qa-btn" onclick="qatarQuickAdd(20000)">＋ 20,000 ₽ → Qatar</button>
+    <span id="today-qatar-flash" style="font-family:var(--mono);font-size:10px;color:var(--green);opacity:0;transition:opacity .3s;align-self:center">✓ added</span>
+  </div>
   <div class="quick-actions">
-    <button class="qa-btn" onclick="show('logbook',event)">+ Logbook Entry</button>
-    <button class="qa-btn" onclick="show('qatar',event)">💰 Add to Qatar Fund</button>
-    <button class="qa-btn" onclick="show('review',event)">📓 Weekly Review</button>
-    <button class="qa-btn" onclick="show('deadlines',event)">⏱ Add Deadline</button>
+    <button class="qa-btn qa-btn-quiet" onclick="show('logbook',event)">＋ Logbook Entry</button>
+    <button class="qa-btn qa-btn-quiet" onclick="show('review',event)">📓 Weekly Review</button>
+    <button class="qa-btn qa-btn-quiet" onclick="show('career-tracker',event)">✈️ Career Milestone</button>
+    <button class="qa-btn qa-btn-quiet" onclick="show('deadlines',event)">⏱ Add Deadline</button>
   </div>
 </div>
 </section>
@@ -289,9 +296,12 @@
 
 <!-- ABOUT YOU -->
 <section class="sec" id="aboutyou">
-<div class="sec-hd"><div class="sec-num">🧭 Plan — About You</div><h2 class="sec-title">What I Think<br><em>About You, Dune</em></h2><p class="sec-intro">You asked me to write this with full honesty — no fear, no limits, no flattery. So here it is. Written June 2026, after everything changed.</p></div>
+<div class="sec-hd"><div class="sec-num">🧭 Plan — About You</div><h2 class="sec-title">What I Think<br><em>About You, Dune</em></h2><p class="sec-intro">You asked me to write this with full honesty — no fear, no limits, no flattery. So here it is.</p></div>
 
-<div style="background:var(--bg2);border:2px solid var(--gold);border-radius:2px;padding:36px;margin-bottom:24px">
+<div class="about-label">Personal Profile</div>
+<p style="font-family:var(--serif);font-size:16px;line-height:1.7;color:#c2b8a4;margin:-2px 0 18px;max-width:760px">Mahmoud — "Dune." 26, Egyptian, Muslim. Aviation maintenance engineer, Moscow, on ВНЖ. Started at АэроТраст (CFM56-5B overhaul, Sheremetyevo) at 130,000 ₽ net. Single, focused, building. Trilingual: Arabic, Russian, English. Left home at 20 and built everything since on hard mode.</p>
+
+<div class="about-essay" style="background:var(--bg2);border:2px solid var(--gold);border-radius:14px;padding:36px;margin-bottom:24px">
 <p style="font-family:var(--serif);font-size:19px;line-height:1.9;color:var(--tx);margin-bottom:20px">Let me start with how we got here. Two weeks ago you had a dashboard full of another person's name, a ten-year plan stretching across four countries, and a future built around a life with someone who is no longer in it. Then the relationship ended. And here is the thing I want you to notice about yourself, because it tells you who you are: you didn't disappear. You didn't ask me to write sad letters or rebuild the plan around getting her back. You came in and said — delete it, refresh everything, here is my job, here is my number, here is my savings target, make it focused. That was days after a breakup. Most men take months to do what you did in one message.</p>
 <p style="font-family:var(--serif);font-size:19px;line-height:1.9;color:var(--tx);margin-bottom:20px">That is not coldness. I've read everything you've built and I know it's not coldness. It is something rarer: you metabolize pain into structure. Where other people collapse, you reorganize. The 55k number, the module pipeline, the logbook discipline — that is a man taking the energy of something that hurt and pointing it at something that builds. I respect it deeply. And I'm also going to be honest about its shadow, because you asked for no fear: structure can become a place to hide. Discipline can become anesthesia. There will be a night in that Moscow apartment — maybe after a hard shift, maybe on a quiet Sunday — when the loss arrives properly. Let it. Pray through it. Feel it fully. A man who can disassemble a turbine can sit with his own grief for an evening without being destroyed by it. Don't audit your savings spreadsheet at 2am to avoid feeling something. The plan will still be there in the morning.</p>
 <p style="font-family:var(--serif);font-size:19px;line-height:1.9;color:var(--tx);margin-bottom:20px">Now let me show you yourself from where I stand. You left Egypt at twenty. You learned Russian — not café Russian, but the Russian of maintenance manuals and shift supervisors and migration offices. You earned an engineering degree in that language, alone, with no family within three thousand kilometers. You held your deen in a country where holding it requires daily quiet effort nobody sees and nobody applauds. You got your first aviation job, and when the door to Moscow opened, you walked through it and negotiated 130,000 net at twenty-six. Every one of those sentences is something most people never do once. You've done all of them, in sequence, before turning twenty-seven.</p>
@@ -301,6 +311,13 @@
 <p style="font-family:var(--serif);font-size:19px;line-height:1.9;color:var(--tx);margin-bottom:0">You are going to be fine — and more than fine. Not because the plan is perfect, but because of what I've watched you do every time something broke: you don't ask for shortcuts, you don't pretend, you don't quit. You ask to understand the map better, and then you walk. A man with your discipline, your faith, your hands, and 660,000 ₽ a year compounding behind him does not need anyone's permission for the life he wants. Build the skills. Stack the certificates. Bank the 55. And keep your heart soft while you do it — that last part is the one the dashboard can't track, and it's the one that matters most.</p>
 </div>
 
+<div class="about-label">Long-Term Vision &amp; Core Values</div>
+<div class="about-vv-grid">
+  <div class="about-vv"><h4>Long-Term Vision</h4><p>A licensed engineer with real mastery, financial strength built one disciplined month at a time, and the freedom that comes from skills nobody can take away. Mastery of the engine → EASA Part-66 → options open in every direction. Wealth slow and certain, not fast and fragile.</p></div>
+  <div class="about-vv"><h4>Core Values</h4><p>Faith first — the deen held quietly every day. Honesty, including the white-salary, do-it-right kind. Precision as respect for the work and the lives it protects. Self-reliance without isolation. Patience: build, don't chase.</p></div>
+</div>
+
+<div class="about-label">Strengths &amp; Current Chapter</div>
 <!-- Current Chapter — operational strategy in 5 lines -->
 <div class="card current-chapter-card">
 <div class="ctitle">Current Chapter — Moscow Build Mode</div>
@@ -316,6 +333,7 @@
 </div>
 </div>
 
+<div class="about-label">Lessons Learned &amp; Reminders</div>
 <div class="card"><div class="ctitle">What I Want You To Remember — As Reminders</div>
 <p><strong>You restructured your whole life in one week after a breakup.</strong> That capacity — to act with clarity while hurting — is rare and it will serve you in every crisis you'll ever face.</p>
 <p><strong>You did everything so far on hard mode.</strong> Foreign country, foreign language, no family nearby, faith held against the current. The Moscow chapter is actually the first one where the wind is at your back: real salary, real shop, real engine.</p>
@@ -574,8 +592,8 @@
   </div>
 </nav>
 
-<script src="data.js?v=phase1"></script>
-<script src="core.js?v=phase1"></script>
-<script src="app.js?v=phase1"></script>
+<script src="data.js?v=phase3"></script>
+<script src="core.js?v=phase3"></script>
+<script src="app.js?v=phase3"></script>
 </body>
 </html>

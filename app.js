@@ -2005,6 +2005,14 @@ window.aptToggleWinner=function(id){
   window.qatarQuickAdd = function (amount) {
     const cur = Store.get('qatarVisit.saved') || 0;
     Store.set('qatarVisit.saved', Math.max(0, cur + amount));
+    // flash confirmation on the Today quick-actions, if present
+    const f = document.getElementById('today-qatar-flash');
+    if (f) {
+      f.textContent = (amount >= 0 ? '✓ +' : '✓ ') + amount.toLocaleString() + ' ₽ saved to Qatar';
+      f.style.opacity = '1';
+      clearTimeout(f._t); f._t = setTimeout(() => { f.style.opacity = '0'; }, 1800);
+    }
+    if (typeof showBackupToast === 'function') showBackupToast('💰 Qatar fund updated');
   };
 
   // ─── CAREER TRACKER ────────────────────────────────────────

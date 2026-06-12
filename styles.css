@@ -1142,3 +1142,82 @@ body.public-mode [data-private="true"]{display:none !important}
 
 /* Save indicators (shared) */
 @keyframes pulseIn { from { opacity: 0; } to { opacity: 1; } }
+
+/* ═══════════════════════════════════════════
+   PHASE 3 — INTEGRATION + POLISH
+   ═══════════════════════════════════════════ */
+
+/* Live goals (unified goal system) */
+.live-goals-banner{font-family:var(--mono);font-size:10px;letter-spacing:.5px;color:var(--gold2);background:var(--gold3);
+  border:1px solid rgba(154,120,50,.2);border-radius:10px;padding:9px 13px;margin-bottom:14px;line-height:1.5}
+.goal-card-live{border-left:3px solid var(--gold);transition:transform .18s cubic-bezier(.4,0,.2,1),box-shadow .18s}
+.goal-card-live:hover{transform:translateY(-2px);box-shadow:0 6px 20px rgba(154,120,50,.14)}
+.live-tag{font-family:var(--mono);font-size:8px;letter-spacing:1px;color:#fff;background:var(--gold);
+  padding:2px 6px;border-radius:100px;vertical-align:middle;margin-left:6px;font-weight:500}
+.goal-pct-static{font-family:var(--num);font-size:13px;font-weight:600;color:var(--gold2);min-width:42px;text-align:right}
+
+/* ── ABOUT ME — READING MODE ── */
+#aboutyou{--bg:#211c15;--bg2:#2a241b;background:linear-gradient(180deg,#211c15,#1b1710);
+  color:#e9e0d0;border-radius:0}
+#aboutyou .sec-title,#aboutyou .sec-title em{color:#f3ead8}
+#aboutyou .sec-num{color:#bfa063}
+#aboutyou .sec-intro{color:#c2b8a4}
+#aboutyou .about-essay{background:rgba(255,255,255,.025)!important;border-color:rgba(191,160,99,.35)!important}
+#aboutyou .about-essay p{color:#ece3d2!important}
+#aboutyou .card{background:rgba(255,255,255,.03);border-color:rgba(255,255,255,.08)}
+#aboutyou .card .ctitle{color:#e9c98a;border-color:rgba(255,255,255,.1)}
+#aboutyou .card p{color:#d8cdba}
+#aboutyou .card p strong,#aboutyou .about-essay strong{color:#f3ead8}
+#aboutyou .cc-rule strong{color:#f3ead8}
+#aboutyou .cc-rule{color:#d8cdba}
+#aboutyou .cc-num{color:#bfa063}
+#aboutyou .cc-buckets{color:#c2b8a4;border-color:rgba(255,255,255,.1)}
+#aboutyou .current-chapter-card{background:rgba(191,160,99,.07);border-color:rgba(191,160,99,.3)}
+.about-meta{display:flex;flex-wrap:wrap;gap:18px;font-family:var(--mono);font-size:10px;letter-spacing:.5px;
+  color:#a89a80;margin:-8px 0 22px;padding-bottom:16px;border-bottom:1px solid rgba(255,255,255,.08)}
+.about-meta b{color:#cdbf9f;font-weight:500}
+.about-label{font-family:var(--mono);font-size:10px;letter-spacing:2px;text-transform:uppercase;
+  color:#bfa063;margin:30px 0 10px}
+.about-vv-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:8px}
+@media(max-width:640px){.about-vv-grid{grid-template-columns:1fr}}
+.about-vv{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:16px 18px}
+.about-vv h4{font-family:var(--serif);font-size:19px;color:#f3ead8;margin:0 0 6px;font-weight:600}
+.about-vv p{font-size:13.5px;color:#d2c7b2;line-height:1.65;margin:0}
+
+/* ── MOTION & DEPTH POLISH ── */
+.sec{animation:secIn .35s cubic-bezier(.22,.61,.36,1)}
+@keyframes secIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.card,.goal-card,.metric-card,.q-block,.opt{transition:transform .18s cubic-bezier(.4,0,.2,1),box-shadow .22s cubic-bezier(.4,0,.2,1)}
+.metric-card:hover{transform:translateY(-3px);box-shadow:0 8px 26px rgba(26,24,20,.1)}
+.nmb,.nsb,.qa-btn,.pt-filter,.dl-filter,.cl-filter,.fin-tab{transition:background .16s ease,color .16s ease,transform .12s ease}
+.qa-btn:active,.nmb:active,.nsb:active{transform:scale(.96)}
+.qa-btn:hover{background:var(--gold3);border-color:var(--gold)}
+.home-up-item{transition:background .15s ease}
+.home-up-item:hover{background:var(--bg3)}
+.cal-day.has-event{transition:transform .15s ease}
+.cal-day.has-event:hover{transform:scale(1.08)}
+
+/* ── GLASS ON OVERLAYS ── */
+.backup-panel,.sb-modal-box{backdrop-filter:blur(18px) saturate(140%);-webkit-backdrop-filter:blur(18px) saturate(140%)}
+.backup-panel-overlay,.sb-modal{backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px)}
+
+/* ── MOBILE PASS ── */
+@media(max-width:640px){
+  .hl-title{font-size:46px}
+  .stats{gap:14px}
+  .about-essay{padding:22px!important}
+  #aboutyou .about-essay p{font-size:16px!important}
+  .home-metrics{grid-template-columns:repeat(2,1fr)}
+  .sec{animation-duration:.25s}
+}
+
+/* ── REDUCED MOTION ── */
+@media(prefers-reduced-motion:reduce){
+  *,.sec,.card,.metric-card,.goal-card-live{animation:none!important;transition:none!important}
+}
+
+/* About meta strip (dynamic, Store-driven) in reading mode */
+#aboutyou .about-meta-strip{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:14px;
+  font-family:var(--mono);font-size:10px;letter-spacing:.5px;color:#a89a80}
+#aboutyou .amm-pill{background:#bfa063;color:#1b1710;font-weight:600;padding:2px 8px;border-radius:100px;font-size:9px}
+#aboutyou .amm-sep{color:#6e6457}
