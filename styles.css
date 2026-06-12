@@ -1304,3 +1304,8 @@ body.public-mode [data-private="true"]{display:none !important}
   .stats{grid-template-columns:1fr}
   .home-metrics{grid-template-columns:1fr}
 }
+
+/* Calendar nav buttons: ensure proper tap target on mobile */
+@media(max-width:640px){
+  .cal-nav-btn{min-height:44px;min-width:44px;padding:8px 14px;font-size:16px}
+}
