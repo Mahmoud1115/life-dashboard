@@ -462,6 +462,34 @@ function addBreadcrumbs(){
 let calYear=new Date().getFullYear();
 let calMonth=new Date().getMonth();
 
+// ── UNIFIED CALENDAR EVENTS ──────────────────────────────
+// Merges static deadlines (D.deadlines) with live Store events
+// (Qatar travel month, license targets, career milestones) so the
+// calendar and upcoming list are one integrated source of truth.
+function allCalendarEvents(){
+  const events=D.deadlines.map(d=>({date:d.date,title:d.title,cat:d.cat,importance:d.importance,private:d.private}));
+  try{
+    if(window.Store){
+      const s=Store.raw();
+      // Qatar travel month → first of that month
+      if(s.qatarVisit && s.qatarVisit.travel_month){
+        events.push({date:s.qatarVisit.travel_month+'-01',title:'✈️ Visit Mom in Qatar — travel month',cat:'goal',importance:'high'});
+      }
+      // License / milestone targets
+      (s.career.licenses||[]).forEach(l=>{
+        if(l.target && l.status!=='done'){
+          events.push({date:l.target,title:'🎓 '+l.name,cat:'career',importance:'high'});
+        }
+      });
+      // Career milestones
+      (s.career.milestones||[]).forEach(m=>{
+        if(m.at) events.push({date:m.at,title:'✈️ '+m.text,cat:'career',importance:'normal'});
+      });
+    }
+  }catch(e){console.warn('allCalendarEvents:',e);}
+  return events;
+}
+
 function renderCalendar(){
   const gridEl=document.getElementById('cal-grid');
   const labelEl=document.getElementById('cal-month-label');
@@ -474,7 +502,7 @@ function renderCalendar(){
   if(labelEl) labelEl.textContent=monthName+' '+calYear;
   // build event map
   const ev={};
-  D.deadlines.forEach(d=>{
+  allCalendarEvents().forEach(d=>{
     const dt=new Date(d.date);
     if(dt.getFullYear()===calYear&&dt.getMonth()===calMonth){
       const day=dt.getDate();
@@ -510,7 +538,7 @@ function renderUpcoming(){
   const el=document.getElementById('home-upcoming-list');
   if(!el) return;
   const now=new Date();
-  const items=D.deadlines
+  const items=allCalendarEvents()
     .map(d=>({...d,daysLeft:Math.ceil((new Date(d.date)-now)/864e5)}))
     .filter(d=>d.daysLeft>=-1) // include today
     .sort((a,b)=>a.daysLeft-b.daysLeft)
@@ -629,37 +657,17 @@ function renderHome(){
     if(ndTitle) ndTitle.textContent=upcoming.title;
   }
 
-  // Savings widgets
-  const goals=LS.get('dune_goals_v1',{});
-  ['go10','go11','go12','go13'].forEach(gid=>{
-    const stored=goals[gid]||{};
-    const g=D.goals.find(x=>x.id===gid);
-    if(!g) return;
-    const pct=stored.progress!==undefined?stored.progress:g.progress;
-    const el=document.getElementById('home-savings-'+gid);
-    const fillEl=document.getElementById('home-savings-fill-'+gid);
-    if(el) el.textContent=pct+'%';
-    if(fillEl) fillEl.style.width=pct+'%';
-  });
-
-  // Top risks
-  const sorted=[...D.risks].sort((a,b)=>b.score-a.score).slice(0,4);
-  const riskList=document.getElementById('home-risk-list');
-  if(riskList){
-    riskList.innerHTML=sorted.map(r=>{
-      const cls=r.score>=12?'rs-high':r.score>=6?'rs-med':'rs-low';
-      return '<div class="home-risk-item"'+(r.private?' data-private="true"':'')+'>'+
-        '<div class="risk-score-badge '+cls+'">'+r.score+'</div>'+
-        '<div class="home-risk-title">'+r.title+'</div>'+
-      '</div>';
-    }).join('');
-  }
-  // Metric cards + calendar + upcoming — isolated so one crash can't freeze the others
-  try{renderMetricCards();}catch(e){console.warn('renderMetricCards:',e);}
+  // Metric cards are now owned by the reactive wireToday() (Phase 1).
+  // This function only handles the non-reactive calendar + upcoming list.
   try{renderCalendar();}catch(e){console.warn('renderCalendar:',e);}
   try{renderUpcoming();}catch(e){console.warn('renderUpcoming:',e);}
 }
 document.addEventListener('DOMContentLoaded',renderHome);
+// Re-render calendar + upcoming whenever Store changes (Qatar month, licenses…)
+if(window.Store){
+  Store.subscribe('qatarVisit',()=>{try{renderCalendar();renderUpcoming();}catch(e){}});
+  Store.subscribe('career',()=>{try{renderCalendar();renderUpcoming();}catch(e){}});
+}
 
 /* ═══════════════════════════════════════════
    PROGRESS TRACKER
@@ -678,13 +686,41 @@ document.addEventListener('DOMContentLoaded',renderHome);
   function statusLabel(s){
     return {active:'Active',planned:'Planned',done:'Done',blocked:'Blocked'}[s]||s;
   }
+  // Live reactive goals computed from the Store — always show at top.
+  function liveGoalsHTML(){
+    if(!window.Store) return '';
+    const s=Store.raw(), d=Store.derive;
+    const cards=[
+      {title:'55k Monthly Savings',pct:Math.min(100,d.saveTargetHitPct(s)),
+        sub:d.monthlySurplus(s).toLocaleString()+' ₽ surplus / '+ (s.money.save_target).toLocaleString()+' ₽ target',
+        link:'finance'},
+      {title:'Visit Mom in Qatar',pct:d.qatarProgressPct(s),
+        sub:d.qatarRemaining(s).toLocaleString()+' ₽ remaining'+(isFinite(d.qatarMonthsToGo(s))?' · '+d.qatarMonthsToGo(s)+' months at pace':''),
+        link:'qatar'},
+      {title:'EASA Part-66 B1.1',pct:d.easaProgress(s).pct,
+        sub:d.easaProgress(s).done+' of 15 modules done',link:'easa'}
+    ];
+    return '<div class="live-goals-banner">⚡ Live goals — computed automatically from your Money, Qatar &amp; EASA data</div>'+
+      cards.map(c=>'<div class="goal-card goal-card-live" onclick="show(\''+c.link+'\')" style="cursor:pointer">'+
+        '<div class="goal-status-dot gs-active"></div>'+
+        '<div class="goal-main">'+
+          '<div class="goal-title">'+c.title+' <span class="live-tag">LIVE</span></div>'+
+          '<div class="goal-progress-wrap">'+
+            '<div class="goal-pbar"><div class="goal-pfill" style="transform:scaleX('+(Math.min(100,c.pct)/100)+')"></div></div>'+
+            '<span class="goal-pct-static">'+c.pct+'%</span>'+
+          '</div>'+
+          '<div class="goal-note">'+c.sub+'</div>'+
+        '</div>'+
+      '</div>').join('');
+  }
   function renderGoals(filter){
     curFilter=filter||curFilter;
     const stored=getStored();
     const container=document.getElementById('goals-list');
     if(!container) return;
     const filtered=D.goals.filter(g=>curFilter==='all'||g.cat===curFilter);
-    container.innerHTML=filtered.map(g=>{
+    const liveBlock=(curFilter==='all'||curFilter==='finance')?liveGoalsHTML():'';
+    container.innerHTML=liveBlock+filtered.map(g=>{
       const s=stored[g.id]||{};
       const pct=s.progress!==undefined?s.progress:g.progress;
       const status=s.status||g.status;
@@ -729,6 +765,10 @@ document.addEventListener('DOMContentLoaded',renderHome);
     renderGoals(cat);
   };
   document.addEventListener('DOMContentLoaded',()=>renderGoals());
+  // Live goals recompute when Money / Qatar / EASA change in the Store
+  if(window.Store){
+    ['money','qatarVisit','easa'].forEach(k=>Store.subscribe(k,()=>{try{renderGoals();}catch(e){}}));
+  }
 })();
 
 /* ═══════════════════════════════════════════
