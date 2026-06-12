@@ -404,7 +404,8 @@ const GROUP_PILLS={
   qatar:[{id:'progress',label:'All Goals'}],
   'career-tracker':[{id:'easa',label:'EASA Modules'},{id:'logbook',label:'Logbook'}],
   passport:[{id:'claims',label:'Claims'},{id:'deadlines',label:'Deadlines'}],
-  aboutyou:[{id:'timeline',label:'Life Timeline'}],
+  // aboutyou intentionally omitted — the top sub-nav already exposes Life Timeline,
+  // and duplicating the pill inside the dark reading-mode band looks orphaned.
 };
 
 function updateSectionLabels(){
