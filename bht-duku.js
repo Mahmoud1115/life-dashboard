@@ -194,6 +194,24 @@
 }
 .bht-duku-r-rm:hover { color: #a04040; border-color: #a040401a; background: rgba(160,64,64,0.04); }
 
+.bht-duku-recent-foot {
+  margin-top: 14px; padding-top: 12px;
+  border-top: 1px solid var(--bdr);
+  display: flex; justify-content: flex-end;
+}
+.bht-duku-rm-all {
+  font-family: var(--mono); font-size: 10px;
+  letter-spacing: 1.2px; text-transform: uppercase;
+  background: transparent; color: #a04040;
+  border: 1px solid rgba(160,64,64,0.30);
+  padding: 8px 14px; border-radius: 4px; cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+.bht-duku-rm-all:hover {
+  background: rgba(160,64,64,0.06);
+  border-color: #a04040;
+}
+
 /* heatmap clickability cues */
 #bht-analytics .bht-an-svg rect[data-cell-date] {
   cursor: pointer;
@@ -297,6 +315,11 @@
               </div>
             `).join('')}
           </div>
+          <div class="bht-duku-recent-foot">
+            <button class="bht-duku-rm-all" type="button" id="bht-duku-rm-all">
+              remove all ${entries.length} entries
+            </button>
+          </div>
         </details>
       ` : ''}
     `;
@@ -340,6 +363,23 @@
         }
       });
     });
+    const rmAll = host.querySelector('#bht-duku-rm-all');
+    if (rmAll) {
+      rmAll.addEventListener('click', (e) => {
+        e.stopPropagation();
+        removeAllEntries(duku.id);
+      });
+    }
+  }
+
+  function removeAllEntries(habitId) {
+    const slice = global.Store.get('bht') || {};
+    const mine = (slice.entries || []).filter(e => e.habitId === habitId);
+    if (mine.length === 0) return;
+    const msg = `Remove ALL ${mine.length} DUKU entries?\n\nThis cannot be undone. Snapshots in the Weekly AI Review are kept.`;
+    if (!confirm(msg)) return;
+    const kept = (slice.entries || []).filter(e => e.habitId !== habitId);
+    global.Store.set('bht.entries', kept);
   }
 
   let _lastLoggedId = null;
