@@ -195,7 +195,12 @@
   function runCompute() {
     if (inflight) { scheduleCompute(); return; }
     inflight = true;
-    postCompute(buildSnapshot()).then(result => {
+    // Read via the public ref so layered modules (e.g. bht-duku) can override
+    // the snapshot shape without editing this file again.
+    const snap = (global.BHT_ANALYTICS && global.BHT_ANALYTICS.buildSnapshot)
+      ? global.BHT_ANALYTICS.buildSnapshot()
+      : buildSnapshot();
+    postCompute(snap).then(result => {
       lastResult = result;
       renderAll();
     }).catch(err => {
