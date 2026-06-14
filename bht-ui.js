@@ -204,7 +204,7 @@
     const btn = document.createElement('button');
     btn.className = 'nmb';
     btn.dataset.group = GROUP_KEY;
-    btn.setAttribute('onclick', "showGroup('" + GROUP_KEY + "')");
+    btn.setAttribute('onclick', "BHT_UI.goto()");
     btn.innerHTML =
       '<span class="nmb-emoji">' + NAV_EMOJI + '</span>' +
       '<span class="nmb-label">' + NAV_LABEL + '</span>';
@@ -410,8 +410,26 @@
     meta.initialized = true;
     meta.initializedAt = new Date().toISOString();
     global.Store.set('bht.meta', meta);
-    if (typeof global.showGroup === 'function') global.showGroup(GROUP_KEY);
+    goto();
     renderBody();
+  }
+
+  function goto() {
+    // Direct route to the behavior section — bypasses NAV_GROUPS which is
+    // const-scoped inside app.js and not reachable from this module.
+    if (typeof global.show === 'function') global.show(SECTION_ID);
+    else {
+      document.querySelectorAll('.sec').forEach(s => s.classList.remove('active'));
+      const sec = document.getElementById(SECTION_ID);
+      if (sec) sec.classList.add('active');
+    }
+    document.querySelectorAll('.nmb').forEach(b => { b.classList.remove('active'); b.removeAttribute('aria-current'); });
+    const btn = document.querySelector('.nmb[data-group="' + GROUP_KEY + '"]');
+    if (btn) { btn.classList.add('active'); btn.setAttribute('aria-current', 'page'); }
+    // Clear any sub-nav from the previously-active group
+    const sub = document.getElementById('nav-sub');
+    if (sub) { sub.innerHTML = ''; sub.dataset.group = GROUP_KEY; }
+    try { localStorage.setItem('dune_activesec', JSON.stringify(SECTION_ID)); } catch (e) {}
   }
 
   function isTypingTarget(el) {
@@ -474,6 +492,7 @@
     openQuickLog,
     closeQuickLog,
     initialize,
+    goto,
     rerender: renderBody,
     GROUP_KEY,
     SECTION_ID
