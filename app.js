@@ -1349,6 +1349,7 @@ document.addEventListener('DOMContentLoaded',()=>{
    FEATURE 2 — BACKUP & RESTORE SYSTEM
    ═══════════════════════════════════════════ */
 const BACKUP_KEYS=[
+  'dune_state_v4',
   'dune_finance_v1','dune_sb_v1',
   'dune_goals_v1','dune_easa_v1',
   'dune_logbook_v1','dune_deadlines_ext_v1',

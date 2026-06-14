@@ -39,3 +39,15 @@ The original Dune identity must survive every design decision. Warm, editorial, 
 ## Accessibility & Inclusion
 
 WCAG AA minimum. High-contrast mode support: ensure all text meets ≥4.5:1 against its background, including muted gold labels and secondary brown text. No motion for users with `prefers-reduced-motion`. Tap targets ≥44px on mobile.
+
+## Behavior Pillar (added 2026-06-14)
+
+A fourth, supportive pillar runs alongside career, money, and legal: **Behavior** — a quiet self-awareness layer for the patterns that quietly cost the plan (procrastination on study days, doomscrolling on off-days, late-night snacking before early shifts). Not a punitive habit tracker, not a streak game. It exists because the 55k system and the EASA pipeline both depend on Dune's daily state, and daily state is made of behaviors he can notice, name, and adjust.
+
+**What it does:** one-tap logging of slips and urges with optional CBT-style reflection (trigger → automatic thought → rational challenge → recovery action). Weekly snapshots roll up trends, risk score, and one or two recommendations. Heavy analytics run in a background worker; the UI stays as light as the rest of the document.
+
+**What it is not:** not a generic habit app, not gamified, not dark-mode. Same cream paper, same muted gold, same Cormorant headings — a chapter, not a screen. The contribution heatmap is rendered in the gold-on-paper palette, not green/red neon. Compassionate framing always wins over streak loss.
+
+**Storage & sync:** lives inside the existing `dune_state_v4` store, ships with the same JSON export and GitHub Gist sync as the rest of the OS. No new database, no new build step, no new dependencies. Local-first by design; any AI coaching is provider-pluggable (local Ollama, BYOK Anthropic/OpenRouter, or a deterministic JS fallback that needs no network at all).
+
+**Why it belongs:** the existing pillars answer *what to do*. Behavior answers *whether Dune is in shape to do it.* Sleep before a shift, stress before a study block, urge intensity on a Thursday night — these are the inputs the other three pillars silently depend on. Without them, the plan is a strategy without a person.

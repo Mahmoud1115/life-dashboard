@@ -10,7 +10,7 @@
   // ──────────────────────────────────────────────
   // SCHEMA
   // ──────────────────────────────────────────────
-  const SCHEMA_VERSION = 6;
+  const SCHEMA_VERSION = 7;
   const STATE_KEY = 'dune_state_v4';
   const SNAPSHOTS_KEY = 'dune_snapshots_v1';
   const MAX_SNAPSHOTS = 8;
@@ -104,6 +104,9 @@
       },
       apartments: [],
       sbTasks: {},
+      bht: (window.BHT && window.BHT.defaultBhtState)
+        ? window.BHT.defaultBhtState()
+        : { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: 'http://localhost:11434', model: '', apiKey: '' }, meta: {} },
       meta: {
         version: SCHEMA_VERSION,
         createdAt: nowISO(),
@@ -188,6 +191,9 @@
         /Category A/i.test(t.text || '') ? { ...t, text: 'CFM56-5B engine certifying authorization' } : t);
     }
     if (!s.qatarVisit) s.qatarVisit = def.qatarVisit;
+    // v6 → v7: behavior intelligence slice
+    if (!s.bht) s.bht = def.bht;
+    if (window.BHT && window.BHT.migrateSlice) s.bht = window.BHT.migrateSlice(s.bht);
     s.meta.version = SCHEMA_VERSION;
     s.meta.lastUpdated = nowISO();
     return s;
