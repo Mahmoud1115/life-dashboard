@@ -10,7 +10,7 @@
   // ──────────────────────────────────────────────
   // SCHEMA
   // ──────────────────────────────────────────────
-  const SCHEMA_VERSION = 7;
+  const SCHEMA_VERSION = 8;
   const STATE_KEY = 'dune_state_v4';
   const SNAPSHOTS_KEY = 'dune_snapshots_v1';
   const MAX_SNAPSHOTS = 8;
@@ -107,6 +107,11 @@
       bht: (window.BHT && window.BHT.defaultBhtState)
         ? window.BHT.defaultBhtState()
         : { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: 'http://localhost:11434', model: '', apiKey: '' }, meta: {} },
+      telemetry: {
+        accumulatedFatigue: 0,
+        weeklyShiftHours: 0,
+        focusReserve: 100
+      },
       meta: {
         version: SCHEMA_VERSION,
         createdAt: nowISO(),
@@ -194,6 +199,14 @@
     // v6 → v7: behavior intelligence slice
     if (!s.bht) s.bht = def.bht;
     if (window.BHT && window.BHT.migrateSlice) s.bht = window.BHT.migrateSlice(s.bht);
+    // v7 → v8: telemetry slice (additive — never overwrites existing values)
+    if (!s.telemetry || typeof s.telemetry !== 'object') {
+      s.telemetry = def.telemetry;
+    } else {
+      if (typeof s.telemetry.accumulatedFatigue !== 'number') s.telemetry.accumulatedFatigue = 0;
+      if (typeof s.telemetry.weeklyShiftHours   !== 'number') s.telemetry.weeklyShiftHours   = 0;
+      if (typeof s.telemetry.focusReserve       !== 'number') s.telemetry.focusReserve       = 100;
+    }
     s.meta.version = SCHEMA_VERSION;
     s.meta.lastUpdated = nowISO();
     return s;
