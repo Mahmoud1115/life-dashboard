@@ -47,8 +47,8 @@
       pinned: false
     },
     {
-      title: 'Padel / sport with Arseny',
-      body: 'A regular weekly sport block with Arseny — social anchor + cardio + Russian practice in one. Edit this card to clarify which sport you actually meant.',
+      title: 'Archery — pick it up as a weekly practice',
+      body: 'A regular archery block as the third anchor of the week: focused, quiet, hand-eye sport. Different texture from gym work — precision rather than load. Fits well around shift days.',
       tag: 'health',
       status: 'parked',
       pinned: false
@@ -536,11 +536,36 @@
   // ──────────────────────────────────────────────
   // BOOT
   // ──────────────────────────────────────────────
+  // One-shot fixup: the original seed misread voice input ("archery" → "Arseny").
+  // Update any existing card that still carries the old title. Idempotent —
+  // gated on meta.ideasArcheryFix so it only ever runs once per device.
+  function fixupArchery() {
+    const meta = global.Store.get('meta') || {};
+    if (meta.ideasArcheryFix) return;
+    const ideas = global.Store.get('ideas') || [];
+    let changed = false;
+    const next = ideas.map(i => {
+      if (i.title === 'Padel / sport with Arseny') {
+        changed = true;
+        return Object.assign({}, i, {
+          title: 'Archery — pick it up as a weekly practice',
+          body:  'A regular archery block as the third anchor of the week: focused, quiet, hand-eye sport. Different texture from gym work — precision rather than load. Fits well around shift days.',
+          updatedAt: nowISO()
+        });
+      }
+      return i;
+    });
+    if (changed) global.Store.set('ideas', next);
+    meta.ideasArcheryFix = true;
+    global.Store.set('meta', meta);
+  }
+
   function boot() {
     injectStyles();
     injectNavButton();
     injectSection();
     seedIfNeeded();
+    fixupArchery();
     renderBody();
     global.Store.subscribe('ideas', renderBody);
   }
