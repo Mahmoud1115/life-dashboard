@@ -1087,8 +1087,10 @@ function renderATACoverage(entries){
   function getInputs(){return LS.get(STORE,D.finance);}
   function saveInputs(v){LS.set(STORE,v);}
   function calcRussia(v){
-    const gross=parseFloat(v.salary)||0;
-    const expenses=(parseFloat(v.rent)||0)+(parseFloat(v.food)||0)+(parseFloat(v.transport)||0)+(parseFloat(v.utilities)||0)+(parseFloat(v.phone)||0)+(parseFloat(v.family_transfer)||0)+(parseFloat(v.other)||0)+(parseFloat(v.mai)||0);
+    const customInc=Array.isArray(v.customIncome)?v.customIncome.reduce((a,c)=>a+(parseFloat(c.amount)||0),0):0;
+    const customExp=Array.isArray(v.customExpenses)?v.customExpenses.reduce((a,c)=>a+(parseFloat(c.amount)||0),0):0;
+    const gross=(parseFloat(v.salary)||0)+customInc;
+    const expenses=(parseFloat(v.rent)||0)+(parseFloat(v.food)||0)+(parseFloat(v.transport)||0)+(parseFloat(v.utilities)||0)+(parseFloat(v.phone)||0)+(parseFloat(v.family_transfer)||0)+(parseFloat(v.other)||0)+(parseFloat(v.mai)||0)+customExp;
     const net=gross-expenses;
     const usd=parseFloat(v.usd_rate)||88;
     return {gross,expenses,net,netUSD:(net/usd).toFixed(0),annualUSD:((net*12)/usd).toFixed(0)};
@@ -1175,6 +1177,11 @@ function renderATACoverage(entries){
     }
   };
   document.addEventListener('DOMContentLoaded',()=>{ syncInputs(); renderOutputs(); refreshFinGistStatus(); });
+  // Expose hooks so layered modules (e.g. money-custom.js) can drive a re-render
+  // and read/write the finance store without re-implementing it.
+  window.finRecompute = function(){ try { syncInputs(); renderOutputs(); } catch(e){} };
+  window.finGetInputs = getInputs;
+  window.finSaveInputs = saveInputs;
 
   // Reflect Gist sync state in both the Finance pointer and the dedicated Sync section.
   function refreshFinGistStatus(){
