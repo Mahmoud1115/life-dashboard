@@ -1,0 +1,261 @@
+/* ============================================================
+   DUNE LIFE OS — BHT · Editorial Paper-Glass overrides
+   Interactive day-grid · frosted popover · semantic green/red
+   Loaded after styles.css. Scoped to .bht-glass-* classes.
+   Does not modify any other module's styling.
+   ============================================================ */
+
+/* ── GRID WRAPPER ── */
+.bht-glass-grid-wrap {
+  margin: 14px 0 0;
+  font-family: var(--mono);
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  contain: content;
+}
+
+.bht-glass-col-labels {
+  display: grid;
+  grid-template-columns: repeat(7, 18px);
+  gap: 4px;
+  font-size: 8px;
+  letter-spacing: 0.6px;
+  color: var(--tx3);
+  text-align: center;
+  margin: 0 0 4px;
+}
+.bht-glass-col-l {
+  display: inline-block;
+  width: 18px;
+  text-align: center;
+  line-height: 1;
+}
+
+/* ── CELLS ── */
+.bht-glass-cells {
+  display: grid;
+  grid-template-columns: repeat(7, 18px);
+  grid-auto-rows: 18px;
+  gap: 4px;
+}
+.bht-glass-cell-pad { background: transparent; }
+
+.bht-glass-cell {
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: 4px;
+  border: 1px solid var(--bdr);
+  background: rgba(255, 255, 255, 0.55);
+  font-family: var(--mono);
+  font-size: 8.5px;
+  line-height: 1;
+  color: var(--tx3);
+  cursor: pointer;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 120ms ease, border-color 120ms ease, transform 70ms ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.bht-glass-cell:hover {
+  border-color: rgba(154, 120, 50, 0.42);
+  background: rgba(255, 255, 255, 0.88);
+  transform: translateY(-1px);
+}
+.bht-glass-cell:focus-visible {
+  outline: 2px solid var(--gold2);
+  outline-offset: 2px;
+}
+.bht-glass-cell.unmarked { background: rgba(255, 255, 255, 0.45); }
+.bht-glass-cell.success {
+  background: rgba(26, 138, 82, 0.16);
+  border-color: rgba(26, 138, 82, 0.42);
+  color: rgba(20, 100, 60, 0.92);
+}
+.bht-glass-cell.slip {
+  background: rgba(196, 48, 48, 0.16);
+  border-color: rgba(196, 48, 48, 0.46);
+  color: rgba(160, 36, 36, 0.95);
+}
+.bht-glass-cell.is-today {
+  box-shadow: 0 0 0 1.6px var(--gold) inset;
+}
+.bht-glass-cell-day { font-weight: 500; line-height: 1; }
+.bht-glass-cell-vol {
+  position: absolute;
+  bottom: -2px;
+  right: -2px;
+  font-family: var(--mono);
+  font-size: 7px;
+  font-weight: 700;
+  color: rgba(160, 36, 36, 1);
+  background: rgba(255, 255, 255, 0.95);
+  border: 1px solid rgba(196, 48, 48, 0.30);
+  padding: 0 2px;
+  border-radius: 3px;
+  line-height: 1.15;
+  min-width: 9px;
+  text-align: center;
+}
+
+/* ── STATS ROW UNDER GRID ── */
+.bht-glass-stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--bdr);
+}
+@media (max-width: 540px) {
+  .bht-glass-stats { grid-template-columns: repeat(2, 1fr); }
+}
+.bht-glass-stat .l {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--tx3);
+  margin-bottom: 4px;
+}
+.bht-glass-stat .v {
+  font-family: var(--serif);
+  font-size: 18px;
+  color: var(--tx);
+  line-height: 1;
+}
+.bht-glass-stat .v em { font-style: italic; color: var(--gold); }
+
+/* ── FROSTED PAPER-GLASS POPOVER ── */
+.bht-glass-pop {
+  position: fixed;
+  z-index: 10500;
+  width: 244px;
+  background: rgba(255, 255, 255, 0.75);
+  backdrop-filter: blur(12px) saturate(130%);
+  -webkit-backdrop-filter: blur(12px) saturate(130%);
+  border: 1px solid rgba(154, 120, 50, 0.20);
+  border-radius: 8px;
+  box-shadow: 0 4px 24px rgba(26, 24, 20, 0.06);
+  padding: 12px 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-family: var(--mono);
+  will-change: transform, opacity;
+  transform: translate3d(0, 0, 0);
+  animation: bht-glass-pop-in 140ms ease;
+}
+@keyframes bht-glass-pop-in {
+  from { opacity: 0; transform: translate3d(0, -4px, 0); }
+  to   { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+.bht-glass-pop-date {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 1.4px;
+  text-transform: uppercase;
+  color: var(--gold2);
+}
+.bht-glass-pop-btns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+.bht-glass-pop-btn {
+  appearance: none;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.4px;
+  padding: 9px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background-color 100ms ease, border-color 100ms ease;
+}
+.bht-glass-pop-btn.green {
+  background: rgba(26, 138, 82, 0.13);
+  border-color: rgba(26, 138, 82, 0.40);
+  color: rgba(20, 100, 60, 0.95);
+}
+.bht-glass-pop-btn.green:hover,
+.bht-glass-pop-btn.green.is-on {
+  background: rgba(26, 138, 82, 0.24);
+  border-color: rgba(26, 138, 82, 0.65);
+}
+.bht-glass-pop-btn.red {
+  background: rgba(196, 48, 48, 0.13);
+  border-color: rgba(196, 48, 48, 0.42);
+  color: rgba(150, 32, 32, 0.95);
+}
+.bht-glass-pop-btn.red:hover,
+.bht-glass-pop-btn.red.is-on {
+  background: rgba(196, 48, 48, 0.24);
+  border-color: rgba(196, 48, 48, 0.65);
+}
+
+.bht-glass-pop-vol {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--tx2);
+}
+.bht-glass-pop-vol.is-hidden { display: none; }
+.bht-glass-pop-vol .lbl {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  color: var(--tx3);
+  flex-shrink: 0;
+}
+.bht-glass-pop-vb {
+  appearance: none;
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  border: 1px solid var(--bdr2);
+  background: rgba(255, 255, 255, 0.7);
+  font-family: var(--mono);
+  font-size: 15px;
+  color: var(--tx2);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 100ms ease, color 100ms ease;
+}
+.bht-glass-pop-vb:hover {
+  background: var(--gold3);
+  color: var(--gold2);
+}
+.bht-glass-pop-vn {
+  flex: 1;
+  text-align: center;
+  font-family: var(--serif);
+  font-size: 20px;
+  color: var(--tx);
+  line-height: 1;
+}
+
+.bht-glass-pop-clear {
+  appearance: none;
+  background: transparent;
+  border: none;
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--tx3);
+  cursor: pointer;
+  padding: 6px 0 0;
+  margin-top: 4px;
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+  text-align: center;
+}
+.bht-glass-pop-clear:hover { color: #a04040; }
