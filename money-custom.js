@@ -217,7 +217,7 @@
       const amt  = row.querySelector('.mc-amount');
       const rm   = row.querySelector('.mc-rm');
       name.addEventListener('input', () => updateRow(kind, id, { name: name.value }));
-      amt.addEventListener('input',  () => updateRow(kind, id, { amount: parseFloat(amt.value) || 0 }));
+      amt.addEventListener('input',  () => updateRow(kind, id, { amount: parseFloat(String(amt.value).replace(/,/g, '')) || 0 }));
       rm.addEventListener('click',   () => removeRow(kind, id));
     });
   }
