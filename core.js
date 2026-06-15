@@ -10,7 +10,7 @@
   // ──────────────────────────────────────────────
   // SCHEMA
   // ──────────────────────────────────────────────
-  const SCHEMA_VERSION = 8;
+  const SCHEMA_VERSION = 9;
   const STATE_KEY = 'dune_state_v4';
   const SNAPSHOTS_KEY = 'dune_snapshots_v1';
   const MAX_SNAPSHOTS = 8;
@@ -112,6 +112,7 @@
         weeklyShiftHours: 0,
         focusReserve: 100
       },
+      ideas: [],
       meta: {
         version: SCHEMA_VERSION,
         createdAt: nowISO(),
@@ -207,6 +208,8 @@
       if (typeof s.telemetry.weeklyShiftHours   !== 'number') s.telemetry.weeklyShiftHours   = 0;
       if (typeof s.telemetry.focusReserve       !== 'number') s.telemetry.focusReserve       = 100;
     }
+    // v8 → v9: ideas parking lot
+    if (!Array.isArray(s.ideas)) s.ideas = [];
     s.meta.version = SCHEMA_VERSION;
     s.meta.lastUpdated = nowISO();
     return s;
