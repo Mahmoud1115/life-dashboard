@@ -222,11 +222,37 @@
     });
   }
 
+  // One-time seed from the parked ideas so the user starts with placeholder rows
+  // matching their planning context. Gated on russia.customSeeded so it only
+  // runs when both arrays are still empty AND has never run before.
+  function seedFromIdeas() {
+    const all = getRussia();
+    if (all.russia.customSeeded) return;
+    if (all.russia.customIncome.length || all.russia.customExpenses.length) {
+      // User already added something — mark seeded and bail
+      all.russia.customSeeded = true;
+      saveInputs(all);
+      return;
+    }
+    all.russia.customIncome = [
+      { id: uid(), name: 'Side job (off-days)', amount: 0 }
+    ];
+    all.russia.customExpenses = [
+      { id: uid(), name: 'Gym',                    amount: 0 },
+      { id: uid(), name: 'Archery',                amount: 0 },
+      { id: uid(), name: 'Engine certifications',  amount: 0 }
+    ];
+    all.russia.customSeeded = true;
+    saveInputs(all);
+  }
+
   function boot() {
     injectStyles();
     // Wait until the finance section's inputs are in the DOM (always inline, but be defensive)
     if (document.querySelector('#fin-russia .fin-inputs')) {
+      seedFromIdeas();
       render();
+      recompute();
       // Re-render once after app.js's own DOMContentLoaded handler runs so we
       // catch any late-init state.
       setTimeout(render, 60);
@@ -234,7 +260,9 @@
       const obs = new MutationObserver(() => {
         if (document.querySelector('#fin-russia .fin-inputs')) {
           obs.disconnect();
+          seedFromIdeas();
           render();
+          recompute();
         }
       });
       obs.observe(document.body, { childList: true, subtree: true });
