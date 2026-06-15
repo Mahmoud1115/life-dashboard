@@ -1118,8 +1118,8 @@ function renderATACoverage(entries){
       row('Net salary',r.gross.toLocaleString()+' ₽')+
       row('Monthly expenses',r.expenses.toLocaleString()+' ₽')+
       row('Monthly surplus',r.net.toLocaleString()+' ₽',r.net>0?'positive':'negative')+
-      row('55k target',hit?'✓ HIT — '+Math.round(r.net/target*100)+'%':Math.max(0,Math.round(r.net/target*100))+'% — cut '+Math.max(0,target-r.net).toLocaleString()+' ₽',hit?'positive':'negative')+
-      row('Saved per year at 55k','660,000 ₽ · ≈ $'+Math.round(660000/(parseFloat(rIn.usd_rate)||88)).toLocaleString())+
+      row(Math.round(target/1000)+'k target',hit?'✓ HIT — '+Math.round(r.net/target*100)+'%':Math.max(0,Math.round(r.net/target*100))+'% — cut '+Math.max(0,target-r.net).toLocaleString()+' ₽',hit?'positive':'negative')+
+      row('Saved per year at '+Math.round(target/1000)+'k',(target*12).toLocaleString()+' ₽ · ≈ $'+Math.round((target*12)/(parseFloat(rIn.usd_rate)||88)).toLocaleString())+
       row('Emergency fund (225k ₽)',r.net>0?Math.ceil(225000/Math.min(r.net,target))+' months':'-');
   }
   function row(label,val,cls){
@@ -1128,7 +1128,7 @@ function renderATACoverage(entries){
   function syncInputs(){
     const v=getInputs();
     const rd=D.finance.russia;
-    ['salary','rent','food','transport','utilities','phone','family_transfer','other','mai','usd_rate'].forEach(k=>{
+    ['salary','rent','food','transport','utilities','phone','family_transfer','other','mai','usd_rate','save_target'].forEach(k=>{
       const el=document.getElementById('fin-r-'+k);
       if(!el) return;
       const val=(v.russia&&v.russia[k]!==undefined)?v.russia[k]:rd[k];
