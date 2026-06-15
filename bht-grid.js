@@ -92,13 +92,15 @@
   }
 
   // ──────────────────────────────────────────────
-  // RENDER · idempotent, disconnects observer during own mutations
+  // RENDER · synchronous from the rerender chain (no paint flash),
+  // rAF-scheduled from the mutation observer (no paint flash either).
+  // Observer disconnected during own mutations to avoid recursion.
   // ──────────────────────────────────────────────
-  let _renderTimer = null;
+  let _renderRAF = null;
   let _observer = null;
   function scheduleRender() {
-    clearTimeout(_renderTimer);
-    _renderTimer = setTimeout(renderGrid, 40);
+    if (_renderRAF) cancelAnimationFrame(_renderRAF);
+    _renderRAF = requestAnimationFrame(() => { _renderRAF = null; renderGrid(); });
   }
   function attachObserver() {
     const target = document.getElementById('bht-body') || document.body;
@@ -385,10 +387,13 @@
     const origRerender = global.BHT_UI.rerender;
     global.BHT_UI.rerender = function () {
       origRerender();
-      scheduleRender();
+      // Synchronous on the rerender chain so the browser only paints
+      // the final DOM state (our grid), never the intermediate SVG.
+      renderGrid();
     };
 
-    // Catch async analytics SVG paints
+    // Catch async analytics SVG paints (worker results land 220ms later).
+    // rAF instead of setTimeout — runs before paint, so no visible SVG flash.
     _observer = new MutationObserver(scheduleRender);
     attachObserver();
 
