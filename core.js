@@ -10,7 +10,7 @@
   // ──────────────────────────────────────────────
   // SCHEMA
   // ──────────────────────────────────────────────
-  const SCHEMA_VERSION = 10;
+  const SCHEMA_VERSION = 11;
   const STATE_KEY = 'dune_state_v4';
   const SNAPSHOTS_KEY = 'dune_snapshots_v1';
   const MAX_SNAPSHOTS = 8;
@@ -82,7 +82,7 @@
       about: {
         version: 2,
         createdAt: 'June 2026',
-        lastUpdated: '15 June 2026',
+        lastUpdated: '19 June 2026',
         strengths: [
           'Metabolize pain into structure',
           'Vision plus precision — ambitious and meticulous',
@@ -177,11 +177,15 @@
     if (s.about && (s.about.version || 1) < 2) {
       s.about.version = 2;
       s.about.createdAt = 'June 2026';
-      s.about.lastUpdated = '15 June 2026';
+      s.about.lastUpdated = '19 June 2026';
     }
     // v8 → v9 about touch-up: keep lastUpdated in sync with the latest revision
     if (s.about && s.about.lastUpdated === '11 June 2026') {
-      s.about.lastUpdated = '15 June 2026';
+      s.about.lastUpdated = '19 June 2026';
+    }
+    // v10 → v11 about touch-up: catch the previously-mis-set 15 June stamp
+    if (s.about && s.about.lastUpdated === '15 June 2026') {
+      s.about.lastUpdated = '19 June 2026';
     }
     if (!s.career) s.career = def.career;
     // v5 → v6: Category A is line/whole-aircraft only; engine-shop work can't earn it.
