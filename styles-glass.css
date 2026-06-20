@@ -5,6 +5,17 @@
    Does not modify any other module's styling.
    ============================================================ */
 
+:root {
+  /* Slip-clean (success) semantic colour — RGB tuples so alpha can be
+     varied at use-site without losing the single source of truth. */
+  --slip-clean-rgb:      26, 138, 82;
+  --slip-clean-text-rgb: 20, 100, 60;
+  /* Slip (occurred) semantic colour */
+  --slip-rgb:            196, 48, 48;
+  --slip-text-rgb:       160, 36, 36;
+  --slip-text-mid-rgb:   150, 32, 32;
+}
+
 /* ── GRID WRAPPER ── */
 .bht-glass-grid-wrap {
   margin: 14px 0 0;
@@ -74,14 +85,14 @@
 }
 .bht-glass-cell.unmarked { background: rgba(255, 255, 255, 0.45); }
 .bht-glass-cell.success {
-  background: rgba(26, 138, 82, 0.16);
-  border-color: rgba(26, 138, 82, 0.42);
-  color: rgba(20, 100, 60, 0.92);
+  background: rgba(var(--slip-clean-rgb), 0.16);
+  border-color: rgba(var(--slip-clean-rgb), 0.42);
+  color: rgba(var(--slip-clean-text-rgb), 0.92);
 }
 .bht-glass-cell.slip {
-  background: rgba(196, 48, 48, 0.16);
-  border-color: rgba(196, 48, 48, 0.46);
-  color: rgba(160, 36, 36, 0.95);
+  background: rgba(var(--slip-rgb), 0.16);
+  border-color: rgba(var(--slip-rgb), 0.46);
+  color: rgba(var(--slip-text-rgb), 0.95);
 }
 .bht-glass-cell.is-today {
   box-shadow: 0 0 0 2px var(--gold) inset;
@@ -94,9 +105,9 @@
   font-family: var(--mono);
   font-size: 9px;
   font-weight: 700;
-  color: rgba(160, 36, 36, 1);
+  color: rgba(var(--slip-text-rgb), 1);
   background: rgba(255, 255, 255, 0.95);
-  border: 1px solid rgba(196, 48, 48, 0.30);
+  border: 1px solid rgba(var(--slip-rgb), 0.30);
   padding: 1px 4px;
   border-radius: 4px;
   line-height: 1.15;
@@ -180,24 +191,24 @@
   transition: background-color 100ms ease, border-color 100ms ease;
 }
 .bht-glass-pop-btn.green {
-  background: rgba(26, 138, 82, 0.13);
-  border-color: rgba(26, 138, 82, 0.40);
-  color: rgba(20, 100, 60, 0.95);
+  background: rgba(var(--slip-clean-rgb), 0.13);
+  border-color: rgba(var(--slip-clean-rgb), 0.40);
+  color: rgba(var(--slip-clean-text-rgb), 0.95);
 }
 .bht-glass-pop-btn.green:hover,
 .bht-glass-pop-btn.green.is-on {
-  background: rgba(26, 138, 82, 0.24);
-  border-color: rgba(26, 138, 82, 0.65);
+  background: rgba(var(--slip-clean-rgb), 0.24);
+  border-color: rgba(var(--slip-clean-rgb), 0.65);
 }
 .bht-glass-pop-btn.red {
-  background: rgba(196, 48, 48, 0.13);
-  border-color: rgba(196, 48, 48, 0.42);
-  color: rgba(150, 32, 32, 0.95);
+  background: rgba(var(--slip-rgb), 0.13);
+  border-color: rgba(var(--slip-rgb), 0.42);
+  color: rgba(var(--slip-text-mid-rgb), 0.95);
 }
 .bht-glass-pop-btn.red:hover,
 .bht-glass-pop-btn.red.is-on {
-  background: rgba(196, 48, 48, 0.24);
-  border-color: rgba(196, 48, 48, 0.65);
+  background: rgba(var(--slip-rgb), 0.24);
+  border-color: rgba(var(--slip-rgb), 0.65);
 }
 
 .bht-glass-pop-vol {
@@ -261,3 +272,35 @@
   text-align: center;
 }
 .bht-glass-pop-clear:hover { color: #a04040; }
+
+/* ── MOBILE CHROME POLISH ── */
+@media (max-width: 640px) {
+  /* Scroll-hint: fading gold gradient on the right edge of the top nav so
+     users discover the hidden tabs (Documents, Behavior, Ideas, Review, Sync).
+     Uses sticky positioning so it follows horizontal scroll-end correctly. */
+  .nav-main {
+    position: relative;
+    /* Mask the right edge — fades out at the end, signalling scrollability */
+    -webkit-mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 32px), transparent 100%);
+            mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 32px), transparent 100%);
+  }
+  /* Chevron hint at the right edge of the nav — small gold ›, half-opacity */
+  .nav-in::after {
+    content: '›';
+    position: absolute;
+    top: 50%;
+    right: 6px;
+    transform: translateY(-50%);
+    font-family: var(--mono);
+    font-size: 18px;
+    color: var(--gold2);
+    pointer-events: none;
+    opacity: 0.55;
+    z-index: 2;
+  }
+  .nav-in { position: relative; }
+
+  /* FAB scoping: only the Behavior section needs the quick-log button.
+     On other sections, hide it so it doesn't overlap with the backup banner. */
+  body:not(:has(#behavior.active)) #bht-fab { display: none; }
+}

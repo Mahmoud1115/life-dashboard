@@ -51,3 +51,25 @@ A fourth, supportive pillar runs alongside career, money, and legal: **Behavior*
 **Storage & sync:** lives inside the existing `dune_state_v4` store, ships with the same JSON export and GitHub Gist sync as the rest of the OS. No new database, no new build step, no new dependencies. Local-first by design; any AI coaching is provider-pluggable (local Ollama, BYOK Anthropic/OpenRouter, or a deterministic JS fallback that needs no network at all).
 
 **Why it belongs:** the existing pillars answer *what to do*. Behavior answers *whether Dune is in shape to do it.* Sleep before a shift, stress before a study block, urge intensity on a Thursday night — these are the inputs the other three pillars silently depend on. Without them, the plan is a strategy without a person.
+
+## Ideas Section (added 2026-06-15)
+
+A parking lot for what's next. Things on Dune's mind that aren't decisions yet get parked here — title, body, tag (finance/health/career/legal/other), status (parked/exploring/active/shelved), pin/edit/delete — so the active pillars stay focused. Editable, persistent, ships with Gist sync. Items get promoted into the real plan (Money targets, Career goals, Today focus, custom expense rows) when the time comes; the rest sit quietly until you decide.
+
+The five originally seeded items came from a real planning conversation: stretch $1,000/mo savings target, side job on the two days off, gym, engine certifications stack, archery as a third movement anchor. Voice input misread "archery" as "Arseny" on first capture; a one-shot fixup corrected the card and the seed for everyone.
+
+## Money — Customs & Dynamic Target (added 2026-06-15)
+
+The Money panel grew two reactive layers without changing the core 55k machine:
+
+**Custom income & expense rows.** Free-form rows for things that don't fit the eight default expense categories — gym, archery, certifications, side income. Name + amount + delete. Folded into the headline net savings, the breakdown, the USD conversion, the target percentage, and the emergency-fund months. Stored in `dune_finance_v1.russia.customIncome[] / customExpenses[]` — same Gist sync path as the rest of the Money state.
+
+**Dynamic save target.** A new `Save Target (₽/month)` input lets the 55k baseline move. The headline "55k target" label, the "Saved per year at 55k" row, and the plan-health pill at the top of every page all follow the value live. 55k is now the floor, not the ceiling — the stretch goal is $1,000/mo (~70–100k ₽).
+
+**Thousands separators on every input.** Display only — storage stays integer-clean. parseFloat stops at the first comma otherwise, so the input handlers were patched to strip commas before parsing.
+
+## Mobile Access (added 2026-06-15)
+
+On screens ≤640px, `styles.css` hides the desktop top nav's utility buttons (Private / Backup). They were unreachable on phones until two small frosted-paper pill buttons were added to the top-right of the mobile viewport, fixed position. They proxy to the existing `togglePrivacy()` and `openBackupPanel()` handlers and mirror the privacy state + backup pill colour. Desktop is untouched.
+
+The BHT module also runs as a separate pillar with its own nav button (◐ Behavior), section, FAB, and Ctrl/Cmd+Shift+B hotkey — see the Behavior Pillar block above. On mobile, the BHT FAB is scoped to the Behavior section only so it doesn't overlap the backup banner on other pages.

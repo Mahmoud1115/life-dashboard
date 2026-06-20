@@ -48,7 +48,7 @@ input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px soli
 
 /* ── HERO ── */
 .hero{padding:80px 40px 60px;max-width:960px;margin:0 auto;border-bottom:1px solid var(--bdr)}
-.hl-label{font-family:var(--mono);font-size:11px;letter-spacing:3px;color:var(--gold);text-transform:uppercase;margin-bottom:24px;opacity:.8}
+.hl-label{font-family:var(--mono);font-size:11px;letter-spacing:3px;color:var(--gold2);text-transform:uppercase;margin-bottom:24px}
 .hl-title{font-family:var(--serif);font-size:clamp(40px,6vw,70px);font-weight:300;line-height:1.1;margin-bottom:14px}
 .hl-title em{font-style:italic;color:var(--gold2)}
 .hl-sub{font-family:var(--serif);font-size:17px;font-style:italic;color:var(--tx2);margin-bottom:40px;line-height:1.7}
@@ -125,7 +125,7 @@ input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px soli
 .sec.active{display:block;animation:secIn 0.22s cubic-bezier(0.16,1,0.3,1);}
 @keyframes secIn{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:translateY(0)}}
 .sec-hd{margin-bottom:40px}
-.sec-num{font-family:var(--mono);font-size:10px;color:var(--gold);letter-spacing:2px;text-transform:uppercase;margin-bottom:10px;opacity:.7}
+.sec-num{font-family:var(--mono);font-size:10px;color:var(--gold2);letter-spacing:2px;text-transform:uppercase;margin-bottom:10px}
 .sec-title{font-family:var(--serif);font-size:clamp(24px,4vw,40px);font-weight:300;line-height:1.2}
 .sec-title em{font-style:italic;color:var(--gold2)}
 .sec-intro{font-family:var(--serif);font-size:16px;font-style:italic;color:var(--tx2);margin-top:12px;line-height:1.7;max-width:680px}

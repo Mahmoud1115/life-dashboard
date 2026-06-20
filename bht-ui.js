@@ -239,7 +239,8 @@
 
   function registerNavGroup() {
     if (!global.NAV_GROUPS || !global.SEC_TO_GROUP) {
-      console.warn('[BHT-UI] NAV_GROUPS not on window — nav sync may lag.');
+      // app.js declares these as `const` at module scope, so they're not on
+      // window. We use BHT_UI.goto() to drive navigation directly instead.
       return;
     }
     if (!global.NAV_GROUPS[GROUP_KEY]) {

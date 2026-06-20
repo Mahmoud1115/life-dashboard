@@ -126,11 +126,19 @@ function show(id,e){
     if(d<=60)return pill(label,d+'d','var(--amber2)','var(--amber)');
     return pill(label,d+'d','var(--bg3)','var(--tx2)');
   }
+  function readSaveTarget(){
+    try {
+      const fin = JSON.parse(localStorage.getItem('dune_finance_v1') || '{}');
+      const t = fin && fin.russia && parseFloat(fin.russia.save_target);
+      return isFinite(t) && t > 0 ? t : 55000;
+    } catch(e) { return 55000; }
+  }
   function render(){
     const el=document.getElementById('phb');
     if(!el)return;
+    const targetK = Math.round(readSaveTarget()/1000);
     el.innerHTML=[
-      pill('Savings','55K/MO','var(--gold3)','var(--gold2)'),
+      pill('Savings', targetK+'K/MO','var(--gold3)','var(--gold2)'),
       pill('Settlement','CLOSED','var(--bg3)','var(--tx3)'),
       countdown('MAI Deadline','2026-07-15'),
       countdown('M15 Target','2026-10-01'),
@@ -140,6 +148,18 @@ function show(id,e){
   }
   render();
   setInterval(render,60000);
+  // Re-render the pill immediately when finance inputs change so the
+  // Savings number doesn't lag the user's edit by up to a minute.
+  window.addEventListener('storage', (e) => { if (e.key === 'dune_finance_v1') render(); });
+  // Same-tab finance changes (storage event only fires across tabs) — patch
+  // the existing finInputChange so it triggers a phb re-render after saving.
+  document.addEventListener('DOMContentLoaded', () => {
+    const orig = window.finInputChange;
+    if (orig && !orig._phbWired) {
+      window.finInputChange = function(){ const r = orig.apply(this, arguments); render(); return r; };
+      window.finInputChange._phbWired = true;
+    }
+  });
 })();
 
 /* ═══════════════════════════════════════════
@@ -1533,6 +1553,26 @@ window.clearGistToken=function(){
   showBackupToast('Token removed');
 };
 
+// ── In-app "check for updates" — for iOS home-screen PWA users who can't
+//    easily clear cache. Forces a no-store fetch of the page, then reloads.
+window.checkForUpdates = async function(){
+  const status = document.getElementById('sync-check-updates-status');
+  const btn = document.getElementById('sync-check-updates-btn');
+  if (status) status.textContent = 'Fetching latest…';
+  if (btn) btn.disabled = true;
+  try {
+    // Fetch the page with cache:'no-store' to bypass any HTTP cache
+    const url = window.location.pathname + '?_cb=' + Date.now();
+    await fetch(url, { cache: 'no-store' });
+    if (status) status.textContent = '✓ Reloading…';
+    // Force a hard reload — appending the cache-buster query bypasses Service Worker / disk cache
+    setTimeout(() => { window.location.replace(url); }, 250);
+  } catch (e) {
+    if (status) status.textContent = '⚠ ' + (e.message || 'fetch failed');
+    if (btn) btn.disabled = false;
+  }
+};
+
 window.saveToGist=async function(isRetry){
   const token=LS.get('dune_github_token_v1','');
   if(!token){showBackupToast('⚠ No token saved');return;}
@@ -2458,11 +2498,23 @@ window.aptToggleWinner=function(id){
       if (!sec) return;
       let meta = sec.querySelector('.about-meta-strip');
       const a = s.about || {};
+      // Derive "Last updated" from the auto-stamped meta.lastUpdated so the
+      // date follows reality instead of needing manual schema bumps. Fall
+      // back to the legacy hardcoded string if meta is missing or invalid.
+      let lastUpdatedLabel = a.lastUpdated || '—';
+      try {
+        if (s.meta && s.meta.lastUpdated) {
+          const d = new Date(s.meta.lastUpdated);
+          if (!isNaN(d.getTime())) {
+            lastUpdatedLabel = d.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+          }
+        }
+      } catch (e) { /* keep legacy label */ }
       const html = '<span class="amm-pill">v' + (a.version || 1) + '</span>' +
         '<span class="amm-sep">·</span>' +
         '<span>Created ' + (a.createdAt || '—') + '</span>' +
         '<span class="amm-sep">·</span>' +
-        '<span>Last updated ' + (a.lastUpdated || '—') + '</span>';
+        '<span>Last updated ' + lastUpdatedLabel + '</span>';
       if (!meta) {
         meta = document.createElement('div');
         meta.className = 'about-meta-strip';
