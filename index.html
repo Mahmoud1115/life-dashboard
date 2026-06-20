@@ -5,8 +5,15 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Dune — Moscow Build Mode 2026</title>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,300;1,400&family=DM+Mono:wght@300;400;500&family=Outfit:wght@300;400;500;600&family=Plus+Jakarta+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=phase3h">
-<link rel="stylesheet" href="styles-glass.css?v=phase5c">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#9a7832">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Dune">
+<link rel="stylesheet" href="styles.css?v=polish1">
+<link rel="stylesheet" href="styles-glass.css?v=polish1">
 </head>
 <body>
 <div id="prog"></div>
@@ -564,6 +571,13 @@
     <button class="fin-save-btn fin-save-gist-quiet" id="sync-load-gist-btn" onclick="loadFromGist()">☁ Load from Gist</button>
   </div>
 
+  <!-- In-app "check for updates" — bypasses iOS PWA cache without going through Settings -->
+  <div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--bdr)">
+    <button class="fin-save-btn fin-save-gist-quiet" id="sync-check-updates-btn" type="button" onclick="checkForUpdates()" style="width:auto">↻ Check for updates</button>
+    <span id="sync-check-updates-status" style="font-family:var(--mono);font-size:10px;letter-spacing:.5px;color:var(--tx3);margin-left:10px"></span>
+    <div style="font-family:var(--mono);font-size:10px;color:var(--tx3);margin-top:8px;line-height:1.6">Forces a fresh fetch of the site files. Use this on iPhone if the home-screen app is showing old layout after a deploy.</div>
+  </div>
+
   <div class="fin-save-divider" style="margin-top:18px">One-time setup</div>
   <ol style="font-size:13px;color:var(--tx2);line-height:1.7;padding-left:20px;margin:6px 0">
     <li>Go to <strong>github.com/settings/tokens</strong> → Generate new token (<strong>classic</strong>)</li>
@@ -619,7 +633,6 @@
           <button class="lb-btn lb-btn-view" onclick="triggerImportFile()">⬆ Import JSON File</button>
           <button class="lb-btn lb-btn-view" onclick="importFromClipboard()">📋 Import from Clipboard</button>
         </div>
-        <input id="backup-file-input" type="file" accept=".json" style="display:none" onchange="handleImportFile(this)">
         <p class="backup-hint">⚠ Importing overwrites current data. Your current data is automatically saved as a pre-restore backup first.</p>
       </div>
 
@@ -670,8 +683,8 @@
 <script src="data.js?v=phase3h"></script>
 <script src="core.js?v=phase5d"></script>
 <script src="bht.js?v=phase4a"></script>
-<script src="app.js?v=phase5e"></script>
-<script src="bht-ui.js?v=phase4b"></script>
+<script src="app.js?v=polish1"></script>
+<script src="bht-ui.js?v=polish1"></script>
 <script src="bht-components.js?v=phase4c"></script>
 <script src="bht-analytics.js?v=phase5a"></script>
 <script src="bht-coach.js?v=phase4e"></script>
