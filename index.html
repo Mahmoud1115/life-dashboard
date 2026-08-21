@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Dune — Moscow Build Mode 2026</title>
+<title>Dune Life OS</title>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,300;1,400&family=DM+Mono:wght@300;400;500&family=Outfit:wght@300;400;500;600&family=Plus+Jakarta+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
 <link rel="manifest" href="manifest.json">
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
@@ -20,8 +20,8 @@
 
 <!-- HERO -->
 <div class="hero">
-  <div class="hl-label">Dune Plan — Rebuilt June 2026</div>
-  <h1 class="hl-title">Moscow <br><em>Build Mode</em></h1>
+  <div class="hl-label" id="hl-last-updated">Dune Life OS</div>
+  <h1 class="hl-title">DUNE <em>LIFE OS</em></h1>
   <p class="hl-sub">One city. One company. One mission: master the CFM56 at АэроТраст, save 55,000 ₽ every month, pass EASA modules, and build yourself into an engineer nobody can ignore.</p>
   <div class="stats">
     <div class="stat"><div class="sv" data-private-val="130K ₽" data-mask="[•••]">130K ₽</div><div class="sl">net / month</div></div>
@@ -143,68 +143,12 @@
 <!-- Quick Actions -->
 <div class="card">
   <div class="ctitle">Quick Actions</div>
-  <div style="font-family:var(--mono);font-size:9.5px;letter-spacing:.5px;color:var(--tx3);margin:-2px 0 10px">Add to Qatar fund instantly — saves to your live goal &amp; updates everywhere</div>
-  <div class="quick-actions" style="margin-bottom:14px">
-    <button class="qa-btn" onclick="qatarQuickAdd(5000)">＋ 5,000 ₽ → Qatar</button>
-    <button class="qa-btn" onclick="qatarQuickAdd(10000)">＋ 10,000 ₽ → Qatar</button>
-    <button class="qa-btn" onclick="qatarQuickAdd(20000)">＋ 20,000 ₽ → Qatar</button>
-    <span id="today-qatar-flash" style="font-family:var(--mono);font-size:10px;color:var(--green);opacity:0;transition:opacity .3s;align-self:center">✓ added</span>
-  </div>
   <div class="quick-actions">
     <button class="qa-btn qa-btn-quiet" onclick="show('logbook',event)">＋ Logbook Entry</button>
     <button class="qa-btn qa-btn-quiet" onclick="show('review',event)">📓 Weekly Review</button>
     <button class="qa-btn qa-btn-quiet" onclick="show('career-tracker',event)">✈️ Career Milestone</button>
     <button class="qa-btn qa-btn-quiet" onclick="show('deadlines',event)">⏱ Add Deadline</button>
   </div>
-</div>
-</section>
-
-<!-- QATAR VISIT GOAL — first-class financial goal -->
-<section class="sec" id="qatar">
-<div class="sec-hd"><div class="sec-num">🎯 Goals — Visit Mom in Qatar</div><h2 class="sec-title">Visit Mom in Qatar —<br><em>Save Until You Can Hold Her Again</em></h2><p class="sec-intro">The Qatar trip is its own first-class goal. Every number here is connected to your Money tab — if salary or expenses change, this forecast updates automatically.</p></div>
-
-<div class="card"><div class="ctitle">Trip Plan</div>
-<div class="qatar-grid">
-  <div class="lb-field"><label>From airport</label><input id="q-from" data-q-field="from_airport" type="text" placeholder="SVO"></div>
-  <div class="lb-field"><label>To airport</label><input id="q-to" data-q-field="to_airport" type="text" placeholder="DOH"></div>
-  <div class="lb-field"><label>Expected travel month</label><input id="q-month" data-q-field="travel_month" type="month"></div>
-</div>
-</div>
-
-<div class="card"><div class="ctitle">Budget Breakdown (₽)</div>
-<div class="qatar-grid">
-  <div class="lb-field"><label>Flights (round trip)</label><input id="q-flights" data-q-field="flights" type="number"></div>
-  <div class="lb-field"><label>Hotel / stay</label><input id="q-hotel" data-q-field="hotel" type="number"></div>
-  <div class="lb-field"><label>Food</label><input id="q-food" data-q-field="food" type="number"></div>
-  <div class="lb-field"><label>Local transport</label><input id="q-transport" data-q-field="transport" type="number"></div>
-  <div class="lb-field"><label>Misc</label><input id="q-misc" data-q-field="misc" type="number"></div>
-  <div class="lb-field"><label>Emergency reserve</label><input id="q-emergency" data-q-field="emergency" type="number"></div>
-</div>
-<p style="font-family:var(--mono);font-size:10px;color:var(--tx3);margin-top:14px">All numbers are estimates you can refine as the trip approaches. Hotel can be ₽0 if you're staying with mom.</p>
-</div>
-
-<div class="card qatar-status-card"><div class="ctitle">Status — Live</div>
-<div class="qatar-status-grid">
-  <div class="qatar-stat"><div class="qs-label">Total budget</div><div class="qs-val" id="q-total">—</div></div>
-  <div class="qatar-stat"><div class="qs-label">Saved so far</div><div class="qs-val-input"><input id="q-saved" data-q-field="saved" type="number" placeholder="0"></div></div>
-  <div class="qatar-stat"><div class="qs-label">Remaining</div><div class="qs-val" id="q-remaining">—</div></div>
-  <div class="qatar-stat"><div class="qs-label">Progress</div><div class="qs-val" id="q-progress-pct">0%</div><div class="qs-bar"><div class="qs-bar-fill" id="q-progress-bar"></div></div></div>
-  <div class="qatar-stat"><div class="qs-label">Monthly capacity</div><div class="qs-val" id="q-monthly-cap">—</div><div class="qs-sub">from your 55k savings target</div></div>
-  <div class="qatar-stat"><div class="qs-label">Months to go</div><div class="qs-val" id="q-months-to-go">—</div></div>
-  <div class="qatar-stat"><div class="qs-label">Forecast date</div><div class="qs-val" id="q-eta">—</div></div>
-  <div class="qatar-stat"><div class="qs-label">On track for travel month?</div><div class="qs-val" id="q-on-track">—</div></div>
-</div>
-<div class="qatar-actions">
-  <button class="qa-btn" onclick="qatarQuickAdd(5000)">+ 5,000 ₽ saved</button>
-  <button class="qa-btn" onclick="qatarQuickAdd(10000)">+ 10,000 ₽ saved</button>
-  <button class="qa-btn" onclick="qatarQuickAdd(20000)">+ 20,000 ₽ saved</button>
-  <button class="qa-btn qa-btn-quiet" onclick="qatarQuickAdd(-5000)">– 5,000 ₽</button>
-</div>
-</div>
-
-<div class="card">
-<div class="ctitle">Notes — Why This Trip Matters</div>
-<textarea id="q-notes" data-q-field="notes" rows="3" placeholder="Anything you want to remember about this trip — what mom said on the phone, what you want to do together, the meal you're planning…" style="width:100%;border:1px solid var(--bdr2);border-radius:6px;padding:10px;font-family:var(--sans);font-size:13px;background:var(--bg);color:var(--tx);resize:vertical"></textarea>
 </div>
 </section>
 
@@ -673,7 +617,7 @@
   <div class="mob-nav-grid">
     <button class="mob-nb" data-sec="home" onclick="show('home',event)"><span class="mob-nb-icon">⌂</span><span class="mob-nb-label">Today</span></button>
     <button class="mob-nb" data-sec="finance" onclick="show('finance',event)"><span class="mob-nb-icon">₽</span><span class="mob-nb-label">Money</span></button>
-    <button class="mob-nb" data-sec="qatar" onclick="show('qatar',event)"><span class="mob-nb-icon">◎</span><span class="mob-nb-label">Goals</span></button>
+    <button class="mob-nb" data-sec="progress" onclick="show('progress',event)"><span class="mob-nb-icon">◎</span><span class="mob-nb-label">Goals</span></button>
     <button class="mob-nb" data-sec="career-tracker" onclick="show('career-tracker',event)"><span class="mob-nb-icon">✈</span><span class="mob-nb-label">Career</span>
     </button>
     <button class="mob-nb" data-sec="aboutyou" onclick="show('aboutyou',event)"><span class="mob-nb-icon">🧭</span><span class="mob-nb-label">About</span></button>

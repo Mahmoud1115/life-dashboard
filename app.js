@@ -10,6 +10,39 @@ const LS = {
 };
 
 /* ═══════════════════════════════════════════
+   LIVE "LAST UPDATED" — reads the repo's latest commit
+   ═══════════════════════════════════════════ */
+(function(){
+  const el=document.getElementById('hl-last-updated');
+  if(!el) return;
+  const CACHE_KEY='dune_last_commit_cache_v1';
+  const CACHE_MS=10*60*1000; // 10 min — stays fresh without hammering GitHub's rate limit
+  function fmt(iso){
+    const d=new Date(iso);
+    const datePart=d.toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'});
+    const timePart=d.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
+    return 'Last updated '+datePart+' · '+timePart;
+  }
+  function render(iso){ el.textContent=fmt(iso); }
+  const cached=LS.get(CACHE_KEY,null);
+  if(cached && cached.iso && (Date.now()-cached.fetchedAt)<CACHE_MS){
+    render(cached.iso);
+  }
+  fetch('https://api.github.com/repos/Mahmoud1115/life-dashboard/commits?per_page=1')
+    .then(r=>r.ok?r.json():Promise.reject(r.status))
+    .then(commits=>{
+      const iso=commits && commits[0] && commits[0].commit && commits[0].commit.author && commits[0].commit.author.date;
+      if(!iso) return;
+      LS.set(CACHE_KEY,{iso,fetchedAt:Date.now()});
+      render(iso);
+    })
+    .catch(()=>{
+      if(cached && cached.iso) render(cached.iso);
+      else el.textContent='Dune Life OS';
+    });
+})();
+
+/* ═══════════════════════════════════════════
    SCROLL PROGRESS BAR
    ═══════════════════════════════════════════ */
 window.addEventListener('scroll',()=>{
@@ -25,7 +58,7 @@ window.addEventListener('scroll',()=>{
 const NAV_GROUPS={
   home:      {primary:'home',           subs:[]},
   money:     {primary:'finance',        subs:[]},
-  goals:     {primary:'qatar',          subs:[{id:'progress',label:'All Goals'}]},
+  goals:     {primary:'progress',       subs:[]},
   career:    {primary:'career-tracker', subs:[{id:'easa',label:'EASA Modules'},{id:'logbook',label:'Logbook'}]},
   documents: {primary:'passport',       subs:[{id:'claims',label:'Claims'},{id:'deadlines',label:'Deadlines'}]},
   about:     {primary:'aboutyou',       subs:[{id:'timeline',label:'Life Timeline'}]},
@@ -407,7 +440,6 @@ function show(id,e){
    ═══════════════════════════════════════════ */
 const SEC_LABELS={
   home:'📅 Today',
-  qatar:'🎯 Visit Mom in Qatar',
   progress:'🎯 All Goals',
   'career-tracker':'✈️ Career Tracker',
   easa:'✈️ EASA Modules',
@@ -423,7 +455,6 @@ const SEC_LABELS={
 };
 
 const GROUP_PILLS={
-  qatar:[{id:'progress',label:'All Goals'}],
   'career-tracker':[{id:'easa',label:'EASA Modules'},{id:'logbook',label:'Logbook'}],
   passport:[{id:'claims',label:'Claims'},{id:'deadlines',label:'Deadlines'}],
   // aboutyou intentionally omitted — the top sub-nav already exposes Life Timeline,
@@ -487,17 +518,13 @@ let calMonth=new Date().getMonth();
 
 // ── UNIFIED CALENDAR EVENTS ──────────────────────────────
 // Merges static deadlines (D.deadlines) with live Store events
-// (Qatar travel month, license targets, career milestones) so the
+// (license targets, career milestones) so the
 // calendar and upcoming list are one integrated source of truth.
 function allCalendarEvents(){
   const events=D.deadlines.map(d=>({date:d.date,title:d.title,cat:d.cat,importance:d.importance,private:d.private}));
   try{
     if(window.Store){
       const s=Store.raw();
-      // Qatar travel month → first of that month
-      if(s.qatarVisit && s.qatarVisit.travel_month){
-        events.push({date:s.qatarVisit.travel_month+'-01',title:'✈️ Visit Mom in Qatar — travel month',cat:'goal',importance:'high'});
-      }
       // License / milestone targets
       (s.career.licenses||[]).forEach(l=>{
         if(l.target && l.status!=='done'){
@@ -686,9 +713,8 @@ function renderHome(){
   try{renderUpcoming();}catch(e){console.warn('renderUpcoming:',e);}
 }
 document.addEventListener('DOMContentLoaded',renderHome);
-// Re-render calendar + upcoming whenever Store changes (Qatar month, licenses…)
+// Re-render calendar + upcoming whenever Store changes (licenses…)
 if(window.Store){
-  Store.subscribe('qatarVisit',()=>{try{renderCalendar();renderUpcoming();}catch(e){}});
   Store.subscribe('career',()=>{try{renderCalendar();renderUpcoming();}catch(e){}});
 }
 
@@ -717,13 +743,10 @@ if(window.Store){
       {title:'55k Monthly Savings',pct:Math.min(100,d.saveTargetHitPct(s)),
         sub:d.monthlySurplus(s).toLocaleString()+' ₽ surplus / '+ (s.money.save_target).toLocaleString()+' ₽ target',
         link:'finance'},
-      {title:'Visit Mom in Qatar',pct:d.qatarProgressPct(s),
-        sub:d.qatarRemaining(s).toLocaleString()+' ₽ remaining'+(isFinite(d.qatarMonthsToGo(s))?' · '+d.qatarMonthsToGo(s)+' months at pace':''),
-        link:'qatar'},
       {title:'EASA Part-66 B1.1',pct:d.easaProgress(s).pct,
         sub:d.easaProgress(s).done+' of 15 modules done',link:'easa'}
     ];
-    return '<div class="live-goals-banner">⚡ Live goals — computed automatically from your Money, Qatar &amp; EASA data</div>'+
+    return '<div class="live-goals-banner">⚡ Live goals — computed automatically from your Money &amp; EASA data</div>'+
       cards.map(c=>'<div class="goal-card goal-card-live" onclick="show(\''+c.link+'\')" style="cursor:pointer">'+
         '<div class="goal-status-dot gs-active"></div>'+
         '<div class="goal-main">'+
@@ -788,9 +811,9 @@ if(window.Store){
     renderGoals(cat);
   };
   document.addEventListener('DOMContentLoaded',()=>renderGoals());
-  // Live goals recompute when Money / Qatar / EASA change in the Store
+  // Live goals recompute when Money / EASA change in the Store
   if(window.Store){
-    ['money','qatarVisit','easa'].forEach(k=>Store.subscribe(k,()=>{try{renderGoals();}catch(e){}}));
+    ['money','easa'].forEach(k=>Store.subscribe(k,()=>{try{renderGoals();}catch(e){}}));
   }
 })();
 
@@ -2050,65 +2073,6 @@ window.aptToggleWinner=function(id){
     });
   }
 
-  // ─── QATAR VISIT GOAL ──────────────────────────────────────
-  function wireQatar() {
-    document.querySelectorAll('[data-q-field]').forEach(inp => {
-      const field = inp.dataset.qField;
-      let t;
-      inp.addEventListener('input', () => {
-        clearTimeout(t);
-        t = setTimeout(() => {
-          const val = (inp.type === 'number') ? (parseFloat(inp.value) || 0) : inp.value;
-          Store.set('qatarVisit.' + field, val);
-        }, 200);
-      });
-    });
-    function syncInputs(s) {
-      document.querySelectorAll('[data-q-field]').forEach(inp => {
-        const field = inp.dataset.qField;
-        const val = s.qatarVisit ? s.qatarVisit[field] : null;
-        if (document.activeElement !== inp) inp.value = (val == null ? '' : val);
-      });
-    }
-    function render(s) {
-      const d = Store.derive;
-      const total = d.qatarTotal(s);
-      setText('q-total', total.toLocaleString() + ' ₽');
-      setText('q-remaining', d.qatarRemaining(s).toLocaleString() + ' ₽');
-      const pct = d.qatarProgressPct(s);
-      setText('q-progress-pct', pct + '%');
-      const bar = document.getElementById('q-progress-bar');
-      if (bar) bar.style.width = Math.min(100, pct) + '%';
-      const cap = d.qatarMonthlyCapacity(s);
-      setText('q-monthly-cap', cap > 0 ? cap.toLocaleString() + ' ₽/mo' : '—');
-      const months = d.qatarMonthsToGo(s);
-      setText('q-months-to-go', !isFinite(months) ? '—' : (months === 0 ? 'goal reached ✓' : months + (months === 1 ? ' month' : ' months')));
-      const eta = d.qatarETA(s);
-      setText('q-eta', eta ? formatMonth(eta) : '—');
-      const onTrack = d.qatarOnTrack(s);
-      const otEl = document.getElementById('q-on-track');
-      if (otEl) {
-        if (onTrack === null) { otEl.textContent = 'set travel month'; otEl.className = 'qs-val qs-neutral'; }
-        else if (onTrack) { otEl.textContent = '✓ on track'; otEl.className = 'qs-val qs-good'; }
-        else { otEl.textContent = '⚠ behind'; otEl.className = 'qs-val qs-bad'; }
-      }
-    }
-    Store.subscribe('qatarVisit', s => { syncInputs(s); render(s); });
-    Store.subscribe('money', render);
-  }
-  window.qatarQuickAdd = function (amount) {
-    const cur = Store.get('qatarVisit.saved') || 0;
-    Store.set('qatarVisit.saved', Math.max(0, cur + amount));
-    // flash confirmation on the Today quick-actions, if present
-    const f = document.getElementById('today-qatar-flash');
-    if (f) {
-      f.textContent = (amount >= 0 ? '✓ +' : '✓ ') + amount.toLocaleString() + ' ₽ saved to Qatar';
-      f.style.opacity = '1';
-      clearTimeout(f._t); f._t = setTimeout(() => { f.style.opacity = '0'; }, 1800);
-    }
-    if (typeof showBackupToast === 'function') showBackupToast('💰 Qatar fund updated');
-  };
-
   // ─── CAREER TRACKER ────────────────────────────────────────
   function wireCareer() {
     ['company','position','started'].forEach(field => {
@@ -2360,17 +2324,12 @@ window.aptToggleWinner=function(id){
       const targetPct = d.saveTargetHitPct(s);
       const easa = d.easaProgress(s);
       const careerM = d.careerMonths(s);
-      const qatarPct = d.qatarProgressPct(s);
-      const qatarMonths = d.qatarMonthsToGo(s);
       const dPass = daysTo('2028-01-21');
       const dMAI = daysTo('2026-07-15');
       const cards = [
         {emoji:'💰', label:'Monthly Surplus', value: (surplus >= 0 ? '+' : '') + surplus.toLocaleString() + ' ₽',
           sub: targetPct + '% of 55k target',
           color: surplus >= target ? 'var(--green)' : surplus >= target*0.7 ? 'var(--amber)' : 'var(--red)'},
-        {emoji:'🎯', label:'Qatar Visit', value: qatarPct + '%',
-          sub: !isFinite(qatarMonths) ? 'increase savings to start' : (qatarMonths === 0 ? 'goal reached ✓' : qatarMonths + ' months at pace'),
-          color: qatarPct >= 100 ? 'var(--green)' : qatarPct > 0 ? 'var(--amber)' : 'var(--tx3)'},
         {emoji:'📚', label:'EASA B1.1', value: easa.done + '/15',
           sub: easa.pct + '% average progress',
           color: easa.done >= 10 ? 'var(--green)' : easa.done >= 5 ? 'var(--amber)' : 'var(--tx3)'},
@@ -2397,7 +2356,6 @@ window.aptToggleWinner=function(id){
       const el = document.getElementById('today-goals-strip');
       if (!el) return;
       const d = Store.derive;
-      const qatarPct = d.qatarProgressPct(s);
       const easa = d.easaProgress(s);
       const surplusPct = Math.min(100, d.saveTargetHitPct(s));
       const surplus = d.monthlySurplus(s);
@@ -2405,16 +2363,13 @@ window.aptToggleWinner=function(id){
       const items = [
         { name: '55k Monthly Savings', pct: surplusPct,
           sub: surplus.toLocaleString() + ' ₽ surplus · target ' + target.toLocaleString() + ' ₽' },
-        { name: 'Visit Mom in Qatar', pct: qatarPct,
-          sub: d.qatarRemaining(s).toLocaleString() + ' ₽ remaining' +
-            (s.qatarVisit.travel_month ? ' · target ' + s.qatarVisit.travel_month : '') },
         { name: 'EASA Part-66 B1.1', pct: easa.pct,
           sub: easa.done + ' of 15 modules done · ' + (15 - easa.done) + ' to go' },
       ];
       el.innerHTML = items.map(g =>
         '<div class="today-goal-row">' +
           '<div class="tg-name">' + g.name + '</div>' +
-          '<div class="tg-bar"><div class="tg-fill" style="width:' + Math.min(100, g.pct) + '%"></div></div>' +
+          '<div class="tg-bar"><div class="tg-fill" style="transform:scaleX(' + (Math.min(100, g.pct) / 100) + ')"></div></div>' +
           '<div class="tg-pct">' + g.pct + '%</div>' +
           '<div class="tg-sub">' + g.sub + '</div>' +
         '</div>'
@@ -2529,7 +2484,6 @@ window.aptToggleWinner=function(id){
   // ─── INIT ──────────────────────────────────────────────────
   function init() {
     try { wireFocus(); } catch (e) { console.error(e); }
-    try { wireQatar(); } catch (e) { console.error(e); }
     try { wireCareer(); } catch (e) { console.error(e); }
     try { wireReview(); } catch (e) { console.error(e); }
     try { wireTimeline(); } catch (e) { console.error(e); }
