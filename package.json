@@ -1,0 +1,13 @@
+{
+  "name": "dune-life-os-tests",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Dev tooling for the Dune Life OS static site. Ships nothing to the browser. See docs/lifeos/TESTING.md and ADR-009.",
+  "scripts": {
+    "test": "playwright test",
+    "test:install": "playwright install chromium"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1"
+  }
+}
