@@ -103,3 +103,20 @@ Format per ADR: **decision**, **status**, **context**, **decision made**, **reje
   - `.gitignore` a "backups" folder inside the repo — one accidental commit outside that folder still leaks; better to establish the principle that personal data never enters the repo at all.
   - Make the repo private — user explicitly wants the code public; only the data must stay private.
 - **Date**: 2026-08-24
+
+---
+
+## ADR-009 — Dev tooling (npm + Playwright) allowed; runtime remains no-build vanilla JS
+
+- **Status**: Accepted
+- **Context**: ADR-002 keeps Life OS on vanilla HTML/CSS/JS served by GitHub Pages — no framework, no bundler, no build step. That decision is about what ships to the browser. It leaves an ambiguity around dev-only tooling: could a test runner ever be added, or does "no build step" forbid `package.json` outright? Regression coverage needs an answer.
+- **Decision**: Dev-only tooling (an `npm`-installed `devDependencies` set, currently just `@playwright/test`) is allowed. It is not shipped to the browser, not required to build or run the site, and does not become a deployment prerequisite. GitHub Pages continues to serve the repo root as-is. The site can still be opened locally by pointing any static server at the repo root without ever running `npm install`.
+- **Concrete boundary**:
+  - Allowed: `package.json` with `devDependencies` only; a committed `package-lock.json` for reproducibility; `.gitignore` entries for `node_modules/` and tool caches; `playwright.config.js`; a `tests/` directory.
+  - Not allowed under this ADR: any runtime `dependencies`; any `import`/`require` from `index.html` or the app JS pointing at `node_modules`; any bundler, transpiler, or build script that rewrites shipped assets; any CI step that mutates repo files before Pages deploys them.
+- **Rejected alternatives**:
+  - Playwright MCP driven manually per session — no CI-runnable regression, no reproducibility, no version pinning.
+  - A separate testing repo — duplicates the surface it's testing and drifts.
+  - Reading ADR-002 as forbidding `package.json` entirely — over-reads it; the intent was to keep the runtime unchanged, not to ban tooling.
+- **Date**: 2026-08-24
+- **Relates to**: ADR-002 (does not supersede — narrows the interpretation of its scope to *runtime*)
