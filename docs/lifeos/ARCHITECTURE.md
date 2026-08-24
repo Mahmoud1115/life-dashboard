@@ -20,7 +20,7 @@ Snapshot of how the code actually works today. Update when reality changes, not 
 - `dune_gist_id_v1` — cached Gist ID for sync target
 
 ### Gen-2 (reactive Store, in `core.js`)
-One versioned JSON blob under `dune_state_v4` (schema `SCHEMA_VERSION = 11`). Owns:
+One versioned JSON blob under `dune_state_v4` (schema `SCHEMA_VERSION = 12`). Owns:
 - `money`, `qatarVisit`, `todayFocus`, `goals`, `career`, `easa`, `logbook`, `reviews`, `decisions`, `timeline`, `about`, `apartments`, `sbTasks`, `bht`, `telemetry`, `ideas`
 
 Features:
@@ -32,7 +32,7 @@ Features:
 - Validate-on-load — `validate()` at `core.js:254` requires `qatarVisit` to exist; missing → full reset to defaults
 
 ### The bridge
-`core.js`'s `migrateFromLegacy()` reads Gen-1 keys **once, on first load**, to seed `dune_state_v4`. After that, Gen-1 code keeps writing legacy keys independently. **No ongoing reconciliation.** This is why `STORAGE_MAP.md` matters — for many domains (Finance, EASA, Goals, Logbook), the Gen-1 key is still the write-authoritative source, and the corresponding field inside `dune_state_v4` may be empty or stale.
+`core.js`'s `migrateFromLegacy()` reads Gen-1 keys **once, on first load**, to seed `dune_state_v4`. After that, Gen-1 code keeps writing legacy keys independently — **with two live reconciliation exceptions**: Money-Russia (Gen-1 `dune_finance_v1.russia` shadowed one-way into `state.money`) and Logbook (Tracker + Builder legacy sources reconciled into `state.logbook` on boot and after every add/delete write, `authority: 'legacy-mirror'`). For all other domains (EASA, Goals, Apartments, Study Board, …), the Gen-1 key remains the write-authoritative source and the corresponding field inside `dune_state_v4` may be empty or stale. See `STORAGE_MAP.md`.
 
 ## Data flow
 
@@ -80,6 +80,38 @@ Structurally present but empty in real user backups:
 - `goals`, `easa`, `logbook`, `reviews`, `decisions`, `timeline`, `apartments`, `sbTasks`
 
 The empty ones are because those domains still write to their Gen-1 keys (`dune_easa_v1`, `dune_logbook_entries_v1`, `dune_goals_v1`) rather than into the Store. See `STORAGE_MAP.md`.
+
+## Logbook Phase A canonical mirror
+
+Logbook has **two live Gen-1 sources** (Tracker `dune_logbook_v1` and Builder `dune_logbook_entries_v1`) written by two separate UI tabs. Phase A introduces a Gen-2 mirror without switching authority.
+
+- `state.logbook` is a versioned envelope (`schemaVersion: 1`, `authority: 'legacy-mirror'`, `entries`, `migration.sourceCounts`, `drift`) — added by Store `SCHEMA_VERSION 12`.
+- **All pure normalisers live in `core.js` under `Store.logbookHelpers`** (`normalizeTrackerRecord`, `normalizeBuilderRecord`, `assignCanonicalIds`, `parseHours`, `contentDigest`, …). `app.js` `LOGBOOK` is a thin I/O wrapper. Schema migration does not depend on app-layer globals.
+- **Load-time reconciliation** — on every page load, `LOGBOOK.reconcile()` reads both live legacy keys and rebuilds `state.logbook.entries` deterministically. Recovery matrix for state-only backups:
+
+  | Legacy key | Behaviour |
+  |---|---|
+  | present (even `[]`) | Legacy authoritative for that source; envelope recovery suppressed |
+  | truly absent (`null`) | Recover source-tagged records from the existing canonical envelope |
+
+  Applies symmetrically to Tracker and Builder — Builder-tagged canonical records survive state-only restores just like Tracker-tagged ones.
+- **Store validation is domain-local**: a malformed `state.logbook` (string, plain array, wrong shape) is recovered to `defaultLogbookEnvelope()` at load; unrelated slices are never touched. No full-state reset for a Logbook-only defect.
+- **Writer mirrors** — after each successful legacy write in the four paths (`submitLogEntry`, `deleteLogEntry`, `lbbSaveEntry`, `lbbDeleteEntry`), `LOGBOOK.reconcile()` refreshes the mirror.
+- **No automatic cross-source dedupe** — same task entered in both tabs produces two canonical records. A diagnostic `possibleDuplicateKey` is computed but never used to merge.
+- **Deterministic canonical IDs, stable under prepend/reorder** — legacy-ID counts are pre-computed per source before ID assignment:
+  - Unique legacy ID (count == 1) → `lb2:<source>:<legacyId>`
+  - Duplicate legacy ID (count > 1) → **every** member gets `lb2:<source>:dup:<legacyId>:<contentHash>:<occurrence>` (occurrence counted per `source|legacyId|contentHash` bucket). No member of a duplicate group ever receives the unsuffixed form, so reversing two same-ID records with different content cannot swap identities.
+  - Missing legacy ID → `lb2:<source>:fallback:<contentHash>:<occurrence>` (occurrence counted per `source|contentHash` bucket).
+
+  Unrelated prepends or distinct-record reorderings do not shift IDs.
+- **Bounded timestamp inference** — `inferredCreatedAt` only set when a legacy ID matches `(lb|lbe)_<epoch>` AND the epoch lies in the plausible range 2000-01-01 .. 2100-01-01 (ms). `lb_1` → `null`; real 2025-ish epoch → ISO string.
+- **Safe `legacyExtra`** — a null-prototype dictionary populated via `Object.defineProperty` own-property writes; real own keys like `__proto__` / `constructor` / `prototype` (as delivered by JSON.parse) cannot mutate `Object.prototype`. Malformed known-field values (e.g. object where scalar was expected, invalid `hours` string) are preserved under `legacyExtra.<field>` so raw data is never silently dropped.
+- **Deterministic structured serialisation** — one `stableSerialize(value)` helper (in `core.js`) drives BOTH the identity content hash and the drift digest. Object keys sorted lexicographically; special own keys preserved; no prototype traversal. Ensures identity and drift never subtly diverge.
+- **`legacyExtra` participates in identity AND drift** — the identity payload includes sorted `legacyExtra` own properties, so records that differ only in preserved unknown/malformed data get distinct canonical IDs and count as content changes for drift.
+- **Explicit reconciliation marker** — `state.logbook.reconciled: boolean`. Default and migrate-only envelopes start `false`. `LOGBOOK.reconcile()` sets `true` on success. Drift comparison only runs when the previous envelope carried `reconciled === true`, so the first real reconciliation after schema-11 migration cannot produce false drift even when the migrate step already source-tagged the interim records.
+- **Drift metadata** — `{detected:true, previousCount, reconciledCount, reason:'legacy_divergence', previousDigest, reconciledDigest}` when digests differ; `null` otherwise. Same-count content changes are detected; no record data leaked.
+- **Builder cap removed** — the previous 50-entry `pop()` in `lbbSaveEntry` is gone; every Builder record survives.
+- **Readers unchanged in Phase A.** Home still reads `dune_logbook_v1`; CSV export and backup summary still read `dune_logbook_entries_v1`. Phase B will flip readers and writers to canonical together.
 
 ## Future direction (not implemented)
 

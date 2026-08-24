@@ -23,8 +23,8 @@ For each domain, exactly **one** is the write-authoritative source. Any migratio
 | Ideas parking lot | `dune_state_v4.ideas` (Gen-2) | — | Fully migrated |
 | Goals — user overrides | `dune_goals_v1` (Gen-1) | Store has `goals: {}` — never populated | Static goal seeds live in `data.js:D.goals`; user progress/status overrides go to Gen-1 key |
 | EASA — module status/progress | `dune_easa_v1` (Gen-1) | Store has `easa: {}` — never populated | Static module list in `data.js:D.easa`; overrides in Gen-1 key |
-| Logbook — Tracker entries | `dune_logbook_v1` (Gen-1) | Store's `logbook` slice was seeded from this key **once** on first Store load via `core.js:migrateFromLegacy` (verified [core.js:148-149](core.js:148)); no live writer keeps it in sync | Active Tracker read/write ([app.js:930-1018](app.js:930)). **Home dashboard reads this key** ([app.js:625-627](app.js:625)) for `entries`/`hours` metrics. |
-| Logbook — Builder entries | `dune_logbook_entries_v1` (Gen-1) | No — never bridged into the Store | Active Builder read/write ([app.js:1891-2041](app.js:1891)). **Backup summary line** ([app.js:1646](app.js:1646)) and **CSV export** ([app.js:2033-2041](app.js:2033)) both read this key. Writer at [app.js:1968](app.js:1968) hard-caps the array at 50 entries (`unshift` + `pop` when `length > 50`) — a known data-loss risk that pre-dates any planned migration and does not go away automatically. |
+| Logbook — Tracker entries | `dune_logbook_v1` (Gen-1) | **Yes — live Phase A mirror.** Every Tracker write (`submitLogEntry`, `deleteLogEntry`) refreshes the reconciled `state.logbook` envelope via `LOGBOOK.reconcile()`. Legacy remains authoritative for reads. | Active Tracker read/write ([app.js:930-1018](app.js:930)). **Home dashboard reads this key** ([app.js:625-627](app.js:625)) for `entries`/`hours` metrics. |
+| Logbook — Builder entries | `dune_logbook_entries_v1` (Gen-1) | **Yes — live Phase A mirror.** Every Builder write (`lbbSaveEntry`, `lbbDeleteEntry`) refreshes `state.logbook` via `LOGBOOK.reconcile()`. Legacy remains authoritative for reads. | Active Builder read/write ([app.js:1891-2041](app.js:1891)). **Backup summary line** ([app.js:1646](app.js:1646)) and **CSV export** ([app.js:2033-2041](app.js:2033)) both read this key. The prior destructive 50-entry `unshift`+`pop` cap has been removed as part of Phase A — every Builder record now survives. |
 | Logbook — active tab | `dune_logbook_tab_v1` (Gen-1) | No | UI state only (which of Tracker/Builder is open); not record data. |
 | Apartments | `dune_apartments_v1` (Gen-1) | Store has `apartments: []` — never populated | |
 | Deadlines — user extensions | `dune_deadlines_ext_v1` (Gen-1) | No | Static deadlines in `data.js:D.deadlines` |
@@ -36,7 +36,7 @@ For each domain, exactly **one** is the write-authoritative source. Any migratio
 
 ## What this means for Life OS 2.0 migration
 
-Six domains are still on Gen-1 as write-authoritative and never mirror into the Store: **Money, Goals, EASA, Logbook, Apartments, Deadlines extensions**. A Supabase migration that reads only from `dune_state_v4` will miss all of them.
+Gen-1 remains write-authoritative for **Goals, EASA, Apartments, Deadlines extensions**, and Money's non-Russia phases + custom rows. A Supabase migration that reads only from `dune_state_v4` will miss those. **Money-Russia** is a live one-way bridge into `state.money` (Gen-1 authoritative, Gen-2 shadow). **Logbook is a Phase A exception**: both live legacy sources (`dune_logbook_v1` Tracker, `dune_logbook_entries_v1` Builder) reconcile into `state.logbook` on boot and after every add/delete write; legacy remains authoritative for UI reads and `state.logbook` is a live legacy-mirror envelope (`authority: 'legacy-mirror'`), not yet canonical UI authority.
 
 Reconciliation direction (per approved audit / ADR-006):
 
@@ -61,21 +61,19 @@ Recommended order for the Gen-1 → Gen-2 fold (least risk first):
 5. **Deadlines extensions** — small array, static seeds elsewhere.
 6. **Logbook** — largest write volume, do last so the pattern is proven first.
 
-## Logbook status (2026-08-25)
+## Logbook status (as of Phase A landing)
 
-Logbook has **two live Gen-1 record sources** — one per UI tab — and a **dormant** Gen-2 slice. Documented here so any future reader knows the migration is a union, not a copy:
+Logbook has **two live Gen-1 record sources** — one per UI tab — plus a **live Phase A reconciled mirror** in Gen-2:
 
 - **Live Gen-1 sources**: `dune_logbook_v1` (Tracker) and `dune_logbook_entries_v1` (Builder) are both actively written today by their respective forms. Neither is a mirror of the other; the two tabs never cross-write.
-- **Gen-2 slice `state.logbook`**: populated **once** from `dune_logbook_v1` by `core.js:migrateFromLegacy`. Since first-load, no live writer keeps it in sync, so it is **stale/dormant** and must **not** be treated as canonical today.
-- **Reader disagreement today**: Home reads Tracker; CSV export and backup summary read Builder; `Store.derive.logbookStats` reads the dormant slice. This is the current runtime, not a design.
-- **No approved cross-source dedupe** — a unification design exists (audit report) but is not implemented. A field-level fingerprint proposal is under review; nothing merges records automatically today.
+- **Gen-2 slice `state.logbook`**: a versioned envelope (`schemaVersion: 1`, `authority: 'legacy-mirror'`, `entries`, `migration.sourceCounts`, `reconciled`, `drift`), introduced by Store `SCHEMA_VERSION 12`. `LOGBOOK.reconcile()` rebuilds it on every page load and after every legacy write in all four writer paths.
+- **Union, no automatic dedupe**: reconciliation preserves records from both sources with source-tagged provenance. A diagnostic `possibleDuplicateKey` is computed but never used to merge records automatically.
+- **Reader disagreement today** (unchanged from pre-Phase-A because Phase A does not flip authority): Home reads Tracker; CSV export and backup summary read Builder; `Store.derive.logbookStats` now reads the reconciled envelope's `entries[]`.
+- **Builder 50-entry cap removed** — Phase A dropped the destructive `entries.pop()` from `lbbSaveEntry`; every Builder record now survives.
 
-### Approved future direction (not implemented)
+### Phase B (approved future direction — not implemented)
 
-- **Phase A** — Legacy remains authoritative; Tracker + Builder writers continue unchanged; canonical Gen-2 becomes a reconciled envelope (union of both sources, deduped by explicit rules, with provenance fields). Readers stay on legacy in Phase A.
-- **Phase B** — Canonical Gen-2 becomes authoritative; all Tracker/Builder readers and writers switch together; legacy keys become passive compatibility mirrors only.
-
-Neither phase has landed. Do not describe legacy keys as retired.
+Canonical Gen-2 becomes authoritative; all Tracker/Builder readers and writers switch to `Store.get/set('logbook', …)` together; legacy keys become passive compatibility mirrors only. Not landed. **Do not describe legacy keys as retired.**
 
 Not on the migration path (leave as-is):
 - Sync/backup bookkeeping keys — UI state, not user domain data.

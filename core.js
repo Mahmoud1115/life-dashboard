@@ -10,13 +10,386 @@
   // ──────────────────────────────────────────────
   // SCHEMA
   // ──────────────────────────────────────────────
-  const SCHEMA_VERSION = 11;
+  const SCHEMA_VERSION = 12;
   const STATE_KEY = 'dune_state_v4';
   const SNAPSHOTS_KEY = 'dune_snapshots_v1';
   const MAX_SNAPSHOTS = 8;
   const SAVE_DEBOUNCE_MS = 300;
 
   function nowISO() { return new Date().toISOString(); }
+
+  // ──────────────────────────────────────────────
+  // LOGBOOK canonical envelope (Phase A — see docs/lifeos/STORAGE_MAP.md)
+  // Gen-2 mirror of the two live Gen-1 sources (Tracker + Builder).
+  // authority stays 'legacy-mirror' until Phase B; canonical is not yet
+  // user-facing. No automatic cross-source dedupe.
+  //
+  // All logbook pure helpers live here so core.js can migrate schema
+  // 11→12 without depending on window.LOGBOOK (app.js) being loaded
+  // first. app.js LOGBOOK is a thin I/O wrapper over these helpers.
+  // ──────────────────────────────────────────────
+  const LOGBOOK_ENVELOPE_VERSION = 1;
+  // Plausible legacy-ID epoch range: 2000-01-01 .. 2100-01-01 (ms).
+  const LOGBOOK_MIN_EPOCH_MS = 946684800000;
+  const LOGBOOK_MAX_EPOCH_MS = 4102444800000;
+
+  function defaultLogbookEnvelope() {
+    return {
+      schemaVersion: LOGBOOK_ENVELOPE_VERSION,
+      authority: 'legacy-mirror',
+      entries: [],
+      migration: {
+        version: LOGBOOK_ENVELOPE_VERSION,
+        sourceCounts: { tracker: 0, builder: 0 }
+      },
+      // Explicit marker: true only after at least one successful
+      // Phase A reconcile(). Prevents drift comparison against the
+      // migrate-only interim shape (which can already carry
+      // source-tagged records but was never reconciled against live
+      // legacy). Set by app-side LOGBOOK.reconcile.
+      reconciled: false,
+      drift: null
+    };
+  }
+  function isLogbookEnvelope(v) {
+    return !!(v && typeof v === 'object' && !Array.isArray(v)
+      && v.schemaVersion === LOGBOOK_ENVELOPE_VERSION
+      && Array.isArray(v.entries)
+      && v.authority === 'legacy-mirror');
+  }
+
+  // Deterministic 32-bit djb2 hash rendered as unsigned hex.
+  function logbookStableHash(s) {
+    let h = 5381; const str = String(s == null ? '' : s);
+    for (let i = 0; i < str.length; i++) h = ((h << 5) + h) + str.charCodeAt(i);
+    return (h >>> 0).toString(16);
+  }
+
+  // Deterministic structured serialisation. Used by BOTH the identity
+  // fingerprint (assignCanonicalIds) and the drift digest so they cannot
+  // subtly diverge. Recursively handles:
+  //   null, string, number, boolean → JSON-encoded scalar
+  //   Array                          → [<serialised elements>, …]
+  //   plain/null-prototype object    → {"k1":<v1>,"k2":<v2>} with keys
+  //                                    from Object.keys(sorted)
+  // Preserves special own keys (__proto__, constructor, prototype).
+  // Rejects functions/symbols/undefined (returns "null" for them so the
+  // serialiser is total).
+  function stableSerialize(value) {
+    if (value === null || value === undefined) return 'null';
+    const t = typeof value;
+    if (t === 'string' || t === 'number' || t === 'boolean') return JSON.stringify(value);
+    if (t === 'function' || t === 'symbol') return 'null';
+    if (Array.isArray(value)) {
+      return '[' + value.map(stableSerialize).join(',') + ']';
+    }
+    if (t === 'object') {
+      // Object.keys returns own enumerable string keys — includes
+      // __proto__ / constructor / prototype when they are own props
+      // (as when a null-prototype object holds them, or when they
+      // came in via JSON.parse of '{"__proto__":…}').
+      const keys = Object.keys(value).sort();
+      const parts = new Array(keys.length);
+      for (let i = 0; i < keys.length; i++) {
+        const k = keys[i];
+        // Read via getOwnPropertyDescriptor to avoid triggering any
+        // accessor on the prototype chain.
+        const desc = Object.getOwnPropertyDescriptor(value, k);
+        const v = desc && ('value' in desc) ? desc.value : undefined;
+        parts[i] = JSON.stringify(k) + ':' + stableSerialize(v);
+      }
+      return '{' + parts.join(',') + '}';
+    }
+    return 'null';
+  }
+
+  // Hours parser — accepts finite number or fully-numeric string ("2.5").
+  // Rejects partial numeric strings ("2.5h"), non-numeric, non-finite,
+  // objects/arrays. Preserves 0. Returns null on invalid.
+  function logbookParseHours(v) {
+    if (typeof v === 'number' && isFinite(v)) return v;
+    if (typeof v !== 'string') return null;
+    const trimmed = v.trim();
+    if (!trimmed) return null;
+    if (!/^-?(?:\d+\.?\d*|\.\d+)$/.test(trimmed)) return null;
+    const n = parseFloat(trimmed);
+    return isFinite(n) ? n : null;
+  }
+
+  // Epoch inference from 'lb_<epoch>' / 'lbe_<epoch>' — only accepts
+  // plausible Date.now-style millisecond values. 'lb_1' → null.
+  function logbookInferCreatedAtFromId(legacyId) {
+    if (typeof legacyId !== 'string') return null;
+    const m = legacyId.match(/^(?:lb|lbe)_(\d+)$/);
+    if (!m) return null;
+    const n = parseInt(m[1], 10);
+    if (!isFinite(n) || n < LOGBOOK_MIN_EPOCH_MS || n > LOGBOOK_MAX_EPOCH_MS) return null;
+    const d = new Date(n);
+    if (isNaN(d.getTime())) return null;
+    return d.toISOString();
+  }
+
+  // Diagnostic fingerprint for possibleDuplicateKey. Never used for merge.
+  function logbookPossibleDuplicateKey(canonical) {
+    const norm = (v) => String(v == null ? '' : v).trim().toLowerCase().replace(/\s+/g, ' ');
+    const hoursPart = (typeof canonical.hours === 'number') ? canonical.hours.toFixed(2) : '';
+    return [
+      norm(canonical.date),
+      norm(canonical.aircraft),
+      norm(canonical.registration),
+      norm(canonical.ata),
+      hoursPart,
+      norm(canonical.description)
+    ].join('|');
+  }
+
+  // Known-field sets — anything else is preserved under legacyExtra.
+  const TRACKER_KNOWN_KEYS = ['id','date','company','aircraft_type','registration','engine_type','ata_chapter','system','task_description','hours','role','supervisor','stamp_status','language','b1_relevance'];
+  const BUILDER_KNOWN_KEYS = ['id','date','aircraft','reg','ata','ataLabel','hours','supervisor','ref','desc'];
+
+  // Build legacyExtra safely: null-prototype dict, no exposure to
+  // Object.prototype setters even if the source contained __proto__ /
+  // constructor / prototype keys. Malformed known fields (see caller)
+  // are added in as well so raw data is never silently dropped.
+  function makeLegacyExtra() {
+    return Object.create(null);
+  }
+  function extraSet(extras, k, v) {
+    // Direct bracket assignment on a null-proto object bypasses the
+    // __proto__ / constructor setter surface entirely.
+    Object.defineProperty(extras, k, { value: v, writable: true, enumerable: true, configurable: true });
+  }
+  function collectUnknownExtras(raw, knownKeys, extras) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return;
+    for (const k of Object.keys(raw)) {
+      if (knownKeys.indexOf(k) === -1) extraSet(extras, k, raw[k]);
+    }
+  }
+
+  function toStringOrNull(v) {
+    if (v == null) return null;
+    if (typeof v === 'string') return v;
+    if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+    // Object/array in a scalar field → treat as unrecoverable in canonical
+    // form; caller preserves the raw value under legacyExtra.
+    return null;
+  }
+  // Wrap toStringOrNull so we know when a raw known-field value could
+  // not be coerced (so caller can preserve it under legacyExtra).
+  function coerceScalar(v) {
+    const out = toStringOrNull(v);
+    // "unrecoverable in canonical" → the raw was non-null AND non-scalar.
+    const preserved = out === null && v != null && !(typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean');
+    return { value: out, preserved };
+  }
+
+  function normalizeTrackerRecord(raw, sourceIndex) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    const extras = makeLegacyExtra();
+    const hours = logbookParseHours(raw.hours);
+    const legacyId = (typeof raw.id === 'string' && raw.id) ? raw.id : null;
+
+    const dateCoerce         = coerceScalar(raw.date);
+    const companyCoerce      = coerceScalar(raw.company);
+    const aircraftCoerce     = coerceScalar(raw.aircraft_type);
+    const registrationCoerce = coerceScalar(raw.registration);
+    const engineTypeCoerce   = coerceScalar(raw.engine_type);
+    const ataCoerce          = coerceScalar(raw.ata_chapter);
+    const systemCoerce       = coerceScalar(raw.system);
+    const descriptionCoerce  = coerceScalar(raw.task_description);
+    const roleCoerce         = coerceScalar(raw.role);
+    const supervisorCoerce   = coerceScalar(raw.supervisor);
+    const stampCoerce        = coerceScalar(raw.stamp_status);
+    const languageCoerce     = coerceScalar(raw.language);
+    const b1Coerce           = coerceScalar(raw.b1_relevance);
+
+    const canonical = {
+      id: null,
+      source: 'tracker',
+      legacyId,
+      sourceIndex,
+      inferredCreatedAt: logbookInferCreatedAtFromId(legacyId),
+      date:         dateCoerce.value,
+      aircraft:     aircraftCoerce.value,
+      registration: registrationCoerce.value,
+      ata:          ataCoerce.value,
+      ataLabel:     null,
+      description:  descriptionCoerce.value,
+      hours,
+      supervisor:   supervisorCoerce.value,
+      company:      companyCoerce.value,
+      engineType:   engineTypeCoerce.value,
+      system:       systemCoerce.value,
+      role:         roleCoerce.value,
+      stampStatus:  stampCoerce.value,
+      language:     languageCoerce.value,
+      b1Relevance:  b1Coerce.value,
+      ref: null,
+      possibleDuplicateKey: null,
+      legacyExtra: extras
+    };
+    // Preserve malformed known fields (unrecoverable object/array
+    // in a scalar slot, or bad hours) under legacyExtra so raw data
+    // is never silently discarded.
+    if (hours === null && raw.hours != null) extraSet(extras, 'hours', raw.hours);
+    if (dateCoerce.preserved)         extraSet(extras, 'date', raw.date);
+    if (companyCoerce.preserved)      extraSet(extras, 'company', raw.company);
+    if (aircraftCoerce.preserved)     extraSet(extras, 'aircraft_type', raw.aircraft_type);
+    if (registrationCoerce.preserved) extraSet(extras, 'registration', raw.registration);
+    if (engineTypeCoerce.preserved)   extraSet(extras, 'engine_type', raw.engine_type);
+    if (ataCoerce.preserved)          extraSet(extras, 'ata_chapter', raw.ata_chapter);
+    if (systemCoerce.preserved)       extraSet(extras, 'system', raw.system);
+    if (descriptionCoerce.preserved)  extraSet(extras, 'task_description', raw.task_description);
+    if (roleCoerce.preserved)         extraSet(extras, 'role', raw.role);
+    if (supervisorCoerce.preserved)   extraSet(extras, 'supervisor', raw.supervisor);
+    if (stampCoerce.preserved)        extraSet(extras, 'stamp_status', raw.stamp_status);
+    if (languageCoerce.preserved)     extraSet(extras, 'language', raw.language);
+    if (b1Coerce.preserved)           extraSet(extras, 'b1_relevance', raw.b1_relevance);
+    collectUnknownExtras(raw, TRACKER_KNOWN_KEYS, extras);
+    canonical.possibleDuplicateKey = logbookPossibleDuplicateKey(canonical);
+    return canonical;
+  }
+
+  function normalizeBuilderRecord(raw, sourceIndex) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    const extras = makeLegacyExtra();
+    const hours = logbookParseHours(raw.hours);
+    const legacyId = (typeof raw.id === 'string' && raw.id) ? raw.id : null;
+
+    const dateCoerce       = coerceScalar(raw.date);
+    const aircraftCoerce   = coerceScalar(raw.aircraft);
+    const regCoerce        = coerceScalar(raw.reg);
+    const ataCoerce        = coerceScalar(raw.ata);
+    const ataLabelCoerce   = coerceScalar(raw.ataLabel);
+    const descCoerce       = coerceScalar(raw.desc);
+    const supervisorCoerce = coerceScalar(raw.supervisor);
+    const refCoerce        = coerceScalar(raw.ref);
+
+    const canonical = {
+      id: null,
+      source: 'builder',
+      legacyId,
+      sourceIndex,
+      inferredCreatedAt: logbookInferCreatedAtFromId(legacyId),
+      date:         dateCoerce.value,
+      aircraft:     aircraftCoerce.value,
+      registration: regCoerce.value,
+      ata:          ataCoerce.value,
+      ataLabel:     ataLabelCoerce.value,
+      description:  descCoerce.value,
+      hours,
+      supervisor:   supervisorCoerce.value,
+      company: null, engineType: null, system: null, role: null,
+      stampStatus: null, language: null, b1Relevance: null,
+      ref:          refCoerce.value,
+      possibleDuplicateKey: null,
+      legacyExtra: extras
+    };
+    if (hours === null && raw.hours != null) extraSet(extras, 'hours', raw.hours);
+    if (dateCoerce.preserved)       extraSet(extras, 'date', raw.date);
+    if (aircraftCoerce.preserved)   extraSet(extras, 'aircraft', raw.aircraft);
+    if (regCoerce.preserved)        extraSet(extras, 'reg', raw.reg);
+    if (ataCoerce.preserved)        extraSet(extras, 'ata', raw.ata);
+    if (ataLabelCoerce.preserved)   extraSet(extras, 'ataLabel', raw.ataLabel);
+    if (descCoerce.preserved)       extraSet(extras, 'desc', raw.desc);
+    if (supervisorCoerce.preserved) extraSet(extras, 'supervisor', raw.supervisor);
+    if (refCoerce.preserved)        extraSet(extras, 'ref', raw.ref);
+    collectUnknownExtras(raw, BUILDER_KNOWN_KEYS, extras);
+    canonical.possibleDuplicateKey = logbookPossibleDuplicateKey(canonical);
+    return canonical;
+  }
+
+  // Canonical identity payload — every user-content field that
+  // distinguishes records, including preserved legacyExtra. This is the
+  // input to both ID content fingerprints and drift digests, so the
+  // two invariants cannot subtly diverge. Excludes id / sourceIndex /
+  // possibleDuplicateKey / drift-metadata / any nondeterministic field.
+  function logbookIdentityPayload(r) {
+    if (!r || typeof r !== 'object') return {};
+    return {
+      date:         r.date         == null ? null : r.date,
+      aircraft:     r.aircraft     == null ? null : r.aircraft,
+      registration: r.registration == null ? null : r.registration,
+      ata:          r.ata          == null ? null : r.ata,
+      ataLabel:     r.ataLabel     == null ? null : r.ataLabel,
+      description:  r.description  == null ? null : r.description,
+      hours:        r.hours        == null ? null : r.hours,
+      supervisor:   r.supervisor   == null ? null : r.supervisor,
+      company:      r.company      == null ? null : r.company,
+      engineType:   r.engineType   == null ? null : r.engineType,
+      system:       r.system       == null ? null : r.system,
+      role:         r.role         == null ? null : r.role,
+      stampStatus:  r.stampStatus  == null ? null : r.stampStatus,
+      language:     r.language     == null ? null : r.language,
+      b1Relevance:  r.b1Relevance  == null ? null : r.b1Relevance,
+      ref:          r.ref          == null ? null : r.ref,
+      legacyExtra:  (r.legacyExtra && typeof r.legacyExtra === 'object') ? r.legacyExtra : {}
+    };
+  }
+  function logbookContentFingerprint(r) {
+    return stableSerialize(logbookIdentityPayload(r));
+  }
+
+  // Assign deterministic canonical IDs.
+  //   Unique legacy ID (count == 1)              → lb2:<src>:<legacyId>
+  //   Duplicate legacy ID (count > 1, every row) → lb2:<src>:dup:<legacyId>:<contentHash>:<occ>
+  //   Missing legacy ID                          → lb2:<src>:fallback:<contentHash>:<occ>
+  // Occurrences are always counted per identical (source|…|contentHash)
+  // bucket, never by raw array index — so unrelated prepend/reorder
+  // never shifts an existing record's ID. Duplicate-ID handling is
+  // pre-counted so no member of a duplicate group ever receives the
+  // unsuffixed canonical ID (which would flip identity on reorder).
+  function assignCanonicalIds(records) {
+    if (!Array.isArray(records)) return records;
+    const legacyIdCounts = new Map();  // source|legacyId → total occurrences
+    for (const r of records) {
+      if (!r || !r.legacyId) continue;
+      const k = r.source + '|' + r.legacyId;
+      legacyIdCounts.set(k, (legacyIdCounts.get(k) || 0) + 1);
+    }
+    const dupBucketOccurrences = new Map();      // source|legacyId|contentHash → n
+    const fallbackBucketOccurrences = new Map(); // source|contentHash          → n
+    for (const r of records) {
+      if (!r) continue;
+      const contentHash = logbookStableHash(logbookContentFingerprint(r));
+      if (r.legacyId) {
+        const legKey = r.source + '|' + r.legacyId;
+        const total = legacyIdCounts.get(legKey) || 0;
+        if (total <= 1) {
+          r.id = 'lb2:' + r.source + ':' + r.legacyId;
+        } else {
+          const bucket = legKey + '|' + contentHash;
+          const occ = dupBucketOccurrences.get(bucket) || 0;
+          dupBucketOccurrences.set(bucket, occ + 1);
+          r.id = 'lb2:' + r.source + ':dup:' + r.legacyId + ':' + contentHash + ':' + occ;
+        }
+      } else {
+        const bucket = r.source + '|' + contentHash;
+        const occ = fallbackBucketOccurrences.get(bucket) || 0;
+        fallbackBucketOccurrences.set(bucket, occ + 1);
+        r.id = 'lb2:' + r.source + ':fallback:' + contentHash + ':' + occ;
+      }
+    }
+    return records;
+  }
+
+  // Deterministic digest of the canonical mirror content. Uses the same
+  // stableSerialize / identity payload as ID fingerprinting, plus the
+  // stable canonical id and source, so a content-only change (including
+  // legacyExtra) surfaces as drift even when count is unchanged.
+  function logbookContentDigest(entries) {
+    if (!Array.isArray(entries)) return logbookStableHash('');
+    const rows = entries.map(e => {
+      if (!e || typeof e !== 'object') return 'null';
+      return stableSerialize({
+        id: e.id == null ? null : e.id,
+        source: e.source == null ? null : e.source,
+        legacyId: e.legacyId == null ? null : e.legacyId,
+        payload: logbookIdentityPayload(e)
+      });
+    });
+    return logbookStableHash(rows.join('\n'));
+  }
 
   function defaultState() {
     return {
@@ -64,7 +437,7 @@
         ]
       },
       easa: {},
-      logbook: [],
+      logbook: defaultLogbookEnvelope(),
       reviews: [],
       decisions: [],
       timeline: [
@@ -146,7 +519,13 @@
     if (oldEasa && typeof oldEasa === 'object') s.easa = oldEasa;
 
     const oldLb = safe('dune_logbook_v1');
-    if (Array.isArray(oldLb)) s.logbook = oldLb;
+    if (Array.isArray(oldLb)) {
+      const env = defaultLogbookEnvelope();
+      env.entries = oldLb.map((r, i) => normalizeTrackerRecord(r, i)).filter(Boolean);
+      assignCanonicalIds(env.entries);
+      env.migration.sourceCounts.tracker = oldLb.length;
+      s.logbook = env;
+    }
 
     const oldApts = safe('dune_apartments_v1');
     if (Array.isArray(oldApts)) s.apartments = oldApts;
@@ -218,6 +597,25 @@
     }
     // v8 → v9: ideas parking lot
     if (!Array.isArray(s.ideas)) s.ideas = [];
+
+    // v11 → v12: logbook becomes a versioned envelope. If the existing
+    // slice is the old flat Tracker-shaped array, convert it into
+    // canonical Tracker-tagged records via the in-core normaliser. The
+    // app-side reconciler then rebuilds entries from live Gen-1 sources
+    // on boot; when Tracker key is truly absent (state-only backup),
+    // these migrated records are recovered as tracker-source fallback.
+    // Malformed logbook recovers to an empty envelope.
+    if (Array.isArray(s.logbook)) {
+      const legacyArray = s.logbook;
+      const env = defaultLogbookEnvelope();
+      env.entries = legacyArray.map((r, i) => normalizeTrackerRecord(r, i)).filter(Boolean);
+      assignCanonicalIds(env.entries);
+      env.migration.sourceCounts.tracker = legacyArray.length;
+      s.logbook = env;
+    } else if (!isLogbookEnvelope(s.logbook)) {
+      s.logbook = defaultLogbookEnvelope();
+    }
+
     s.meta.version = SCHEMA_VERSION;
     s.meta.lastUpdated = nowISO();
     return s;
@@ -255,6 +653,25 @@
     return true;
   }
 
+  // Domain-local normaliser. Runs after load()/migrateUp so a malformed
+  // Logbook envelope (e.g. schema-12 payload where state.logbook is a
+  // string or plain array) is recovered without triggering a full-state
+  // reset. Unrelated slices are never touched.
+  function normalizeLogbookDomain(data) {
+    if (!data || typeof data !== 'object') return;
+    if (Array.isArray(data.logbook)) {
+      const env = defaultLogbookEnvelope();
+      env.entries = data.logbook.map((r, i) => normalizeTrackerRecord(r, i)).filter(Boolean);
+      assignCanonicalIds(env.entries);
+      env.migration.sourceCounts.tracker = data.logbook.length;
+      data.logbook = env;
+      return;
+    }
+    if (!isLogbookEnvelope(data.logbook)) {
+      data.logbook = defaultLogbookEnvelope();
+    }
+  }
+
   function load() {
     try {
       const raw = localStorage.getItem(STATE_KEY);
@@ -263,6 +680,7 @@
         const data = (parsed && parsed.version === SCHEMA_VERSION && parsed.data)
           ? parsed.data
           : migrateUp((parsed && parsed.data) || {}, (parsed && parsed.version) || 0);
+        normalizeLogbookDomain(data);
         if (validate(data)) return data;
         console.warn('[Store] integrity check failed — trying snapshot');
         return restoreFromSnapshot() || migrateFromLegacy();
@@ -488,9 +906,12 @@
       } catch (e) { return { done: 0, total: 0, pct: 0 }; }
     },
     logbookStats(s) {
-      const lb = (s || state).logbook || [];
-      const hours = lb.reduce((a, e) => a + (parseFloat(e.hours) || 0), 0);
-      return { entries: lb.length, hours };
+      const slice = (s || state).logbook;
+      const entries = (slice && Array.isArray(slice.entries))
+        ? slice.entries
+        : (Array.isArray(slice) ? slice : []); // tolerate pre-envelope shape
+      const hours = entries.reduce((a, e) => a + (typeof e.hours === 'number' ? e.hours : (parseFloat(e && e.hours) || 0)), 0);
+      return { entries: entries.length, hours };
     }
   };
 
@@ -509,6 +930,22 @@
     pausePersistence,
     resumePersistence,
     isPersistencePaused,
+    defaultLogbookEnvelope,
+    isLogbookEnvelope,
+    LOGBOOK_ENVELOPE_VERSION,
+    logbookHelpers: {
+      normalizeTrackerRecord,
+      normalizeBuilderRecord,
+      assignCanonicalIds,
+      parseHours: logbookParseHours,
+      inferCreatedAtFromId: logbookInferCreatedAtFromId,
+      possibleDuplicateKey: logbookPossibleDuplicateKey,
+      identityPayload: logbookIdentityPayload,
+      contentFingerprint: logbookContentFingerprint,
+      contentDigest: logbookContentDigest,
+      stableSerialize,
+      stableHash: logbookStableHash
+    },
     defaultState,
     snapshots: () => {
       try { return JSON.parse(localStorage.getItem(SNAPSHOTS_KEY) || '[]'); } catch (e) { return []; }

@@ -10,6 +10,156 @@ const LS = {
 };
 
 /* ═══════════════════════════════════════════
+   LOGBOOK — Phase A canonical mirror (see docs/lifeos/ARCHITECTURE.md)
+   Legacy Tracker (dune_logbook_v1) + Builder (dune_logbook_entries_v1)
+   remain authoritative. This module reconciles both into the versioned
+   state.logbook envelope introduced by core.js SCHEMA_VERSION 12. No
+   automatic cross-source dedupe; readers stay on legacy until Phase B.
+   Pure normalisers live in core.js Store.logbookHelpers so schema
+   migration doesn't depend on app.js load order.
+   ═══════════════════════════════════════════ */
+(function(global){
+  'use strict';
+  const TRACKER_KEY='dune_logbook_v1';
+  const BUILDER_KEY='dune_logbook_entries_v1';
+
+  // Pull pure helpers from core.js. app.js LOGBOOK is the I/O wrapper.
+  function helpers(){ return (global.Store && global.Store.logbookHelpers) || null; }
+
+  function readLegacyTracker(){
+    try{
+      const raw=localStorage.getItem(TRACKER_KEY);
+      if(raw===null) return null;
+      const parsed=JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    }catch(e){ return []; }
+  }
+  function readLegacyBuilder(){
+    try{
+      const raw=localStorage.getItem(BUILDER_KEY);
+      if(raw===null) return null;
+      const parsed=JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    }catch(e){ return []; }
+  }
+
+  // Deterministic rebuild of the canonical mirror from the two live
+  // legacy sources. Returns a new envelope; does NOT touch Store.
+  //
+  // Recovery semantics (state-only backups):
+  //   Tracker key present  → Tracker legacy is authoritative
+  //   Tracker key absent   → recover Tracker-tagged records from envelope
+  //   Builder key present  → Builder legacy is authoritative
+  //   Builder key absent   → recover Builder-tagged records from envelope
+  //   'absent' = localStorage.getItem returned null; [] is authoritative-empty.
+  function reconcileFrom(trackerArrOrNull, builderArrOrNull, existingEnvelope){
+    const h = helpers();
+    let trackerEntries = [];
+    let builderEntries = [];
+    let trackerCount = 0;
+    let builderCount = 0;
+
+    if (Array.isArray(trackerArrOrNull)) {
+      trackerCount = trackerArrOrNull.length;
+      for (let i = 0; i < trackerArrOrNull.length; i++) {
+        const rec = h ? h.normalizeTrackerRecord(trackerArrOrNull[i], i) : null;
+        if (rec) trackerEntries.push(rec);
+      }
+    } else if (trackerArrOrNull === null && existingEnvelope && Array.isArray(existingEnvelope.entries)) {
+      const recovered = existingEnvelope.entries.filter(e => e && e.source === 'tracker');
+      trackerEntries = recovered.map((e, i) => Object.assign({}, e, { sourceIndex: i }));
+      trackerCount = trackerEntries.length;
+    }
+    if (Array.isArray(builderArrOrNull)) {
+      builderCount = builderArrOrNull.length;
+      for (let i = 0; i < builderArrOrNull.length; i++) {
+        const rec = h ? h.normalizeBuilderRecord(builderArrOrNull[i], i) : null;
+        if (rec) builderEntries.push(rec);
+      }
+    } else if (builderArrOrNull === null && existingEnvelope && Array.isArray(existingEnvelope.entries)) {
+      const recovered = existingEnvelope.entries.filter(e => e && e.source === 'builder');
+      builderEntries = recovered.map((e, i) => Object.assign({}, e, { sourceIndex: i }));
+      builderCount = builderEntries.length;
+    }
+
+    const combined = trackerEntries.concat(builderEntries);
+    if (h) h.assignCanonicalIds(combined);
+
+    const envelope = (global.Store && global.Store.defaultLogbookEnvelope)
+      ? global.Store.defaultLogbookEnvelope()
+      : {
+          schemaVersion: 1, authority: 'legacy-mirror', entries: [],
+          migration: { version: 1, sourceCounts: { tracker: 0, builder: 0 } },
+          drift: null
+        };
+    envelope.entries = combined;
+    envelope.migration.sourceCounts = { tracker: trackerCount, builder: builderCount };
+    // This function returns a reconciled envelope. Any caller that
+    // persists it advertises Phase A reconciliation for subsequent
+    // drift comparisons.
+    envelope.reconciled = true;
+
+    // Drift diagnostic — compare a deterministic content digest of the
+    // reconciled entries against the previous canonical envelope's
+    // digest. Only compare when the previous envelope was explicitly
+    // marked reconciled by an earlier reconcile() cycle. The migrate-
+    // only interim envelope is source-tagged but NOT reconciled, so
+    // the first real reconciliation after schema migration cannot
+    // produce false drift.
+    if (h && existingEnvelope && existingEnvelope.reconciled === true
+        && Array.isArray(existingEnvelope.entries)
+        && existingEnvelope.entries.length > 0) {
+      const previousDigest = h.contentDigest(existingEnvelope.entries);
+      const reconciledDigest = h.contentDigest(combined);
+      if (previousDigest !== reconciledDigest) {
+        envelope.drift = {
+          detected: true,
+          previousCount: existingEnvelope.entries.length,
+          reconciledCount: combined.length,
+          reason: 'legacy_divergence',
+          previousDigest,
+          reconciledDigest
+        };
+      }
+    }
+    return envelope;
+  }
+
+  // Run reconciliation against current Store + live localStorage. One
+  // Store.set → the existing debounce persists it normally. Never uses
+  // pausePersistence/persistNow, per Phase A rules.
+  function reconcile(){
+    if(!global.Store || typeof global.Store.get!=='function' || typeof global.Store.set!=='function') return null;
+    const existing=global.Store.get('logbook');
+    const envelope=reconcileFrom(readLegacyTracker(), readLegacyBuilder(), existing);
+    global.Store.set('logbook', envelope);
+    return envelope;
+  }
+
+  const H = helpers();
+  global.LOGBOOK={
+    // Pure helpers re-exported from Store.logbookHelpers so tests and
+    // callers can reach them via the app-layer surface too. These are
+    // the same references core.js exposes; app.js does not duplicate.
+    normalizeTrackerRecord: H ? H.normalizeTrackerRecord : null,
+    normalizeBuilderRecord: H ? H.normalizeBuilderRecord : null,
+    assignCanonicalIds:     H ? H.assignCanonicalIds     : null,
+    parseHours:             H ? H.parseHours             : null,
+    inferCreatedAtFromId:   H ? H.inferCreatedAtFromId   : null,
+    possibleDuplicateKey:   H ? H.possibleDuplicateKey   : null,
+    contentDigest:          H ? H.contentDigest          : null,
+    stableHash:             H ? H.stableHash             : null,
+    // I/O-bound.
+    reconcile,
+    reconcileFrom,
+    readLegacyTracker,
+    readLegacyBuilder,
+    TRACKER_KEY,
+    BUILDER_KEY
+  };
+})(window);
+
+/* ═══════════════════════════════════════════
    LIVE "LAST UPDATED" — reads the repo's latest commit
    ═══════════════════════════════════════════ */
 (function(){
@@ -999,6 +1149,9 @@ function renderATACoverage(entries){
     const entries=getEntries();
     entries.push(entry);
     saveEntries(entries);
+    if (window.LOGBOOK && typeof window.LOGBOOK.reconcile === 'function') {
+      try { window.LOGBOOK.reconcile(); } catch (e) { /* mirror is best-effort */ }
+    }
     f.reset();
     f.lb_date.value=new Date().toISOString().split('T')[0];
     showForm=false;
@@ -1009,6 +1162,9 @@ function renderATACoverage(entries){
     const entries=getEntries();
     entries.splice(idx,1);
     saveEntries(entries);
+    if (window.LOGBOOK && typeof window.LOGBOOK.reconcile === 'function') {
+      try { window.LOGBOOK.reconcile(); } catch (e) { /* mirror is best-effort */ }
+    }
     renderLogbook();
   };
   document.addEventListener('DOMContentLoaded',()=>{
@@ -1965,8 +2121,13 @@ window.lbbSaveEntry=function(){
   const entry={id:'lbe_'+Date.now(),date,aircraft,reg,ata,ataLabel,hours:parseFloat(hours),supervisor,ref,desc};
   const entries=LS.get('dune_logbook_entries_v1',[]);
   entries.unshift(entry);
-  if(entries.length>50) entries.pop();
+  // Phase A: destructive 50-entry cap removed. Every builder record now
+  // survives so the Gen-2 canonical mirror can be complete. Presentation
+  // pagination, if needed later, is a UI concern — not a storage one.
   LS.set('dune_logbook_entries_v1',entries);
+  if (window.LOGBOOK && typeof window.LOGBOOK.reconcile === 'function') {
+    try { window.LOGBOOK.reconcile(); } catch (e) { /* mirror is best-effort in Phase A */ }
+  }
   bumpChangeCount();
   // update stats
   document.getElementById('lb-builder-root').dataset.rendered='0';
@@ -1976,6 +2137,9 @@ window.lbbDeleteEntry=function(id){
   if(!confirm('Delete this logbook entry? Cannot undo.')) return;
   const entries=LS.get('dune_logbook_entries_v1',[]).filter(e=>e.id!==id);
   LS.set('dune_logbook_entries_v1',entries);
+  if (window.LOGBOOK && typeof window.LOGBOOK.reconcile === 'function') {
+    try { window.LOGBOOK.reconcile(); } catch (e) { /* mirror is best-effort */ }
+  }
   document.getElementById('lb-builder-root').dataset.rendered='0';
   renderLogbookBuilder();
 };
@@ -2696,6 +2860,7 @@ window.aptToggleWinner=function(id){
     try { wireTimeline(); } catch (e) { console.error(e); }
     try { wireToday(); } catch (e) { console.error(e); }
     try { bridgeFinance(); } catch (e) { console.error(e); }
+    try { if (window.LOGBOOK && window.LOGBOOK.reconcile) window.LOGBOOK.reconcile(); } catch (e) { console.error(e); }
     try { wireAboutMeta(); } catch (e) { console.error(e); }
     console.log('[Phase1] reactive modules wired. Schema v' + Store.SCHEMA_VERSION);
   }
