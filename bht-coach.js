@@ -1,7 +1,8 @@
 // ============================================================
 // DUNE LIFE OS — BHT · BEHAVIORAL COACH (Phase 5)
-// Multi-provider AI router · Ollama · Anthropic · OpenRouter
-// Deterministic offline fallback · weekly snapshot canvas UI
+// Local Ollama or deterministic offline fallback (ADR-005:
+// direct-browser cloud provider paths removed).
+// Weekly snapshot canvas UI.
 // ============================================================
 
 (function (global) {
@@ -13,9 +14,7 @@
   }
 
   const DEFAULTS = {
-    ollama:     { url: 'http://localhost:11434', model: 'llama3.1:8b' },
-    anthropic:  { model: 'claude-sonnet-4-6',    apiVersion: '2023-06-01' },
-    openrouter: { model: 'anthropic/claude-sonnet-4-6' }
+    ollama: { url: 'http://localhost:11434', model: 'llama3.1:8b' }
   };
 
   const SYSTEM_PROMPT =
@@ -277,68 +276,10 @@
     return extractJson(text);
   }
 
-  async function callAnthropic(cfg, payload) {
-    const key   = cfg.apiKey;
-    const model = cfg.model || DEFAULTS.anthropic.model;
-    if (!key) throw new Error('Missing Anthropic API key');
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': key,
-        'anthropic-version': DEFAULTS.anthropic.apiVersion,
-        'anthropic-dangerous-direct-browser-access': 'true'
-      },
-      body: JSON.stringify({
-        model, max_tokens: 1200, system: SYSTEM_PROMPT,
-        messages: [{ role: 'user', content: userMessage(payload) }]
-      })
-    });
-    if (!res.ok) {
-      const t = await res.text().catch(() => '');
-      throw new Error('Anthropic HTTP ' + res.status + (t ? ' · ' + t.slice(0,160) : ''));
-    }
-    const data = await res.json();
-    const text = (data && data.content && data.content[0] && data.content[0].text) || '';
-    return extractJson(text);
-  }
-
-  async function callOpenRouter(cfg, payload) {
-    const key   = cfg.apiKey;
-    const model = cfg.model || DEFAULTS.openrouter.model;
-    if (!key) throw new Error('Missing OpenRouter API key');
-    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + key,
-        'HTTP-Referer': location.origin || 'https://dune-life-os.local',
-        'X-Title': 'Dune Life OS — BHT'
-      },
-      body: JSON.stringify({
-        model,
-        response_format: { type: 'json_object' },
-        messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
-          { role: 'user',   content: userMessage(payload) }
-        ]
-      })
-    });
-    if (!res.ok) {
-      const t = await res.text().catch(() => '');
-      throw new Error('OpenRouter HTTP ' + res.status + (t ? ' · ' + t.slice(0,160) : ''));
-    }
-    const data = await res.json();
-    const text = data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
-    return extractJson(text);
-  }
-
   function callProvider(cfg, payload) {
     switch ((cfg.provider || 'fallback').toLowerCase()) {
-      case 'ollama':     return callOllama(cfg, payload);
-      case 'anthropic':  return callAnthropic(cfg, payload);
-      case 'openrouter': return callOpenRouter(cfg, payload);
-      default:           return Promise.resolve(null);
+      case 'ollama': return callOllama(cfg, payload);
+      default:       return Promise.resolve(null);
     }
   }
 
@@ -490,15 +431,10 @@
   function saveSettings(form) {
     const provider = form.querySelector('[data-cfg="provider"]').value;
     const model    = form.querySelector('[data-cfg="model"]').value.trim();
-    const apiKey   = form.querySelector('[data-cfg="apiKey"]').value;
     const ollamaUrl = form.querySelector('[data-cfg="ollamaUrl"]').value.trim();
     global.BHT.setAIConfig({
       provider,
-      model: model || (provider === 'ollama'     ? DEFAULTS.ollama.model
-                     : provider === 'anthropic'  ? DEFAULTS.anthropic.model
-                     : provider === 'openrouter' ? DEFAULTS.openrouter.model
-                     : ''),
-      apiKey,
+      model: model || (provider === 'ollama' ? DEFAULTS.ollama.model : ''),
       ollamaUrl: ollamaUrl || DEFAULTS.ollama.url
     });
     settingsOpen = false;
@@ -511,10 +447,8 @@
         <div class="row">
           <label>Provider</label>
           <select data-cfg="provider">
-            <option value="fallback"   ${provider==='fallback'  ?'selected':''}>Offline · deterministic JS</option>
-            <option value="ollama"     ${provider==='ollama'    ?'selected':''}>Ollama · local</option>
-            <option value="anthropic"  ${provider==='anthropic' ?'selected':''}>Anthropic · direct</option>
-            <option value="openrouter" ${provider==='openrouter'?'selected':''}>OpenRouter · unified</option>
+            <option value="fallback" ${provider==='fallback' ?'selected':''}>Offline · deterministic JS</option>
+            <option value="ollama"   ${provider==='ollama'   ?'selected':''}>Ollama · local</option>
           </select>
         </div>
         <div class="row">
@@ -522,14 +456,10 @@
           <input type="text" data-cfg="model" value="${esc(cfg.model || '')}" placeholder="(defaults applied if blank)">
         </div>
         <div class="row">
-          <label>API key</label>
-          <input type="password" data-cfg="apiKey" value="${esc(cfg.apiKey || '')}" placeholder="local only · stored in dune_state_v4" autocomplete="off">
-        </div>
-        <div class="row">
           <label>Ollama URL</label>
           <input type="text" data-cfg="ollamaUrl" value="${esc(cfg.ollamaUrl || DEFAULTS.ollama.url)}">
         </div>
-        <p class="note">Keys never leave this device. They ship with the same Gist sync as the rest of <code style="font-family:var(--mono)">dune_state_v4</code> — keep the Gist private.</p>
+        <p class="note">Only local Ollama or the deterministic offline engine are available. Cloud provider keys are not accepted in the browser (see ADR-005).</p>
         <div class="small">
           <button class="bht-coach-go" type="button" data-action="save-settings">save settings</button>
         </div>
@@ -606,10 +536,8 @@
     if (!host) return;
     const cfg = global.Store.get('bht.ai') || { provider: 'fallback' };
     const providerLabel =
-      cfg.provider === 'ollama'     ? 'Ollama · ' + (cfg.model || DEFAULTS.ollama.model)     :
-      cfg.provider === 'anthropic'  ? 'Anthropic · ' + (cfg.model || DEFAULTS.anthropic.model) :
-      cfg.provider === 'openrouter' ? 'OpenRouter · ' + (cfg.model || DEFAULTS.openrouter.model) :
-                                      'Offline · deterministic';
+      cfg.provider === 'ollama' ? 'Ollama · ' + (cfg.model || DEFAULTS.ollama.model)
+                                : 'Offline · deterministic';
     const slice = global.Store.get('bht') || {};
     const mostRecent = (slice.snapshots || []).slice().sort((a, b) =>
       new Date(b.createdAt) - new Date(a.createdAt))[0];

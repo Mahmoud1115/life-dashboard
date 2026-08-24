@@ -106,7 +106,7 @@
       sbTasks: {},
       bht: (window.BHT && window.BHT.defaultBhtState)
         ? window.BHT.defaultBhtState()
-        : { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: 'http://localhost:11434', model: '', apiKey: '' }, meta: {} },
+        : { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: 'http://localhost:11434', model: '' }, meta: {} },
       telemetry: {
         accumulatedFatigue: 0,
         weeklyShiftHours: 0,

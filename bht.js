@@ -82,8 +82,7 @@
       ai: {
         provider: 'fallback',
         ollamaUrl: 'http://localhost:11434',
-        model: '',
-        apiKey: ''
+        model: ''
       }
     };
   }
@@ -102,11 +101,42 @@
     if (!Array.isArray(slice.snapshots))  slice.snapshots  = [];
     if (!Array.isArray(slice.lifeEvents)) slice.lifeEvents = [];
     if (!slice.vocab) slice.vocab = def.vocab;
-    if (!slice.ai)    slice.ai    = def.ai;
+    slice.ai = sanitizeAI(slice.ai, def.ai);
     slice.meta = slice.meta || def.meta;
     slice.meta.version = BHT_VERSION;
     slice.meta.lastUpdated = nowISO();
     return slice;
+  }
+
+  // Normalize BHT AI config into the ADR-005 invariant:
+  // - shape is always a plain object,
+  // - provider is always 'fallback' or 'ollama',
+  // - no apiKey field survives,
+  // - valid Ollama/fallback settings are preserved.
+  // Idempotent: on already-clean input, returns unchanged shape and does not log.
+  // Never logs the removed value.
+  function sanitizeAI(ai, defAI) {
+    const ALLOWED = ['fallback', 'ollama'];
+    const isPlainObject = ai && typeof ai === 'object' && !Array.isArray(ai);
+    if (!isPlainObject) {
+      if (typeof console !== 'undefined' && console.info) {
+        console.info('[BHT] Malformed AI config replaced with defaults (ADR-005).');
+      }
+      return Object.assign({}, defAI);
+    }
+    let changed = false;
+    if (ALLOWED.indexOf(ai.provider) === -1) {
+      ai.provider = 'fallback';
+      changed = true;
+    }
+    if (Object.prototype.hasOwnProperty.call(ai, 'apiKey')) {
+      delete ai.apiKey;
+      changed = true;
+    }
+    if (changed && typeof console !== 'undefined' && console.info) {
+      console.info('[BHT] Legacy/invalid AI config normalized (ADR-005).');
+    }
+    return ai;
   }
 
   (function ensureSlice() {
@@ -299,9 +329,10 @@
   function setAIConfig(patch) {
     const cur = global.Store.get('bht.ai') || {};
     const next = Object.assign({}, cur, patch);
-    if (['fallback','ollama','anthropic','openrouter'].indexOf(next.provider) === -1) {
-      next.provider = cur.provider || 'fallback';
+    if (['fallback','ollama'].indexOf(next.provider) === -1) {
+      next.provider = (['fallback','ollama'].indexOf(cur.provider) !== -1) ? cur.provider : 'fallback';
     }
+    if ('apiKey' in next) delete next.apiKey;
     global.Store.set('bht.ai', next);
     touch();
   }
