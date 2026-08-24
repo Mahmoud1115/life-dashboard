@@ -2549,9 +2549,16 @@ window.aptToggleWinner=function(id){
   }
 
   // ─── FINANCE ↔ STORE BRIDGE ────────────────────────────────
-  // The existing finance simulator reads/writes localStorage 'dune_finance_v1'.
-  // We mirror those changes into Store.money so everything else stays reactive.
+  // Gen-1 (`dune_finance_v1.russia`) is the authoritative Russia finance
+  // writer today (see docs/lifeos/STORAGE_MAP.md and the storage audit).
+  // This bridge is one-way: Gen-1 → Gen-2 shadow. We do NOT write Gen-2
+  // values back into Gen-1 — a Store-side stale value must never be able
+  // to overwrite a current Gen-1 edit. Full canonicalisation into Gen-2
+  // is a later slice.
   function bridgeFinance() {
+    // Gen-1 field name → Gen-2 Store path. save_target is included so
+    // Gen-1 edits to it propagate into the Store shadow that
+    // dashboard/derived metrics consume.
     const fieldMap = {
       salary: 'money.salary_net',
       rent: 'money.expenses.rent',
@@ -2562,7 +2569,8 @@ window.aptToggleWinner=function(id){
       family_transfer: 'money.expenses.family_transfer',
       other: 'money.expenses.other',
       mai: 'money.expenses.mai',
-      usd_rate: 'money.usd_rate'
+      usd_rate: 'money.usd_rate',
+      save_target: 'money.save_target'
     };
     const orig = window.finInputChange;
     window.finInputChange = function (phase, field, val) {
@@ -2571,6 +2579,57 @@ window.aptToggleWinner=function(id){
         Store.set(fieldMap[field], parseFloat(val) || 0);
       }
     };
+
+    // Narrow one-time bootstrap: if the canonical Gen-1 key is genuinely
+    // absent (not partial, not zero, not just empty custom arrays) AND
+    // Store already holds valid mapped Russia money, write those Store
+    // values into Gen-1 once before any other module (notably
+    // money-custom.js's seedFromIdeas) creates a Gen-1 skeleton without
+    // salary/save_target. Without this bootstrap, a valid state-only
+    // finance from a restored dune_state_v4 gets shadowed by defaults on
+    // the next reload. Bootstrap runs BEFORE seedGen2FromGen1 so a
+    // successful bootstrap makes the subsequent seed a no-op.
+    function bootstrapGen1FromGen2IfAbsent() {
+      // Exact-absence check: partial/malformed/zero Gen-1 → do NOT bootstrap.
+      if (localStorage.getItem('dune_finance_v1') !== null) return;
+      const russia = {};
+      for (const [gen1Field, gen2Path] of Object.entries(fieldMap)) {
+        const v = Store.get(gen2Path);
+        // typeof === 'number' preserves a legitimate 0; skips undefined/NaN.
+        if (typeof v === 'number' && isFinite(v)) russia[gen1Field] = v;
+      }
+      // Refuse to invent finance from nothing — bootstrap only when Store
+      // actually holds at least one meaningful mapped Russia field.
+      if (Object.keys(russia).length === 0) return;
+      try {
+        localStorage.setItem('dune_finance_v1', JSON.stringify({ russia }));
+      } catch (e) { /* quota — accept and continue; seed will still run */ }
+    }
+    bootstrapGen1FromGen2IfAbsent();
+
+    // Initial reconciliation: pull every mapped Gen-1 Russia field into
+    // the Gen-2 shadow so a value the user edited via a Gen-1-only path
+    // in a previous session (e.g. save_target before this fix landed) is
+    // reflected in Store consumers on this session's first paint.
+    // Uses `typeof === 'number'` so a legitimate `0` is not treated as
+    // missing and is copied through byte-exact.
+    function seedGen2FromGen1() {
+      let legacy;
+      try { legacy = JSON.parse(localStorage.getItem('dune_finance_v1') || '{}'); }
+      catch (e) { return; }
+      const r = legacy && legacy.russia;
+      if (!r || typeof r !== 'object') return;
+      for (const [gen1Field, gen2Path] of Object.entries(fieldMap)) {
+        const v = r[gen1Field];
+        if (typeof v === 'number') Store.set(gen2Path, v);
+      }
+    }
+    seedGen2FromGen1();
+
+    // Push Store changes into the Russia input elements only. The prior
+    // implementation also wrote back to dune_finance_v1 — that is the
+    // exact path that lost user edits when Gen-2 held a stale value
+    // (e.g. save_target). Removed.
     function pushStoreToInputs(s) {
       const m = s.money;
       const map = [
@@ -2583,22 +2642,13 @@ window.aptToggleWinner=function(id){
         ['fin-r-family_transfer', m.expenses.family_transfer],
         ['fin-r-other', m.expenses.other],
         ['fin-r-mai', m.expenses.mai],
-        ['fin-r-usd_rate', m.usd_rate]
+        ['fin-r-usd_rate', m.usd_rate],
+        ['fin-r-save_target', m.save_target]
       ];
       map.forEach(([id, val]) => {
         const el = document.getElementById(id);
         if (el && document.activeElement !== el && val != null) el.value = val;
       });
-      // Also write back to legacy key for the original render function
-      try {
-        const legacy = JSON.parse(localStorage.getItem('dune_finance_v1') || '{}');
-        legacy.russia = legacy.russia || {};
-        legacy.russia.salary = m.salary_net;
-        legacy.russia.usd_rate = m.usd_rate;
-        legacy.russia.save_target = m.save_target;
-        Object.assign(legacy.russia, m.expenses);
-        localStorage.setItem('dune_finance_v1', JSON.stringify(legacy));
-      } catch (e) { /* ignore */ }
     }
     Store.subscribe('money', pushStoreToInputs);
   }
