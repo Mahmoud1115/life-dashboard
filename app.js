@@ -1505,12 +1505,12 @@ window.handleImportFile=function(input){
 };
 function processImport(text){
   let backup;
-  try{backup=JSON.parse(text);}catch(e){showBackupToast('⚠ Invalid file — cannot parse JSON');return;}
-  if(!backup.version||!backup.data||Object.keys(backup.data).length<2){showBackupToast('⚠ Invalid backup format');return;}
+  try{backup=JSON.parse(text);}catch(e){showBackupToast('⚠ Invalid file — cannot parse JSON');return false;}
+  if(!backup.version||!backup.data||Object.keys(backup.data).length<2){showBackupToast('⚠ Invalid backup format');return false;}
   const counts=summarizeBackup(backup.data);
   const preview=counts.map(c=>c[0]+': '+c[1]).join(' · ');
   const confirmed=confirm('Restore backup from '+backup.exported_at+'?\n\n'+preview+'\n\n⚠ Overwrites current data. Current data saved as pre-restore backup.');
-  if(!confirmed) return;
+  if(!confirmed) return false;
   // auto-save current before overwrite
   const current=getAllBackupData();
   LS.set('dune_pre_import_backup_v1',{version:'2026.1',exported_at:new Date().toISOString(),data:current});
@@ -1519,6 +1519,7 @@ function processImport(text){
   localStorage.setItem('dune_change_count_v1','0');
   showBackupToast('✓ Restored — '+preview);
   setTimeout(()=>location.reload(),1200);
+  return true;
 }
 function summarizeBackup(data){
   const out=[];
@@ -1535,6 +1536,32 @@ function showBackupToast(msg){
 }
 
 /* ── GITHUB GIST SYNC ── */
+const GIST_BACKUP_DESCRIPTION='Dune Life OS — Auto Backup';
+
+function setGistStatus(message,state){
+  ['gist-status','sync-gist-operation-status'].forEach(id=>{
+    const status=document.getElementById(id);
+    if(!status) return;
+    status.textContent=message||'';
+    status.className='gist-status'+(state?' is-'+state:'');
+  });
+}
+
+async function findBackupGists(token){
+  const res=await fetch('https://api.github.com/gists?per_page=100',{
+    headers:{'Authorization':'Bearer '+token,'Accept':'application/vnd.github+json'}
+  });
+  if(!res.ok) throw new Error('Cannot list Gists: '+res.status);
+  const gists=await res.json();
+  return gists
+    .filter(g=>g.description===GIST_BACKUP_DESCRIPTION&&g.files&&g.files['dune-backup.json'])
+    .sort((a,b)=>new Date(b.updated_at)-new Date(a.updated_at));
+}
+
+function gistUpdatedLabel(gist){
+  return gist&&gist.updated_at?new Date(gist.updated_at).toLocaleString():'unknown time';
+}
+
 function updateGistUI(){
   const sec=document.getElementById('gist-token-section');
   const btns=document.getElementById('gist-action-btns');
@@ -1548,7 +1575,7 @@ function updateGistUI(){
       <span>🔑 Token saved</span>
       <button class="icl-small-btn icl-del-btn" onclick="clearGistToken()">✕ Remove</button>
     </div>
-    ${gistId?`<div class="gist-id-display">Gist ID: <code>${gistId.slice(0,12)}…</code></div>`:''}
+    ${gistId?`<div class="gist-id-display">Connected backup: <code>${gistId.slice(0,12)}…</code></div>`:''}
     ${lastSync?`<div class="gist-sync-time">Last synced: ${new Date(lastSync).toLocaleString()}</div>`:''}`;
     if(btns) btns.style.display='flex';
   } else {
@@ -1599,19 +1626,34 @@ window.checkForUpdates = async function(){
 window.saveToGist=async function(isRetry){
   const token=LS.get('dune_github_token_v1','');
   if(!token){showBackupToast('⚠ No token saved');return;}
-  const status=document.getElementById('gist-status');
-  if(status) status.textContent='Saving…';
+  setGistStatus('Checking for a newer backup…');
   try{
+    const gistId=LS.get('dune_gist_id_v1','');
+    const knownRemoteUpdated=LS.get('dune_gist_remote_updated_v1','');
+    const backups=await findBackupGists(token);
+    const latest=backups[0];
+
+    if(latest&&gistId!==latest.id){
+      setGistStatus('A newer backup exists ('+gistUpdatedLabel(latest)+'). Load it before saving from this device.','warn');
+      showBackupToast('⚠ Load the newest backup before saving');
+      return;
+    }
+    if(latest&&knownRemoteUpdated&&latest.updated_at!==knownRemoteUpdated){
+      setGistStatus('This backup changed on another device ('+gistUpdatedLabel(latest)+'). Load it before saving.','warn');
+      showBackupToast('⚠ Another device saved newer data');
+      return;
+    }
+
+    setGistStatus('Saving…');
     const data=getAllBackupData();
     const backup={version:'2026.1',exported_at:new Date().toISOString(),data};
     const content=JSON.stringify(backup,null,2);
-    const gistId=LS.get('dune_gist_id_v1','');
     const url=gistId?`https://api.github.com/gists/${gistId}`:'https://api.github.com/gists';
     const method=gistId?'PATCH':'POST';
     const res=await fetch(url,{
       method,
       headers:{'Authorization':'Bearer '+token,'Accept':'application/vnd.github+json','Content-Type':'application/json'},
-      body:JSON.stringify({description:'Dune Life OS — Auto Backup',public:false,files:{'dune-backup.json':{content}}})
+      body:JSON.stringify({description:GIST_BACKUP_DESCRIPTION,public:false,files:{'dune-backup.json':{content}}})
     });
     if(!res.ok){
       // 404 with a saved gist id = stale id → clear it and retry ONCE as a create.
@@ -1621,21 +1663,22 @@ window.saveToGist=async function(isRetry){
       const msg=(res.status===401||res.status===403||res.status===404)
         ?'Token can\'t access Gists — generate a new token (classic) with the "gist" scope ticked'
         :(err.message||'HTTP '+res.status);
-      if(status) status.textContent='⚠ '+msg;
+      setGistStatus('⚠ '+msg,'error');
       showBackupToast('⚠ '+msg);return;
     }
     const gist=await res.json();
     LS.set('dune_gist_id_v1',gist.id);
+    if(gist.updated_at) LS.set('dune_gist_remote_updated_v1',gist.updated_at);
     LS.set('dune_last_backup_v1',new Date().toISOString());
     LS.set('dune_last_gist_sync_v1',new Date().toISOString());
     localStorage.setItem('dune_change_count_v1','0');
     updateBackupPill();
     updateGistUI();
-    if(status) status.textContent='';
+    setGistStatus('✓ Saved to the connected backup','ok');
     showBackupToast('✓ Saved to GitHub Gist');
   }catch(e){
     const msg=e.message||'Network error';
-    if(status) status.textContent='⚠ '+msg;
+    setGistStatus('⚠ '+msg,'error');
     showBackupToast('⚠ '+msg);
   }
 };
@@ -1643,56 +1686,50 @@ window.saveToGist=async function(isRetry){
 window.loadFromGist=async function(){
   const token=LS.get('dune_github_token_v1','');
   if(!token){showBackupToast('⚠ No token saved');return;}
-  const status=document.getElementById('gist-status');
-  if(status) status.textContent='Loading…';
+  setGistStatus('Finding the newest backup…');
   try{
     let gistId=LS.get('dune_gist_id_v1','');
-    if(!gistId){
-      // try to discover by description
-      const listRes=await fetch('https://api.github.com/gists?per_page=100',{
-        headers:{'Authorization':'Bearer '+token,'Accept':'application/vnd.github+json'}
-      });
-      if(!listRes.ok){if(status)status.textContent='⚠ Cannot list Gists: '+listRes.status;return;}
-      const gists=await listRes.json();
-      const found=gists.find(g=>g.description==='Dune Life OS — Auto Backup');
-      if(found){gistId=found.id;LS.set('dune_gist_id_v1',gistId);}
-      else{
-        if(status) status.textContent='';
-        const manual=document.getElementById('gist-load-manual');
-        if(manual) manual.style.display='block';
-        showBackupToast('No backup Gist found — enter Gist ID manually');
-        return;
-      }
+    const backups=await findBackupGists(token);
+    const latest=backups[0];
+    if(latest){
+      gistId=latest.id;
+      setGistStatus('Newest backup found: '+gistUpdatedLabel(latest)+'.');
     }
-    await loadFromGistId(gistId);
+    if(!gistId){
+      setGistStatus('No backup found. Connect with a Gist ID below.','warn');
+      showBackupToast('No backup Gist found');
+      return;
+    }
+    await loadFromGistId(gistId,latest&&latest.id===gistId?latest.updated_at:'');
   }catch(e){
-    if(status) status.textContent='⚠ '+(e.message||'Network error');
+    setGistStatus('⚠ '+(e.message||'Network error'),'error');
     showBackupToast('⚠ '+(e.message||'Network error'));
   }
 };
 
-window.loadFromGistId=async function(gistId){
+window.loadFromGistId=async function(gistId,remoteUpdatedAt){
   const token=LS.get('dune_github_token_v1','');
-  const status=document.getElementById('gist-status');
   if(!gistId){showBackupToast('⚠ Enter a Gist ID');return;}
   if(!token){showBackupToast('⚠ No token saved');return;}
-  if(status) status.textContent='Loading…';
+  setGistStatus('Loading backup…');
   try{
     const res=await fetch('https://api.github.com/gists/'+gistId.trim(),{
       headers:{'Authorization':'Bearer '+token,'Accept':'application/vnd.github+json'}
     });
-    if(!res.ok){if(status)status.textContent='⚠ Gist not found: '+res.status;showBackupToast('⚠ Gist not found');return;}
+    if(!res.ok){setGistStatus('⚠ Gist not found: '+res.status,'error');showBackupToast('⚠ Gist not found');return;}
     const gist=await res.json();
     const content=gist.files['dune-backup.json']?.content;
     if(!content){showBackupToast('⚠ dune-backup.json not found in this Gist');return;}
+    const imported=processImport(content);
+    if(!imported){setGistStatus('Load cancelled. Nothing changed.');return;}
     LS.set('dune_gist_id_v1',gistId.trim());
+    const resolvedRemoteUpdated=remoteUpdatedAt||gist.updated_at||'';
+    if(resolvedRemoteUpdated) LS.set('dune_gist_remote_updated_v1',resolvedRemoteUpdated);
+    LS.set('dune_last_gist_sync_v1',new Date().toISOString());
     updateGistUI();
-    if(status) status.textContent='';
-    const manual=document.getElementById('gist-load-manual');
-    if(manual) manual.style.display='none';
-    processImport(content);
+    setGistStatus('✓ Connected to this backup','ok');
   }catch(e){
-    if(status) status.textContent='⚠ '+(e.message||'Network error');
+    setGistStatus('⚠ '+(e.message||'Network error'),'error');
     showBackupToast('⚠ '+(e.message||'Network error'));
   }
 };

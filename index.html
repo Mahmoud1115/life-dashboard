@@ -512,8 +512,9 @@
 
   <div class="fin-save-row">
     <button class="fin-save-btn fin-save-gist" id="sync-save-gist-btn" onclick="saveToGist()">☁ Save to Gist</button>
-    <button class="fin-save-btn fin-save-gist-quiet" id="sync-load-gist-btn" onclick="loadFromGist()">☁ Load from Gist</button>
+    <button class="fin-save-btn fin-save-gist-quiet" id="sync-load-gist-btn" onclick="loadFromGist()">☁ Load latest backup</button>
   </div>
+  <div id="sync-gist-operation-status" class="gist-status" aria-live="polite"></div>
 
   <!-- In-app "check for updates" — bypasses iOS PWA cache without going through Settings -->
   <div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--bdr)">
@@ -528,7 +529,7 @@
     <li>Tick the <code style="background:var(--gold3);color:var(--gold2);padding:1px 6px;border-radius:4px;font-family:var(--mono);font-size:11px">gist</code> scope (and <code style="background:var(--gold3);color:var(--gold2);padding:1px 6px;border-radius:4px;font-family:var(--mono);font-size:11px">repo</code> if you want)</li>
     <li>Copy the token, then open <strong>📦 Backup</strong> in the top-right nav → paste it</li>
     <li>Come back here → tap <strong>☁ Save to Gist</strong></li>
-    <li>On your phone: same one-time setup, then tap <strong>☁ Load from Gist</strong></li>
+    <li>On your other device: use the same token, then tap <strong>☁ Load latest backup</strong></li>
   </ol>
 </div>
 
@@ -587,18 +588,19 @@
         <div id="gist-token-section">
           <!-- filled by updateGistUI() -->
         </div>
-        <div id="gist-status" class="gist-status"></div>
+        <div id="gist-status" class="gist-status" aria-live="polite"></div>
         <div class="backup-btns" id="gist-action-btns" style="display:none">
           <button class="lb-btn lb-btn-add" onclick="saveToGist()">☁ Save to Gist</button>
-          <button class="lb-btn lb-btn-view" onclick="loadFromGist()">☁ Load from Gist</button>
+          <button class="lb-btn lb-btn-view" onclick="loadFromGist()">☁ Load latest</button>
         </div>
-        <div id="gist-load-manual" style="display:none;margin-top:10px">
-          <div class="backup-hint" style="margin-bottom:8px">No Gist found automatically. Enter the Gist ID from your other device:</div>
-          <div style="display:flex;gap:8px">
+        <details class="gist-connect-manual">
+          <summary>Connect using a Gist ID</summary>
+          <div class="backup-hint" style="margin:8px 0">Use this only when you want to connect this device to a specific backup.</div>
+          <div class="gist-connect-row">
             <input id="gist-id-manual" type="text" class="gist-token-input" placeholder="e.g. a1b2c3d4e5f6…" style="font-family:var(--mono);font-size:11px">
-            <button class="icl-small-btn" onclick="loadFromGistId(document.getElementById('gist-id-manual').value)">Load</button>
+            <button class="icl-small-btn" onclick="loadFromGistId(document.getElementById('gist-id-manual').value)">Connect &amp; load</button>
           </div>
-        </div>
+        </details>
         <p class="backup-hint" style="margin-top:10px">One-time setup: go to <strong>github.com/settings/tokens</strong> → Generate new token (classic) → tick only <strong>gist</strong> scope → copy and paste below. Token is saved locally in your browser.</p>
       </div>
     </div>
@@ -627,7 +629,7 @@
 <script src="data.js?v=phase3h"></script>
 <script src="core.js?v=phase5d"></script>
 <script src="bht.js?v=phase4a"></script>
-<script src="app.js?v=polish1"></script>
+<script src="app.js?v=gistsync1"></script>
 <script src="bht-ui.js?v=polish1"></script>
 <script src="bht-components.js?v=phase4c"></script>
 <script src="bht-analytics.js?v=phase5a"></script>

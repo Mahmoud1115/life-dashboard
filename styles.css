@@ -837,9 +837,16 @@ body.public-mode [data-private="true"]{display:none !important}
 .gist-id-display code{background:var(--bg3);padding:1px 5px;border-radius:3px;border:1px solid var(--bdr)}
 .gist-sync-time{font-family:var(--mono);font-size:9.5px;color:var(--tx3);margin-bottom:10px}
 .gist-status{font-family:var(--mono);font-size:10px;color:var(--amber);min-height:16px;margin-bottom:6px}
+.gist-status.is-ok{color:var(--green)}
+.gist-status.is-warn{color:var(--amber)}
+.gist-status.is-error{color:var(--red)}
+.gist-connect-manual{margin-top:10px}
+.gist-connect-manual summary{cursor:pointer;font-family:var(--mono);font-size:10px;color:var(--tx2)}
+.gist-connect-row{display:flex;gap:8px;align-items:center}
+.gist-connect-row .icl-small-btn{white-space:nowrap}
 .backup-toast{position:fixed;bottom:32px;left:50%;transform:translateX(-50%) translateY(20px);background:rgba(26,24,20,.92);color:#fff;font-family:var(--mono);font-size:11px;padding:10px 20px;border-radius:100px;z-index:700;opacity:0;transition:opacity .3s,transform .3s;white-space:nowrap;pointer-events:none}
 .backup-toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
-@media(max-width:600px){.backup-panel-overlay{padding:60px 12px 12px;align-items:flex-end}.backup-panel{width:100%;border-radius:16px 16px 0 0}}
+@media(max-width:600px){.backup-panel-overlay{padding:60px 12px 12px;align-items:flex-end}.backup-panel{width:100%;border-radius:16px 16px 0 0}.gist-connect-row{align-items:stretch;flex-direction:column}.gist-connect-row .icl-small-btn{width:100%}}
 
 /* ═══════════════════════════════════════════
    LOGBOOK ENTRY BUILDER
