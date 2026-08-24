@@ -278,13 +278,37 @@
   let state = load();
   let saveTimer = null;
   let saveListeners = new Set();
+  // Persistence pause flag. When true, both scheduleSave() and persistNow()
+  // become no-ops so a pending stale in-memory snapshot cannot overwrite a
+  // freshly-imported dune_state_v4 during the reload window. Set/cleared via
+  // Store.pausePersistence / Store.resumePersistence.
+  let paused = false;
+  // Set when either (a) a save was pending at the moment we paused, or (b) a
+  // Store.set/update happened while paused. On resumePersistence() we
+  // re-arm one debounced save so the legitimate in-memory state eventually
+  // persists — this avoids losing a real user edit that was already queued
+  // when a failed import canceled its debounce timer. Successful import
+  // never resumes (stays paused until reload), so this flag is never
+  // consulted on the success path.
+  let dirtyWhilePaused = false;
 
   function scheduleSave() {
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(persistNow, SAVE_DEBOUNCE_MS);
+    saveTimer = null;
+    if (paused) { dirtyWhilePaused = true; return; }
+    // Clear saveTimer in the callback BEFORE persistNow runs so that
+    // `saveTimer !== null` is a truthful signal of "a debounce is
+    // pending". Otherwise a completed save leaves the handle in place
+    // and a later pause() would misclassify it as pending and re-arm
+    // an unnecessary write on resume.
+    saveTimer = setTimeout(function () {
+      saveTimer = null;
+      persistNow();
+    }, SAVE_DEBOUNCE_MS);
   }
 
   function persistNow() {
+    if (paused) return;
     try {
       state.meta.lastUpdated = nowISO();
       const payload = JSON.stringify({ version: SCHEMA_VERSION, data: state });
@@ -295,6 +319,31 @@
       console.error('[Store] save failed:', e);
     }
   }
+
+  function pausePersistence() {
+    // Capture pending-save state before cancelling the timer so a failed
+    // import can re-arm it on resume. Repeated pause() calls remain
+    // idempotent: dirtyWhilePaused is a set-only-once-until-resume flag,
+    // and saveTimer is null after the first pause so subsequent pauses
+    // are true no-ops.
+    if (saveTimer !== null) {
+      dirtyWhilePaused = true;
+      clearTimeout(saveTimer);
+      saveTimer = null;
+    }
+    paused = true;
+  }
+
+  function resumePersistence() {
+    if (!paused) return; // idempotent — a duplicate resume is a no-op
+    paused = false;
+    if (dirtyWhilePaused) {
+      dirtyWhilePaused = false;
+      scheduleSave();
+    }
+  }
+
+  function isPersistencePaused() { return paused; }
 
   // ──────────────────────────────────────────────
   // PUB/SUB
@@ -457,6 +506,9 @@
     onSave: (fn) => { saveListeners.add(fn); return () => saveListeners.delete(fn); },
     raw: () => state,
     persistNow,
+    pausePersistence,
+    resumePersistence,
+    isPersistencePaused,
     defaultState,
     snapshots: () => {
       try { return JSON.parse(localStorage.getItem(SNAPSHOTS_KEY) || '[]'); } catch (e) { return []; }

@@ -1503,20 +1503,140 @@ window.handleImportFile=function(input){
   reader.readAsText(file);
   input.value='';
 };
+// Backup formats accepted on import. Bump when the envelope shape changes.
+const SUPPORTED_BACKUP_VERSIONS=['2026.1'];
+// Keys that a backup payload is never allowed to write, even if listed.
+// Kept as a defence-in-depth check against future BACKUP_KEYS drift.
+const PROTECTED_IMPORT_KEYS=['dune_github_token_v1','dune_pre_import_backup_v1'];
+// Per-key top-level shape validators for a valid 2026.1 backup payload.
+// Verified against current source: writers/readers of each key in app.js and
+// core.js migrateFromLegacy. Deep domain validation is deliberately out of
+// scope — the goal is to catch shape-level corruption (null, wrong container
+// type) before we destructively apply.
+function isPlainObj(v){ return v!==null && typeof v==='object' && !Array.isArray(v); }
+const BACKUP_KEY_VALIDATORS={
+  dune_state_v4:          v => isPlainObj(v) && ('data' in v) && isPlainObj(v.data),
+  dune_finance_v1:        v => isPlainObj(v),
+  dune_sb_v1:             v => isPlainObj(v),
+  dune_goals_v1:          v => isPlainObj(v),
+  dune_easa_v1:           v => isPlainObj(v),
+  dune_logbook_v1:        v => Array.isArray(v),
+  dune_logbook_entries_v1:v => Array.isArray(v),
+  dune_logbook_tab_v1:    v => typeof v==='string',
+  // No active reader in current source; accept object or array so future
+  // domain code can define the shape without breaking existing 2026.1 backups.
+  dune_deadlines_ext_v1:  v => isPlainObj(v) || Array.isArray(v),
+  dune_apartments_v1:     v => Array.isArray(v),
+  dune_claims_v1:         v => isPlainObj(v)
+};
+
+function preflightBackup(backup){
+  if(!backup||typeof backup!=='object'||Array.isArray(backup)) return 'Envelope must be an object';
+  if(SUPPORTED_BACKUP_VERSIONS.indexOf(backup.version)===-1) return 'Unsupported backup version';
+  const d=backup.data;
+  if(!d||typeof d!=='object'||Array.isArray(d)) return 'Backup data must be an object';
+  const keys=Object.keys(d);
+  const allowed=new Set(BACKUP_KEYS);
+  const protectedSet=new Set(PROTECTED_IMPORT_KEYS);
+  const unknown=[];
+  for(const k of keys){
+    if(protectedSet.has(k)) return 'Payload contains protected key: '+k;
+    if(!allowed.has(k)) unknown.push(k);
+  }
+  if(unknown.length) return 'Payload contains unknown keys: '+unknown.slice(0,3).join(', ')+(unknown.length>3?' (+more)':'');
+  // Require at least one recognised key so an empty {data:{}} is not a valid restore.
+  let knownPresent=false;
+  for(const k of BACKUP_KEYS){ if(k in d){ knownPresent=true; break; } }
+  if(!knownPresent) return 'Payload has no recognised backup keys';
+  // Per-key top-level shape check against the 2026.1 export contract.
+  for(const k of keys){
+    const check=BACKUP_KEY_VALIDATORS[k];
+    if(check && !check(d[k])) return 'Invalid shape for '+k;
+  }
+  return null;
+}
 function processImport(text){
   let backup;
   try{backup=JSON.parse(text);}catch(e){showBackupToast('⚠ Invalid file — cannot parse JSON');return false;}
-  if(!backup.version||!backup.data||Object.keys(backup.data).length<2){showBackupToast('⚠ Invalid backup format');return false;}
+  const err=preflightBackup(backup);
+  if(err){showBackupToast('⚠ '+err);return false;}
   const counts=summarizeBackup(backup.data);
   const preview=counts.map(c=>c[0]+': '+c[1]).join(' · ');
   const confirmed=confirm('Restore backup from '+backup.exported_at+'?\n\n'+preview+'\n\n⚠ Overwrites current data. Current data saved as pre-restore backup.');
   if(!confirmed) return false;
-  // auto-save current before overwrite
-  const current=getAllBackupData();
-  LS.set('dune_pre_import_backup_v1',{version:'2026.1',exported_at:new Date().toISOString(),data:current});
-  // atomic write
-  Object.entries(backup.data).forEach(([k,v])=>localStorage.setItem(k,JSON.stringify(v)));
-  localStorage.setItem('dune_change_count_v1','0');
+
+  // Capture the current allowlisted state so we can (a) publish the pre-import
+  // recovery snapshot and (b) roll back if the apply fails mid-flight.
+  // Uses getItem (raw strings) so restoration is byte-exact even if a value
+  // is JSON we would re-serialise slightly differently.
+  const rawBefore={};
+  for(const k of BACKUP_KEYS){ rawBefore[k]=localStorage.getItem(k); }
+
+  // Write the recovery snapshot BEFORE any restore mutation. The payload
+  // cannot overwrite it because dune_pre_import_backup_v1 is not in BACKUP_KEYS
+  // and preflight rejects it explicitly. Use direct localStorage.setItem
+  // (not LS.set) so a quota/permission failure surfaces here and aborts
+  // before any destructive write happens.
+  try{
+    const recovery=JSON.stringify({version:'2026.1',exported_at:new Date().toISOString(),data:getAllBackupData()});
+    localStorage.setItem('dune_pre_import_backup_v1',recovery);
+  }catch(e){
+    showBackupToast('⚠ Could not save pre-import backup — aborting');
+    return false;
+  }
+
+  // Quiesce Store persistence AFTER preflight+recovery succeed and BEFORE
+  // any destructive write. Prevents a debounced Store.persistNow() from
+  // firing during apply/reload and overwriting the imported dune_state_v4
+  // with stale in-memory state. Fail-safe: if the API is unavailable at
+  // runtime, abort rather than risk the race.
+  if(!window.Store||typeof window.Store.pausePersistence!=='function'||typeof window.Store.resumePersistence!=='function'){
+    showBackupToast('⚠ Store persistence API unavailable — aborting');
+    return false;
+  }
+  try{ window.Store.pausePersistence(); }
+  catch(e){ showBackupToast('⚠ Could not pause Store persistence — aborting'); return false; }
+
+  // Complete-replacement apply over the BACKUP_KEYS set only:
+  //   present in payload → write imported value
+  //   absent from payload → remove existing key so no hybrid state remains
+  // Unrelated localStorage (PAT, gist bookkeeping, UI) is untouched.
+  const applied=[];
+  try{
+    for(const k of BACKUP_KEYS){
+      if(k in backup.data){
+        localStorage.setItem(k,JSON.stringify(backup.data[k]));
+        applied.push(k);
+      } else if(rawBefore[k]!==null){
+        localStorage.removeItem(k);
+        applied.push(k);
+      }
+    }
+  }catch(applyErr){
+    // Roll back everything we touched to the byte-exact prior state.
+    const rollbackFailures=[];
+    for(const k of applied){
+      try{
+        if(rawBefore[k]===null) localStorage.removeItem(k);
+        else localStorage.setItem(k,rawBefore[k]);
+      }catch(rbErr){ rollbackFailures.push(k); }
+    }
+    // Resume Store persistence AFTER rollback so a subsequent user edit
+    // triggers a normal save cycle.
+    try{ window.Store.resumePersistence(); }catch(e){ /* best-effort */ }
+    if(rollbackFailures.length){
+      showBackupToast('⚠ Restore failed and rollback incomplete: '+rollbackFailures.join(', '));
+    } else {
+      showBackupToast('⚠ Restore failed — original data restored');
+    }
+    return false;
+  }
+
+  // Only reset the change counter and reload after a fully successful apply.
+  // Do NOT resume Store persistence — the reload replaces the page and
+  // Store initialises fresh from the imported dune_state_v4. Resuming here
+  // would re-arm the debounce and re-introduce the race we just closed.
+  try{ localStorage.setItem('dune_change_count_v1','0'); }catch(e){ /* non-fatal */ }
   showBackupToast('✓ Restored — '+preview);
   setTimeout(()=>location.reload(),1200);
   return true;
