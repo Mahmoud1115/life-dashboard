@@ -1199,66 +1199,118 @@ test('T-snapshot-source-invalid-data-recovery — load-time recovery skips data-
 });
 
 // ────────────────────────────────────────────────────────
-// T-coordinator-recovers-real-lock-rejection — real navigator.locks rejection does not skip next task
+// T-coordinator-recovers-real-lock-rejection-exact-once
+//   Proves the exact-once contract of the coordinator recovery path:
+//     * one lock-request invocation rejects (rejectionCount === 1)
+//     * the next real supplied lock callback runs exactly once
+//       (callbackExecutionCount === 1)
+//     * exactly one successful durable revision bump occurs
+//       (finalRevision === startRevision + 1)
+//     * task A's pending op survives the rejection (B0 semantics: a
+//       rejected coordinator task does NOT drop its enqueued ops) and
+//       lands together with B's op in that single commit
+//       (finalA === intended A-value, finalB === intended B-value)
 // ────────────────────────────────────────────────────────
-test('T-coordinator-recovers-real-lock-rejection — a real coordinator boundary rejection does not consume the next queued task', async ({ page }) => {
+test('T-coordinator-recovers-real-lock-rejection-exact-once — one lock rejection, one subsequent callback, one revision bump, both ops committed', async ({ page }) => {
   await page.goto('/');
   await waitForStore(page);
+  const capable = await page.evaluate(() => !!(navigator.locks && typeof navigator.locks.request === 'function'));
+  test.skip(!capable, 'no-navigator-locks');
   const r = await page.evaluate(async () => {
-    // Ensure any boot writes have settled so we can measure revision deltas cleanly.
+    // 1. Fully idle the Store so startRevision is stable.
     await window.Store.flushNow();
-    const startRev = window.Store.wrapperMeta().revision;
-    if (!(navigator.locks && typeof navigator.locks.request === 'function')) {
-      return { skipped: true, reason: 'no-navigator-locks' };
-    }
-    // Patch navigator.locks.request to reject exactly ONCE at the real
-    // coordinator boundary, then restore. This exercises the same
-    // .catch(recover).then(runCurrent) semantics as production.
-    const origRequest = navigator.locks.request.bind(navigator.locks);
-    let firstRejected = false;
-    let secondEntered = 0;
-    navigator.locks.request = function (name, opts, cb) {
-      // Restore on first call so the SECOND flush hits the real lock.
-      navigator.locks.request = origRequest;
-      firstRejected = true;
-      return Promise.reject(new Error('forced-lock-rejection'));
+    await new Promise(res => setTimeout(res, 50));
+    await window.Store.flushNow();
+    const startRevision = window.Store.wrapperMeta().revision;
+    const originalA = window.Store.get('goals.__b0_coord_exact_A__');
+    const originalB = window.Store.get('goals.__b0_coord_exact_B__');
+    const LOCK_NAME = 'lifeos-state-write-v1';
+    const TEST_ERROR_MSG = 'TEST_LOCK_REJECTION';
+
+    // 2. Wire a single-use patch on navigator.locks.request that counts
+    //    lock-request invocations SEPARATELY from callback executions.
+    const originalRequest = navigator.locks.request.bind(navigator.locks);
+    let requestCount = 0;
+    let rejectionCount = 0;
+    let callbackExecutionCount = 0;
+    let rejectedOnce = false;
+    navigator.locks.request = function (name, options, callback) {
+      // Only trip on our coordinator's lock; other lock names would be
+      // unrelated (there are none in this codebase today, but be safe).
+      const isOurs = (name === LOCK_NAME);
+      if (isOurs) requestCount++;
+      if (isOurs && !rejectedOnce) {
+        rejectedOnce = true;
+        rejectionCount++;
+        // Reject at the real navigator.locks boundary — DO NOT invoke callback.
+        return Promise.reject(new Error(TEST_ERROR_MSG));
+      }
+      // Delegate to the original; wrap the supplied callback to count executions.
+      // navigator.locks.request supports (name, callback) or (name, options, callback).
+      if (typeof options === 'function' && callback === undefined) {
+        const cb = options;
+        return originalRequest(name, async function (lock) {
+          if (isOurs) callbackExecutionCount++;
+          return cb(lock);
+        });
+      }
+      return originalRequest(name, options, async function (lock) {
+        if (isOurs) callbackExecutionCount++;
+        return callback(lock);
+      });
     };
-    // Task A: enqueue a normal write. Its flush enters withCoordinator → hits our patched navigator.locks.request → rejects.
-    window.Store.set('goals.__b0_coord_lock_A__', 'A');
+
     let taskAResult = null;
-    try { taskAResult = await window.Store.flushNow(); } catch (e) { taskAResult = { rejected: String(e && e.message) }; }
-    // Task B: enqueue a normal write. Its flush enters withCoordinator → real lock → commits.
-    // Wrap navigator.locks.request one more time to count real callback executions for B.
-    const realRequest = navigator.locks.request.bind(navigator.locks);
-    navigator.locks.request = function (name, opts, cb) {
-      secondEntered++;
-      return realRequest(name, opts, cb);
-    };
-    window.Store.set('goals.__b0_coord_lock_B__', 'B');
-    const taskBResult = await window.Store.flushNow();
-    // Restore.
-    navigator.locks.request = origRequest;
-    const endRev = window.Store.wrapperMeta().revision;
-    const finalA = window.Store.get('goals.__b0_coord_lock_A__');
-    const finalB = window.Store.get('goals.__b0_coord_lock_B__');
+    let taskBResult = null;
+    try {
+      // 3. Task A → enters coordinator → patched navigator.locks.request → rejects.
+      window.Store.set('goals.__b0_coord_exact_A__', 'A-intended');
+      try { taskAResult = await window.Store.flushNow(); }
+      catch (e) { taskAResult = { threw: String(e && e.message) }; }
+
+      // 4. Task B → enters coordinator → real navigator.locks.request → runs
+      //    the supplied callback exactly once → commits.
+      window.Store.set('goals.__b0_coord_exact_B__', 'B-intended');
+      taskBResult = await window.Store.flushNow();
+    } finally {
+      navigator.locks.request = originalRequest;
+    }
+
+    // 5. Give any post-commit re-schedule a chance to fire, then re-idle.
+    await window.Store.flushNow();
+
     return {
-      skipped: false,
-      firstRejected,
-      secondEnteredCount: secondEntered,
-      taskAOk: !!(taskAResult && taskAResult.rejected) || (taskAResult && taskAResult.committed === false),
+      startRevision,
+      finalRevision: window.Store.wrapperMeta().revision,
+      requestCount,
+      rejectionCount,
+      callbackExecutionCount,
+      taskAResult,
       taskBCommitted: !!(taskBResult && taskBResult.committed),
-      revDelta: endRev - startRev,
-      finalA, finalB
+      taskBRevision: taskBResult && taskBResult.revision,
+      finalA: window.Store.get('goals.__b0_coord_exact_A__'),
+      finalB: window.Store.get('goals.__b0_coord_exact_B__'),
+      originalA, originalB
     };
   });
-  if (r.skipped) test.skip(true, r.reason);
-  expect(r.firstRejected).toBe(true);
+
+  // Rejection accounting — exactly one lock rejection, exactly one subsequent callback execution.
+  expect(r.rejectionCount).toBe(1);
+  expect(r.callbackExecutionCount).toBe(1);
+  // Task A returned a coordinator failure — either a thrown rejection or a
+  // { committed:false } shape (the coordinator recovers via .catch()).
+  const aFailed = !!(r.taskAResult && (r.taskAResult.threw || r.taskAResult.committed === false));
+  expect(aFailed).toBe(true);
+  // Task B committed exactly once and its commit is the successful revision bump.
   expect(r.taskBCommitted).toBe(true);
-  expect(r.secondEnteredCount).toBe(1); // real coordinator ran the next task exactly once
-  expect(r.finalB).toBe('B');
-  // Task A's write is still in the queue after B commits (the rejection did
-  // not drop its op), so B's commit should carry BOTH ops → single revision bump.
-  expect(r.revDelta).toBeGreaterThanOrEqual(1);
+  expect(r.taskBRevision).toBe(r.startRevision + 1);
+  // Exactly one revision bump between start and end.
+  expect(r.finalRevision - r.startRevision).toBe(1);
+  // B0 semantics: rejected coordinator task does not drop its enqueued CAS
+  // op. Task A's op remains in the queue and is committed together with
+  // Task B in B's single commit — so BOTH slot writes are visible after.
+  expect(r.finalA).toBe('A-intended');
+  expect(r.finalB).toBe('B-intended');
 });
 
 // ────────────────────────────────────────────────────────

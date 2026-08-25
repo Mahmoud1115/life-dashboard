@@ -216,3 +216,22 @@ Codex's remaining findings on `ee6fb95`, all closed:
 - **Docs.** `ARCHITECTURE.md`: the old "known correctness gap" wording for `processImport` is replaced by the current B0 coordinated-import description (freeze protocol, coordinator, schema-13 wrapper written last with `diskRevision + 1`, guaranteed `endFullStateTransaction` in `finally`, byte-exact rollback, capsule preservation, awaiting callers). ADR-010 addendum #4 records these fixes; no aspirational wording remains.
 
 Tests: 135/135 passing (85 baseline + 48 store-durability + 2 store-two-page).
+
+### ADR-010 addendum #5 (2026-08-25 coordinator exact-once proof)
+
+Codex's final remaining finding on `d3ba2c4` was that the committed coordinator regression did not yet prove the exact-once contract at the strength Codex verified independently. Addressed here without changing production source (Codex previously confirmed the production coordinator is correct):
+
+- **Regression name:** `T-coordinator-recovers-real-lock-rejection-exact-once` (supersedes the earlier weaker `T-coordinator-recovers-real-lock-rejection`).
+- **What the test proves at the real coordinator boundary:**
+  - `navigator.locks.request` is patched once. Lock-request invocations and lock-callback executions are counted **separately** (they are not the same metric).
+  - The first matching `('lifeos-state-write-v1', ...)` request returns `Promise.reject(new Error('TEST_LOCK_REJECTION'))` without invoking the supplied callback → `rejectionCount === 1`.
+  - Subsequent requests delegate to the original `navigator.locks.request`, wrapping the supplied callback to bump `callbackExecutionCount` before invoking the real callback.
+  - After Task A is submitted and observed to fail via the coordinator's `.catch(recover)` path, Task B is submitted. Assertions: `callbackExecutionCount === 1` (exactly one supplied callback executed), `taskBResult.committed === true`, `taskBResult.revision === startRevision + 1`, `finalRevision - startRevision === 1`.
+  - The rejected Task A op is not dropped by design: its CAS op remains in `pendingOps` and lands together with Task B in B's single committed generation. The test explicitly asserts both `finalA === 'A-intended'` AND `finalB === 'B-intended'` — matching the actual B0 pending-op retention semantics.
+- **Determinism:** the harness idles via two consecutive `flushNow()` calls (with a 50 ms yield between them) before capturing `startRevision`. Runs cleanly 3× in a row.
+- **Skip behaviour:** if `navigator.locks` is unavailable in the harness the test skips (not fails), because it is by definition a real-lock-boundary probe.
+- **Earlier coverage:** `T-coordinator-recovers` (initial B0 landing) and `T-coordinator-recovers-forced` (single-call `commitFullStateWrapper` monkey-patch) are retained as earlier synthetic API-level coverage; they are superseded, in terms of coordinator-chain proof, by the exact-once real-lock regression above.
+
+Wording carried forward from earlier ADR-010 addenda that referred to weaker coordinator coverage as if it proved the same invariants should now be read alongside this addendum: only `T-coordinator-recovers-real-lock-rejection-exact-once` proves the "one lock rejection → one subsequent callback → one revision bump" contract at the real coordinator boundary.
+
+Tests: 135/135 passing (85 baseline + 48 store-durability + 2 store-two-page).
