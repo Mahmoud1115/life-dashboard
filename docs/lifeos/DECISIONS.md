@@ -171,3 +171,22 @@ Codex identified P1 blockers on the initial B0 implementation. Repaired items:
 - **Storage-event equal-revision reread** happens even with Web Locks available (per Codex §15 correction). Corrupt or regressed disk seen from a storage event sets the durability blocker.
 
 The behavioural claims above are backed by tests in `tests/store-durability.spec.js` (`T-clone-symbol-reject`, `T-clone-shared-ref`, `T-clone-cycle-reject`, `T-wrapper-revision-integer`, `T-corrupt-blocks`, `T-full-state-token-guard`, `T-full-state-freeze-write-rejection`, `T-subscriber-frozen`, `T-coordinator-recovers`, `T-chain-C-use-saved`, `T-derive-pure`) plus the existing baseline suites.
+
+### ADR-010 addendum #2 (2026-08-25 final focused fix pass)
+
+Codex flagged final gaps on `82755f8`. All closed:
+
+- **`endFullStateTransaction` strict token enforcement.** Missing / wrong / stale / double-end tokens now return `FULL_STATE_TRANSACTION_TOKEN_INVALID` and never mutate transaction state.
+- **Full-state settlement fails closed.** After the transaction body, settlement rereads authoritative disk. Corrupt wrapper, external `STATE_KEY` clear, and lower revision than the accepted in-memory revision each establish the durability blocker instead of silently adopting. Newer valid wrappers are safely adopted.
+- **Import always unfreezes.** `app.js:processImport` now runs the entire post-`beginFullStateTransaction` body inside `try/finally` so `endFullStateTransaction(token)` fires exactly once, including on `localStorage.getItem` failures during `rawBefore` capture.
+- **`Store.getConflict` deeply immutable.** Returns `deepFreezePersistable(clonePersistable(conflict))` — external mutation cannot alter queued CAS intent or the resolved committed value.
+- **Freeze-end preserves durability-blocker UI.** `index.html` banner listeners route through a single `repaintFreezeState()` that consults `Store.getDurabilityBlocker()` first; blocker banner stays visible after freeze-end.
+- **Snapshot degradation surfaced.** `pushSnapshot` now returns `{ok, error?}`; a snapshot write failure after a successful primary commit emits `STORE_SNAPSHOT_DEGRADED` via `Store.onError` — the commit remains accepted, pending ops clear, Store stays usable.
+- **Import / snapshot source wrapper revision validation.** Schema-13 source wrappers with non-integer or out-of-range revisions are rejected up front (`IMPORT_SOURCE_WRAPPER_INVALID_REVISION`).
+- **`clonePersistable` array + accessor contract.** Arrays reject own symbol keys, indexed accessors (never invoked), non-index own properties, and sparse holes. Objects reject any own accessor (including non-enumerable) and any non-enumerable data property. Getters are never invoked during rejection.
+- **True two-page Playwright regression.** `tests/store-two-page.spec.js` opens two pages in the same browser context (shared origin storage) — `T-two-page-A` (unrelated paths merge) and `T-two-page-B` (overlapping path conflict). Web-Lock coordination and storage-event rebasing exercised end-to-end.
+- **Deferred storage-event regression.** `T-import-deferred-storage-event` fires a synthetic storage event mid-import and asserts settlement rereads the actual disk rather than trusting the queued payload.
+- **Real mirror-conflict regression.** `T-mirror-conflict-real` drives `LOGBOOK.reconcile` and verifies legacy Tracker data survives a mirror CAS conflict with `authority='legacy-mirror'`.
+- **Import test isolation.** `tests/import-restore.spec.js:waitReady` flushes boot writes before every test runs; T2/T2b/T4/T11 now compare STATE_KEY against a captured baseline instead of asserting `null` (the race the old assertions exploited is gone).
+
+The behavioural claims above are backed by tests: `T-end-token-required`, `T-settlement-lower-rev`, `T-settlement-cleared`, `T-settlement-corrupt`, `T-import-always-unfreezes`, `T-conflict-immutable`, `T-snapshot-degraded`, `T-import-source-wrapper-invalid`, `T-clone-array-symbol`, `T-clone-array-getter`, `T-clone-object-getter`, `T-import-deferred-storage-event`, `T-mirror-conflict-real`, `T-two-page-A`, `T-two-page-B`.

@@ -667,15 +667,22 @@
       if (lastFocused && typeof lastFocused.focus === 'function') { try { lastFocused.focus(); } catch (e) {} }
       lastFocused = null;
     }
-    function showFreeze(reason) {
-      if (!freeze) return;
-      if (freezeMsg) {
-        var text = 'Restore in progress — saves paused';
-        if (reason === 'import') text = 'Restore in progress — saves paused';
-        else if (reason === 'snapshot') text = 'Restoring snapshot — saves paused';
-        else if (reason === 'reset') text = 'Resetting — saves paused';
-        freezeMsg.textContent = text;
-      }
+    function currentBlocker() {
+      try { return (window.Store && typeof window.Store.getDurabilityBlocker === 'function') ? window.Store.getDurabilityBlocker() : null; }
+      catch (e) { return null; }
+    }
+    function paintBlocker(code) {
+      if (!freeze || !freezeMsg) return;
+      freezeMsg.textContent = 'Saving is blocked (' + code + '). Please export a backup before making changes.';
+      freeze.hidden = false;
+      freeze.setAttribute('aria-hidden', 'false');
+    }
+    function paintFreeze(reason) {
+      if (!freeze || !freezeMsg) return;
+      var text = 'Restore in progress — saves paused';
+      if (reason === 'snapshot') text = 'Restoring snapshot — saves paused';
+      else if (reason === 'reset') text = 'Resetting — saves paused';
+      freezeMsg.textContent = text;
       freeze.hidden = false;
       freeze.setAttribute('aria-hidden', 'false');
     }
@@ -684,21 +691,21 @@
       freeze.hidden = true;
       freeze.setAttribute('aria-hidden', 'true');
     }
+    // Central re-paint: blocker takes priority; then active freeze; else hide.
+    function repaintFreezeState(freezeActive, freezeReason) {
+      var blocker = currentBlocker();
+      if (blocker) { paintBlocker(blocker.code || 'STORE_DURABILITY_BLOCKED'); return; }
+      if (freezeActive) { paintFreeze(freezeReason || 'full-state'); return; }
+      hideFreeze();
+    }
     if (useThis)  useThis.addEventListener('click', function () { try { window.Store.resolveConflict('use-this-tab'); } catch (e) {} hideConflict(); });
     if (useSaved) useSaved.addEventListener('click', function () { try { window.Store.resolveConflict('use-saved-version'); } catch (e) {} hideConflict(); });
     window.addEventListener('lifeos:store-conflict',           function (e) { var p = (e && e.detail && e.detail.path) || ''; showConflict(p); });
     window.addEventListener('lifeos:store-conflict-resolved',  hideConflict);
-    window.addEventListener('lifeos:store-freeze-begin',       function (e) { var r = (e && e.detail && e.detail.reason) || 'full-state'; showFreeze(r); });
-    window.addEventListener('lifeos:store-freeze-end',         hideFreeze);
-    window.addEventListener('lifeos:store-durability-blocked', function (e) {
-      if (freeze && freezeMsg) {
-        var code = (e && e.detail && e.detail.code) || 'STORE_DURABILITY_BLOCKED';
-        freezeMsg.textContent = 'Saving is blocked (' + code + '). Please export a backup before making changes.';
-        freeze.hidden = false;
-        freeze.setAttribute('aria-hidden', 'false');
-      }
-    });
-    window.addEventListener('lifeos:store-durability-cleared', hideFreeze);
+    window.addEventListener('lifeos:store-freeze-begin',       function (e) { var r = (e && e.detail && e.detail.reason) || 'full-state'; repaintFreezeState(true, r); });
+    window.addEventListener('lifeos:store-freeze-end',         function () { repaintFreezeState(false); });
+    window.addEventListener('lifeos:store-durability-blocked', function (e) { var code = (e && e.detail && e.detail.code) || 'STORE_DURABILITY_BLOCKED'; paintBlocker(code); });
+    window.addEventListener('lifeos:store-durability-cleared', function () { repaintFreezeState(false); });
     // beforeunload covers ALL unsaved / unsafe states.
     window.addEventListener('beforeunload', function (e) {
       try {

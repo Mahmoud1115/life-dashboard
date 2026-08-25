@@ -21,13 +21,11 @@ test.beforeEach(async ({ context, page }) => {
 });
 
 async function waitReady(page) {
-  await page.waitForFunction(() =>
-    typeof window.processImport === 'function' &&
-    Array.isArray(window.BACKUP_KEYS || null) === false // BACKUP_KEYS is a top-level const, not on window; verified by processImport being wired
-  ).catch(() => {});
-  // processImport is declared as a top-level function in app.js, exposed via
-  // being in the global script scope. Wait for it and for the domain seeder.
   await page.waitForFunction(() => typeof window.processImport === 'function');
+  // Flush any boot-time debounced Store writes so later assertions on
+  // localStorage['dune_state_v4'] observe a settled baseline (fixes the
+  // isolation issue where a delayed boot write landed after the test began).
+  await page.evaluate(() => (window.Store && window.Store.flushNow ? window.Store.flushNow() : null));
 }
 
 // Helper installed into the page to stub confirm(), suppress the
@@ -122,6 +120,7 @@ test('T2 — unknown key evil_key rejects entire import, zero writes, no reload'
     dune_github_token_v1: 'ghp_test_pat',
     evil_key: null,
   });
+  const stateBefore = await page.evaluate(() => localStorage.getItem('dune_state_v4'));
   const backup = validEnvelope({
     dune_state_v4: minState(),
     evil_key: 'attacker payload',
@@ -129,7 +128,9 @@ test('T2 — unknown key evil_key rejects entire import, zero writes, no reload'
   const r = await runImport(page, backup);
   expect(r.ok).toBe(false);
   expect(JSON.parse(r.after.dune_apartments_v1)).toEqual([{ id: 'existing' }]);
-  expect(r.after.dune_state_v4).toBeNull();
+  // B0 boot writes a schema-13 wrapper on first flush. Preflight rejection
+  // must leave that byte-exact.
+  expect(r.after.dune_state_v4).toBe(stateBefore);
   expect(r.evil).toBeNull();
   expect(r.pat).toBe('ghp_test_pat');
   // Preflight failed before recovery snapshot was written.
@@ -140,6 +141,7 @@ test('T2b — payload injecting dune_github_token_v1 is rejected', async ({ page
   await page.goto('/');
   await waitReady(page);
   await seed(page, { dune_github_token_v1: 'ghp_original' });
+  const stateBefore = await page.evaluate(() => localStorage.getItem('dune_state_v4'));
   const backup = validEnvelope({
     dune_state_v4: minState(),
     dune_github_token_v1: 'ghp_attacker',
@@ -147,7 +149,7 @@ test('T2b — payload injecting dune_github_token_v1 is rejected', async ({ page
   const r = await runImport(page, backup);
   expect(r.ok).toBe(false);
   expect(r.pat).toBe('ghp_original');
-  expect(r.after.dune_state_v4).toBeNull();
+  expect(r.after.dune_state_v4).toBe(stateBefore);
 });
 
 test('T3 — payload injecting dune_pre_import_backup_v1 is rejected', async ({ page }) => {
@@ -179,11 +181,12 @@ test('T4 — malformed payloads are no-ops', async ({ page }) => {
     { version: 'bogus', data: { dune_state_v4: minState() } },
     { data: { dune_state_v4: minState() } },      // no version
   ];
+  const stateBefore = await page.evaluate(() => localStorage.getItem('dune_state_v4'));
   for (const badBackup of cases) {
     const r = await runImport(page, badBackup);
     expect(r.ok, `case ${JSON.stringify(badBackup)}`).toBe(false);
     expect(JSON.parse(r.after.dune_apartments_v1)).toEqual([{ id: 'existing' }]);
-    expect(r.after.dune_state_v4).toBeNull();
+    expect(r.after.dune_state_v4).toBe(stateBefore);
     expect(r.pre).toBeNull();
   }
 });
@@ -341,13 +344,14 @@ test('T10 — recovery-capsule write failure aborts before any restore mutation'
   expect(r.paused).toBe(false);
 });
 
-test('T11 — removeItem apply failure rolls back and resumes Store persistence', async ({ page }) => {
+test('T11 — removeItem apply failure rolls back and leaves Store unfrozen', async ({ page }) => {
   await page.goto('/');
   await waitReady(page);
   await seed(page, {
     dune_apartments_v1: [{ id: 'stale' }],  // will be removed (omitted from payload)
     dune_finance_v1: { russia: { salary: 100000 } },  // will be written
   });
+  const stateBefore = await page.evaluate(() => localStorage.getItem('dune_state_v4'));
   const r = await page.evaluate(async (backup) => {
     window.confirm = () => true;
     const _st = window.setTimeout;
@@ -364,7 +368,7 @@ test('T11 — removeItem apply failure rolls back and resumes Store persistence'
         apartments: localStorage.getItem('dune_apartments_v1'),
         finance: localStorage.getItem('dune_finance_v1'),
         state: localStorage.getItem('dune_state_v4'),
-        paused: window.Store.isPersistencePaused && window.Store.isPersistencePaused(),
+        unsaved: window.Store.hasUnsavedWork && window.Store.hasUnsavedWork(),
       };
     } finally {
       localStorage.removeItem = origRemove;
@@ -379,9 +383,10 @@ test('T11 — removeItem apply failure rolls back and resumes Store persistence'
   // All BACKUP_KEYS restored to pre-import values.
   expect(JSON.parse(r.apartments)).toEqual([{ id: 'stale' }]);
   expect(JSON.parse(r.finance)).toEqual({ russia: { salary: 100000 } });
-  expect(r.state).toBeNull();
-  // Store persistence was resumed after rollback.
-  expect(r.paused).toBe(false);
+  // STATE_KEY is left at its pre-import wrapper (commitFullStateWrapper never ran).
+  expect(r.state).toBe(stateBefore);
+  // Store is not frozen post-failure (finally ran endFullStateTransaction).
+  expect(r.unsaved).toBe(false);
 });
 
 test('T12 — early rollback failure does not abort rollback for later keys', async ({ page }) => {

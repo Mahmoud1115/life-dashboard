@@ -735,23 +735,48 @@
     ancestry.push(v);
     try {
       if (Array.isArray(v)) {
+        // Arrays obey the same descriptor contract as objects:
+        //   - no own symbol keys
+        //   - no indexed accessors (never invoke a getter to check for one)
+        //   - no non-index own data properties beyond length
+        //   - no sparse holes
+        if (Object.getOwnPropertySymbols(v).length > 0) throw new Error('STORE_UNPERSISTABLE');
+        const names = Object.getOwnPropertyNames(v);
+        for (const n of names) {
+          if (n === 'length') continue;
+          if (!/^(0|[1-9]\d*)$/.test(n)) throw new Error('STORE_UNPERSISTABLE'); // non-index own property
+          const desc = Object.getOwnPropertyDescriptor(v, n);
+          if (!desc || 'get' in desc || 'set' in desc) throw new Error('STORE_UNPERSISTABLE');
+        }
         const out = new Array(v.length);
         for (let i = 0; i < v.length; i++) {
-          if (!(i in v)) throw new Error('STORE_UNPERSISTABLE');
-          out[i] = clonePersistable(v[i], ancestry);
+          if (!(i in v)) throw new Error('STORE_UNPERSISTABLE'); // sparse
+          const desc = Object.getOwnPropertyDescriptor(v, i);
+          if (!desc || 'get' in desc || 'set' in desc) throw new Error('STORE_UNPERSISTABLE');
+          out[i] = clonePersistable(desc.value, ancestry);
         }
         return out;
       }
       if (!isPlainOrNullProtoObject(v)) throw new Error('STORE_UNPERSISTABLE');
       // Any own symbol key is a hard reject — never silently dropped.
       if (Object.getOwnPropertySymbols(v).length > 0) throw new Error('STORE_UNPERSISTABLE');
+      // Inspect ALL own string names (enumerable AND non-enumerable) so a
+      // hidden non-enumerable accessor cannot slip through as "persistable".
+      const allNames = Object.getOwnPropertyNames(v);
+      for (const n of allNames) {
+        const d = Object.getOwnPropertyDescriptor(v, n);
+        if (!d) throw new Error('STORE_UNPERSISTABLE');
+        if ('get' in d || 'set' in d) throw new Error('STORE_UNPERSISTABLE');
+        // Non-enumerable own data properties are rejected too: schema
+        // serialisation only handles enumerable ones.
+        if (!d.enumerable) throw new Error('STORE_UNPERSISTABLE');
+      }
       const proto = Object.getPrototypeOf(v);
       const out = proto === null ? Object.create(null) : {};
       const keys = Object.keys(v);
       for (const k of keys) {
         if (typeof k !== 'string') throw new Error('STORE_UNPERSISTABLE');
         const desc = Object.getOwnPropertyDescriptor(v, k);
-        if ('get' in desc || 'set' in desc) throw new Error('STORE_UNPERSISTABLE');
         Object.defineProperty(out, k, {
           value: clonePersistable(desc.value, ancestry),
           writable: true, enumerable: true, configurable: true
@@ -804,13 +829,18 @@
   }
 
   // ── SNAPSHOTS ────────────────────────────────────
+  // Best-effort snapshot writer. Returns { ok, error? }. Callers decide
+  // whether to surface the failure — normal flush and commitFullStateWrapper
+  // both emit STORE_SNAPSHOT_DEGRADED on failure without failing the primary
+  // commit.
   function pushSnapshot(payload) {
     try {
       const snaps = JSON.parse(localStorage.getItem(SNAPSHOTS_KEY) || '[]');
       snaps.unshift({ at: nowISO(), payload });
       while (snaps.length > MAX_SNAPSHOTS) snaps.pop();
       localStorage.setItem(SNAPSHOTS_KEY, JSON.stringify(snaps));
-    } catch (e) { /* quota — silent */ }
+      return { ok: true };
+    } catch (e) { return { ok: false, error: e }; }
   }
   function restoreFromSnapshot() {
     try {
@@ -1246,7 +1276,10 @@
       emitError({ code: 'STORE_QUOTA', error: e });
       return { committed: false, reason: 'QUOTA' };
     }
-    try { pushSnapshot(payload); } catch (e) { /* snapshot best-effort */ }
+    // Snapshot failure after primary success is a non-fatal degradation —
+    // primary commit remains accepted; captured ops are dropped; a
+    // STORE_SNAPSHOT_DEGRADED error is emitted so UI/log can surface it.
+    { const _snap = pushSnapshot(payload); if (!_snap.ok) emitError({ code: 'STORE_SNAPSHOT_DEGRADED', revision: nextRevision, error: String((_snap.error && _snap.error.message) || _snap.error) }); }
     baseState      = r.data;
     knownRevision  = nextRevision;
     committedAt    = committedAtNow;
@@ -1354,46 +1387,55 @@
     return { ok: true, token: fullStateTxToken };
   }
   function endFullStateTransaction(token) {
-    // Token guard: only the holder of the current token may end it. Prevents
-    // one caller ending another caller's transaction mid-flight.
-    if (fullStateTxToken && token && token !== fullStateTxToken) {
-      return { ok: false, error: 'FULL_STATE_TX_TOKEN_MISMATCH' };
-    }
+    // Strict token enforcement: missing / wrong / stale / already-ended tokens
+    // are rejected without mutating transaction state.
+    if (!activeFullStateTransaction) return { ok: false, error: 'FULL_STATE_TRANSACTION_TOKEN_INVALID', reason: 'not-active' };
+    if (!token || token !== fullStateTxToken) return { ok: false, error: 'FULL_STATE_TRANSACTION_TOKEN_INVALID', reason: 'token-mismatch' };
     activeFullStateTransaction = false;
     fullStateTxToken = null;
     // Discard queued event payload assumptions; re-read authoritative disk now.
-    // Corrupt disk after transaction settlement blocks writes — do not silently
-    // recover from stale memory.
+    // Fail closed on any of: missing STATE_KEY where one was expected, corrupt
+    // wrapper, lower revision than what we accepted. Adopt safely on a newer
+    // valid wrapper.
     deferredStorageEvents.length = 0;
     let rawNow = null;
     try { rawNow = localStorage.getItem(STATE_KEY); } catch (e) { rawNow = null; }
-    if (rawNow !== null) {
+    if (rawNow === null) {
+      // Anything cleared the STATE_KEY after our transaction body ran (or the
+      // body never wrote it). If we previously accepted a wrapper, this is a
+      // durability invariant break.
+      if (baseWrapperRaw !== null) setDurabilityBlocker('STORE_STATE_CLEARED_EXTERNAL');
+    } else {
       const parsed = parseWrapperRaw(rawNow);
-      if (parsed && !parsed.corrupt) {
-        const m = migrateAndValidate(parsed);
-        if (m.ok) {
-          if (parsed.revision !== knownRevision || rawNow !== baseWrapperRaw) {
-            baseState      = m.data;
-            knownRevision  = parsed.revision;
-            committedAt    = parsed.committedAt;
-            baseWrapperRaw = rawNow;
-          }
-        } else {
-          setDurabilityBlocker('STORE_CORRUPT_AUTHORITATIVE_STATE');
-        }
-      } else {
+      if (!parsed || parsed.corrupt) {
         setDurabilityBlocker('STORE_CORRUPT_AUTHORITATIVE_STATE');
+      } else {
+        const m = migrateAndValidate(parsed);
+        if (!m.ok) {
+          setDurabilityBlocker('STORE_CORRUPT_AUTHORITATIVE_STATE');
+        } else if (parsed.revision < knownRevision) {
+          // Something regressed the disk under us — fail closed.
+          setDurabilityBlocker('STORE_REVISION_REGRESSION', { diskRevision: parsed.revision, knownRevision });
+        } else if (parsed.revision > knownRevision || rawNow !== baseWrapperRaw) {
+          // Newer valid wrapper (or equal-revision but different raw) — adopt.
+          baseState      = m.data;
+          knownRevision  = parsed.revision;
+          committedAt    = parsed.committedAt;
+          baseWrapperRaw = rawNow;
+        }
       }
     }
     rebuildOptimistic();
     notifyAll();
     try {
       if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
-        window.dispatchEvent(new CustomEvent('lifeos:store-freeze-end'));
+        // Fire freeze-end AFTER settlement so listeners re-evaluating
+        // getDurabilityBlocker() see the final state.
+        window.dispatchEvent(new CustomEvent('lifeos:store-freeze-end', { detail: { durabilityBlocker: durabilityBlocker ? Object.assign({}, durabilityBlocker) : null } }));
       }
     } catch (e) { /* ignore */ }
     if (pendingOps.length > 0 && !conflict && !durabilityBlocker) scheduleFlush();
-    return { ok: true };
+    return { ok: true, durabilityBlocker: durabilityBlocker ? Object.assign({}, durabilityBlocker) : null };
   }
   // Commit a full-state candidate (import / snapshot / reset) inside the
   // coordinator. Token guard enforces freeze; latest validated disk revision
@@ -1426,7 +1468,7 @@
       let payload;
       try { payload = JSON.stringify(wrapper); } catch (e) { return { ok: false, error: 'STORE_SERIALIZE_FAILED' }; }
       try { localStorage.setItem(STATE_KEY, payload); } catch (e) { return { ok: false, error: 'STORE_QUOTA' }; }
-      try { pushSnapshot(payload); } catch (e) { /* best-effort */ }
+      { const _snap = pushSnapshot(payload); if (!_snap.ok) emitError({ code: 'STORE_SNAPSHOT_DEGRADED', revision: nextRevision, error: String((_snap.error && _snap.error.message) || _snap.error) }); }
       baseState      = cloned;
       knownRevision  = nextRevision;
       committedAt    = committedAtNow;
@@ -1745,7 +1787,8 @@
     wrapperMeta: () => ({ revision: knownRevision, committedAt: committedAt, capabilities: Object.assign({}, capabilities) }),
     capabilities,
     // Conflict surface.
-    getConflict: () => (conflict ? Object.assign({}, conflict) : null),
+    // Deep-clone + freeze so external mutation cannot alter queued CAS intent.
+    getConflict: () => (conflict ? deepFreezePersistable(clonePersistable(conflict)) : null),
     resolveConflict,
     // For post-commit listener firing.
     _internal_fireSaveListeners: function (frozenSnap, meta) {

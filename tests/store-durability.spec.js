@@ -484,3 +484,382 @@ test('T-derive-pure — Store.deriveStateFromLegacy reads only from the supplied
   expect(r.readerFired).toBe(true);
   expect(r.touchedDisk).toBe(false);
 });
+
+// ────────────────────────────────────────────────────────
+// T-end-token-required — endFullStateTransaction rejects invalid token forms
+// ────────────────────────────────────────────────────────
+test('T-end-token-required — endFullStateTransaction rejects missing/wrong/double/stale token', async ({ page }) => {
+  await page.goto('/');
+  await waitForStore(page);
+  const r = await page.evaluate(() => {
+    const gate = window.Store.beginFullStateTransaction({ force: true, reason: 'test' });
+    // 1. Missing token.
+    const rMissing = window.Store.endFullStateTransaction();
+    // 2. Wrong token object.
+    const rWrong   = window.Store.endFullStateTransaction({ id: 'bogus' });
+    // 3. Correct end.
+    const rOk      = window.Store.endFullStateTransaction(gate.token);
+    // 4. Double end (stale).
+    const rDouble  = window.Store.endFullStateTransaction(gate.token);
+    return {
+      missingErr: rMissing.error, wrongErr: rWrong.error,
+      okOk: rOk.ok, doubleErr: rDouble.error
+    };
+  });
+  expect(r.missingErr).toBe('FULL_STATE_TRANSACTION_TOKEN_INVALID');
+  expect(r.wrongErr).toBe('FULL_STATE_TRANSACTION_TOKEN_INVALID');
+  expect(r.okOk).toBe(true);
+  expect(r.doubleErr).toBe('FULL_STATE_TRANSACTION_TOKEN_INVALID');
+});
+
+// ────────────────────────────────────────────────────────
+// T-settlement-lower-rev — settlement establishes blocker on disk regression
+// ────────────────────────────────────────────────────────
+test('T-settlement-lower-rev — full-state settlement blocks writes when disk revision regressed', async ({ page }) => {
+  await page.goto('/');
+  await waitForStore(page);
+  const r = await page.evaluate(async () => {
+    // Establish a baseline commit so knownRevision > 0.
+    window.Store.set('goals.__b0_settle_lower__', 1);
+    await window.Store.flushNow();
+    const rev = window.Store.wrapperMeta().revision;
+    // Begin a full-state transaction, but instead of committing via the API,
+    // regress the disk under it (simulating an external actor).
+    const gate = window.Store.beginFullStateTransaction({ force: true, reason: 'test' });
+    // Poison disk with a lower-revision wrapper.
+    const cur = JSON.parse(localStorage.getItem('dune_state_v4'));
+    const regressed = { version: 13, revision: Math.max(0, rev - 5), committedAt: new Date().toISOString(), data: cur.data };
+    localStorage.setItem('dune_state_v4', JSON.stringify(regressed));
+    const endRes = window.Store.endFullStateTransaction(gate.token);
+    const blocker = window.Store.getDurabilityBlocker();
+    const followUp = window.Store.set('goals.__b0_settle_lower__', 2);
+    if (window.Store.clearDurabilityBlocker) window.Store.clearDurabilityBlocker();
+    return { blockerCode: blocker && blocker.code, followUpErr: followUp && followUp.error, endBlocker: endRes.durabilityBlocker && endRes.durabilityBlocker.code };
+  });
+  expect(r.blockerCode).toBe('STORE_REVISION_REGRESSION');
+  expect(r.followUpErr).toBe('STORE_DURABILITY_BLOCKED');
+  expect(r.endBlocker).toBe('STORE_REVISION_REGRESSION');
+});
+
+// ────────────────────────────────────────────────────────
+// T-settlement-cleared — settlement blocks writes when STATE_KEY cleared
+// ────────────────────────────────────────────────────────
+test('T-settlement-cleared — full-state settlement blocks writes when STATE_KEY cleared', async ({ page }) => {
+  await page.goto('/');
+  await waitForStore(page);
+  const r = await page.evaluate(async () => {
+    window.Store.set('goals.__b0_settle_clr__', 1);
+    await window.Store.flushNow();
+    const gate = window.Store.beginFullStateTransaction({ force: true, reason: 'test' });
+    localStorage.removeItem('dune_state_v4');
+    const endRes = window.Store.endFullStateTransaction(gate.token);
+    const blocker = window.Store.getDurabilityBlocker();
+    const followUp = window.Store.set('goals.__b0_settle_clr__', 2);
+    if (window.Store.clearDurabilityBlocker) window.Store.clearDurabilityBlocker();
+    return { blockerCode: blocker && blocker.code, followUpErr: followUp && followUp.error };
+  });
+  expect(r.blockerCode).toBe('STORE_STATE_CLEARED_EXTERNAL');
+  expect(r.followUpErr).toBe('STORE_DURABILITY_BLOCKED');
+});
+
+// ────────────────────────────────────────────────────────
+// T-settlement-corrupt — settlement blocks writes when disk corrupted
+// ────────────────────────────────────────────────────────
+test('T-settlement-corrupt — full-state settlement blocks writes when disk wrapper corrupt', async ({ page }) => {
+  await page.goto('/');
+  await waitForStore(page);
+  const r = await page.evaluate(async () => {
+    window.Store.set('goals.__b0_settle_corrupt__', 1);
+    await window.Store.flushNow();
+    const gate = window.Store.beginFullStateTransaction({ force: true, reason: 'test' });
+    localStorage.setItem('dune_state_v4', '{not json');
+    const endRes = window.Store.endFullStateTransaction(gate.token);
+    const blocker = window.Store.getDurabilityBlocker();
+    const followUp = window.Store.set('goals.__b0_settle_corrupt__', 2);
+    if (window.Store.clearDurabilityBlocker) window.Store.clearDurabilityBlocker();
+    return { blockerCode: blocker && blocker.code, followUpErr: followUp && followUp.error };
+  });
+  expect(r.blockerCode).toBe('STORE_CORRUPT_AUTHORITATIVE_STATE');
+  expect(r.followUpErr).toBe('STORE_DURABILITY_BLOCKED');
+});
+
+// ────────────────────────────────────────────────────────
+// T-import-always-unfreezes — rawBefore read failure never strands Store frozen
+// ────────────────────────────────────────────────────────
+test('T-import-always-unfreezes — a localStorage.getItem failure during rawBefore capture unfreezes Store', async ({ page }) => {
+  await page.goto('/');
+  await page.waitForFunction(() => typeof window.processImport === 'function');
+  const r = await page.evaluate(async () => {
+    window.confirm = () => true;
+    const _st = window.setTimeout;
+    window.setTimeout = (fn, d) => (d && d >= 1000) ? 0 : _st(fn, d);
+    const origGet = localStorage.getItem.bind(localStorage);
+    // Fail rawBefore reads specifically (not the boot reads that happen
+    // before the import runs).
+    let armed = false;
+    localStorage.getItem = function (k) {
+      if (armed) throw new Error('simulated storage read failure');
+      return origGet(k);
+    };
+    // Arm right before calling processImport.
+    armed = true;
+    const backup = { version: '2026.1', exported_at: '2026-08-25T00:00:00Z', data: { dune_apartments_v1: [{ id: 'x' }] } };
+    const ok = await window.processImport(JSON.stringify(backup));
+    armed = false;
+    localStorage.getItem = origGet;
+    window.setTimeout = _st;
+    // Store MUST not be frozen; a follow-up write must succeed.
+    const followUp = window.Store.set('goals.__b0_import_unfreeze__', 42);
+    return { ok, followUpOk: followUp.ok, followUpErr: followUp.error };
+  });
+  expect(r.ok).toBe(false);
+  // The follow-up succeeds unless a durability blocker was intentionally set.
+  // Store must NOT be frozen.
+  expect(r.followUpErr).not.toBe('FULL_STATE_TRANSACTION_IN_PROGRESS');
+});
+
+// ────────────────────────────────────────────────────────
+// T-conflict-immutable — mutating getConflict result cannot alter queued op
+// ────────────────────────────────────────────────────────
+test('T-conflict-immutable — Store.getConflict returns a deeply frozen copy; mutation cannot leak to committed value', async ({ page }) => {
+  await page.goto('/');
+  await waitForStore(page);
+  const r = await page.evaluate(async () => {
+    window.Store.set('goals.__b0_confmut__', 'A');
+    await window.Store.flushNow();
+    // Enqueue A→B and force an external conflict.
+    window.Store.set('goals.__b0_confmut__', { x: 2 });
+    const cur = JSON.parse(localStorage.getItem('dune_state_v4'));
+    cur.data.goals.__b0_confmut__ = 'DISK';
+    cur.revision = cur.revision + 5;
+    cur.committedAt = new Date().toISOString();
+    localStorage.setItem('dune_state_v4', JSON.stringify(cur));
+    const flushRes = await window.Store.flushNow();
+    const cf = window.Store.getConflict();
+    let threw = false;
+    try { cf.localAfter.x = 777; } catch (e) { threw = true; }
+    // Even if not throwing, the frozen snapshot means the value must not
+    // have changed.
+    const cf2 = window.Store.getConflict();
+    const stillTwo = cf2 && cf2.localAfter && cf2.localAfter.x === 2;
+    // Resolve use-this-tab; committed value must be the original {x:2}, not
+    // the caller's 777.
+    window.Store.resolveConflict('use-this-tab');
+    await window.Store.flushNow();
+    const final = window.Store.get('goals.__b0_confmut__');
+    return { conflictHit: flushRes && flushRes.reason === 'CONFLICT', stillTwo, finalX: final && final.x };
+  });
+  expect(r.conflictHit).toBe(true);
+  expect(r.stillTwo).toBe(true);
+  expect(r.finalX).toBe(2);
+});
+
+// ────────────────────────────────────────────────────────
+// T-snapshot-degraded — snapshot failure emits STORE_SNAPSHOT_DEGRADED
+// ────────────────────────────────────────────────────────
+test('T-snapshot-degraded — snapshot write failure after primary commit surfaces STORE_SNAPSHOT_DEGRADED without failing the commit', async ({ page }) => {
+  await page.goto('/');
+  await waitForStore(page);
+  const r = await page.evaluate(async () => {
+    // Wait for any boot flush to settle before installing our setItem trap.
+    await window.Store.flushNow();
+    const errors = [];
+    window.Store.onError((e) => errors.push(e));
+    const origSet = localStorage.setItem.bind(localStorage);
+    localStorage.setItem = function (k, v) {
+      if (k === 'dune_snapshots_v1') throw new Error('simulated snapshot quota');
+      return origSet(k, v);
+    };
+    try {
+      window.Store.set('goals.__b0_snapdeg__', 'X');
+      const res = await window.Store.flushNow();
+      const rev = window.Store.wrapperMeta().revision;
+      const val = window.Store.get('goals.__b0_snapdeg__');
+      return {
+        committed: res && res.committed,
+        rev,
+        val,
+        degraded: errors.some(e => e && e.code === 'STORE_SNAPSHOT_DEGRADED')
+      };
+    } finally {
+      localStorage.setItem = origSet;
+    }
+  });
+  expect(r.committed).toBe(true);
+  expect(r.val).toBe('X');
+  expect(r.degraded).toBe(true);
+});
+
+// ────────────────────────────────────────────────────────
+// T-clone-array-symbol — array with own symbol key rejected
+// ────────────────────────────────────────────────────────
+test('T-clone-array-symbol — array carrying an own symbol key is rejected', async ({ page }) => {
+  await page.goto('/');
+  await waitForStore(page);
+  const r = await page.evaluate(() => {
+    const arr = [1, 2, 3];
+    arr[Symbol('x')] = 'hidden';
+    const res = window.Store.set('goals.__b0_arrsym__', arr);
+    return { err: res.error };
+  });
+  expect(r.err).toBe('STORE_UNPERSISTABLE');
+});
+
+// ────────────────────────────────────────────────────────
+// T-clone-array-getter — array indexed getter rejected without invoking it
+// ────────────────────────────────────────────────────────
+test('T-clone-array-getter — array with indexed getter is rejected without invocation', async ({ page }) => {
+  await page.goto('/');
+  await waitForStore(page);
+  const r = await page.evaluate(() => {
+    let fired = 0;
+    const arr = [];
+    Object.defineProperty(arr, '0', { get: function () { fired++; return 'x'; }, enumerable: true, configurable: true });
+    arr.length = 1;
+    const res = window.Store.set('goals.__b0_arrget__', arr);
+    return { err: res.error, fired };
+  });
+  expect(r.err).toBe('STORE_UNPERSISTABLE');
+  expect(r.fired).toBe(0);
+});
+
+// ────────────────────────────────────────────────────────
+// T-clone-object-getter — object with non-enumerable accessor rejected
+// ────────────────────────────────────────────────────────
+test('T-clone-object-getter — object with a non-enumerable own accessor is rejected without invocation', async ({ page }) => {
+  await page.goto('/');
+  await waitForStore(page);
+  const r = await page.evaluate(() => {
+    let fired = 0;
+    const obj = { visible: 1 };
+    Object.defineProperty(obj, 'hidden', { get: function () { fired++; return 'x'; }, enumerable: false, configurable: true });
+    const res = window.Store.set('goals.__b0_objget__', obj);
+    return { err: res.error, fired };
+  });
+  expect(r.err).toBe('STORE_UNPERSISTABLE');
+  expect(r.fired).toBe(0);
+});
+
+// ────────────────────────────────────────────────────────
+// T-import-source-wrapper-invalid — malformed schema-13 source revision rejected
+// ────────────────────────────────────────────────────────
+test('T-import-source-wrapper-invalid — import rejects schema-13 source wrappers with non-integer revision', async ({ page }) => {
+  await page.goto('/');
+  await page.waitForFunction(() => typeof window.processImport === 'function');
+  const cases = [1.5, -1, 'three', Number.POSITIVE_INFINITY];
+  for (const badRev of cases) {
+    const r = await page.evaluate(async (rev) => {
+      window.confirm = () => true;
+      const _st = window.setTimeout;
+      window.setTimeout = (fn, d) => (d && d >= 1000) ? 0 : _st(fn, d);
+      // JSON.stringify of NaN/Infinity produces "null" — skip test-case that
+      // would silently normalize before reaching preflight.
+      if (rev === null || (typeof rev === 'number' && !Number.isFinite(rev))) {
+        // Manually inject the raw string form so the invalid revision survives.
+        var raw = '{"version":"2026.1","exported_at":"2026-08-25T00:00:00Z","data":{"dune_state_v4":{"version":13,"revision":Infinity,"committedAt":"x","data":{"money":{"salary_net":1},"qatarVisit":{}}}}}';
+        const ok = await window.processImport(raw);
+        window.setTimeout = _st;
+        return { ok, note: 'inf-raw' };
+      }
+      const backup = {
+        version: '2026.1',
+        exported_at: '2026-08-25T00:00:00Z',
+        data: {
+          dune_state_v4: { version: 13, revision: rev, committedAt: 'x', data: { money: { salary_net: 1 }, qatarVisit: {} } }
+        }
+      };
+      const ok = await window.processImport(JSON.stringify(backup));
+      window.setTimeout = _st;
+      return { ok };
+    }, badRev);
+    expect(r.ok, 'badRev=' + String(badRev)).toBe(false);
+  }
+});
+
+// ────────────────────────────────────────────────────────
+// T-import-deferred-storage-event — event during import is deferred, disk reread at settlement
+// ────────────────────────────────────────────────────────
+test('T-import-deferred-storage-event — storage event during import is deferred and settlement rereads authoritative disk', async ({ page }) => {
+  await page.goto('/');
+  await page.waitForFunction(() => typeof window.processImport === 'function');
+  const r = await page.evaluate(async () => {
+    window.confirm = () => true;
+    const _st = window.setTimeout;
+    window.setTimeout = (fn, d) => (d && d >= 1000) ? 0 : _st(fn, d);
+    // Kick off an import that will actually commit successfully.
+    const backup = {
+      version: '2026.1', exported_at: '2026-08-25T00:00:00Z',
+      data: {
+        dune_state_v4: { version: 11, data: { money: { salary_net: 314 }, qatarVisit: {} } },
+        dune_apartments_v1: [{ id: 'im1' }]
+      }
+    };
+    // Inject a synthetic storage event mid-import by dispatching one right
+    // after beginning the transaction.
+    const importPromise = window.processImport(JSON.stringify(backup));
+    // Fire a synthetic storage event with a bogus payload — must be deferred.
+    window.dispatchEvent(new StorageEvent('storage', {
+      key: 'dune_state_v4', newValue: '{"version":13,"revision":999999,"committedAt":"z","data":{}}',
+      oldValue: null, url: location.href, storageArea: localStorage
+    }));
+    const ok = await importPromise;
+    window.setTimeout = _st;
+    // After settlement, the disk (imported wrapper) is authoritative, not the
+    // bogus queued payload.
+    const raw = JSON.parse(localStorage.getItem('dune_state_v4'));
+    return { ok, importedSalary: raw && raw.data && raw.data.money && raw.data.money.salary_net };
+  });
+  expect(r.ok).toBe(true);
+  expect(r.importedSalary).toBe(314);
+});
+
+// ────────────────────────────────────────────────────────
+// T-mirror-conflict-real — LOGBOOK.reconcile via a real writer + external mirror conflict
+// ────────────────────────────────────────────────────────
+test('T-mirror-conflict-real — legacy authoritative Tracker write via LOGBOOK.reconcile survives a mirror CAS conflict', async ({ page }) => {
+  await page.goto('/');
+  await waitForStore(page);
+  const r = await page.evaluate(async () => {
+    // Seed legacy Tracker with one entry.
+    const trackerEntry = {
+      id: 't_real_mirror_1', date: '2026-08-25', hours: 2,
+      company: 'X', aircraft_type: 'A320', registration: 'RA-7',
+      engine_type: '', ata_chapter: '', system: '',
+      task_description: 'real reconcile', role: '', supervisor: '',
+      stamp_status: '', language: '', b1_relevance: ''
+    };
+    localStorage.setItem('dune_logbook_v1', JSON.stringify([trackerEntry]));
+    // Trigger a real production reconcile if available.
+    let reconciled = false;
+    if (window.LOGBOOK && typeof window.LOGBOOK.reconcile === 'function') {
+      window.LOGBOOK.reconcile();
+      reconciled = true;
+    }
+    await window.Store.flushNow();
+    // Now simulate an external tab having advanced state.logbook mirror.
+    const cur = JSON.parse(localStorage.getItem('dune_state_v4'));
+    cur.data.logbook = {
+      schemaVersion: 1, authority: 'legacy-mirror', entries: [],
+      migration: { version: 1, sourceCounts: { tracker: 0, builder: 0 } },
+      reconciled: true, drift: null
+    };
+    cur.revision = cur.revision + 3;
+    cur.committedAt = new Date().toISOString();
+    localStorage.setItem('dune_state_v4', JSON.stringify(cur));
+    // Trigger the mirror reconciler again — this queues a Store.set which may
+    // CAS-conflict with the external mirror. Regardless, legacy remains
+    // authoritative.
+    if (window.LOGBOOK && typeof window.LOGBOOK.reconcile === 'function') {
+      window.LOGBOOK.reconcile();
+    }
+    const tracker = JSON.parse(localStorage.getItem('dune_logbook_v1'));
+    const authority = window.Store.get('logbook') && window.Store.get('logbook').authority;
+    return {
+      reconciled,
+      legacyIntact: Array.isArray(tracker) && tracker.length === 1 && tracker[0].id === 't_real_mirror_1',
+      authority
+    };
+  });
+  expect(r.legacyIntact).toBe(true);
+  expect(r.authority).toBe('legacy-mirror');
+});

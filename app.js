@@ -1749,79 +1749,102 @@ async function processImport(text){
   }
   const token=gate.token;
 
-  // Snapshot byte-exact BACKUP_KEYS state for rollback.
-  const rawBefore={};
-  for(const k of BACKUP_KEYS){ rawBefore[k]=localStorage.getItem(k); }
-
-  // Write recovery capsule BEFORE any destructive change. Kept after success
-  // and after apply failure (b4083a8 semantics).
+  // Everything after this point MUST run inside try/finally so
+  // endFullStateTransaction(token) fires exactly once even if rawBefore
+  // capture, capsule write, or any other step throws.
+  let succeeded=false;
+  let rollbackFailures=[];
+  let toastMsg=null;
   try{
-    const recovery=JSON.stringify({version:'2026.1',exported_at:new Date().toISOString(),data:getAllBackupData()});
-    localStorage.setItem('dune_pre_import_backup_v1',recovery);
-  }catch(e){
-    showBackupToast('⚠ Could not save pre-import backup — aborting');
-    try{ window.Store.endFullStateTransaction(token); }catch(err){}
-    return false;
-  }
-
-  const applied=[];
-  try{
-    // 1. Stage/apply NON-STATE backup keys first. STATE_KEY is written LAST
-    //    as part of commitFullStateWrapper.
+    // Snapshot byte-exact BACKUP_KEYS state for rollback. Wrapped so a
+    // failing localStorage.getItem cannot strand Store frozen.
+    const rawBefore={};
+    let rawBeforeReadFailed=false;
     for(const k of BACKUP_KEYS){
-      if(k===STATE_KEY_NAME) continue;
-      if(k in backup.data){
-        localStorage.setItem(k,JSON.stringify(backup.data[k]));
-        applied.push(k);
-      } else if(rawBefore[k]!==null){
-        localStorage.removeItem(k);
-        applied.push(k);
+      try{ rawBefore[k]=localStorage.getItem(k); }
+      catch(e){ rawBeforeReadFailed=true; rawBefore[k]=null; }
+    }
+    if(rawBeforeReadFailed){ throw new Error('RAWBEFORE_READ_FAILED'); }
+
+    // Write recovery capsule BEFORE any destructive change. Kept after success
+    // and after apply failure (b4083a8 semantics).
+    try{
+      const recovery=JSON.stringify({version:'2026.1',exported_at:new Date().toISOString(),data:getAllBackupData()});
+      localStorage.setItem('dune_pre_import_backup_v1',recovery);
+    }catch(e){ throw new Error('CAPSULE_WRITE_FAILED'); }
+
+    const applied=[];
+    try{
+      // 1. Stage/apply NON-STATE backup keys first. STATE_KEY is written LAST
+      //    as part of commitFullStateWrapper.
+      for(const k of BACKUP_KEYS){
+        if(k===STATE_KEY_NAME) continue;
+        if(k in backup.data){
+          localStorage.setItem(k,JSON.stringify(backup.data[k]));
+          applied.push(k);
+        } else if(rawBefore[k]!==null){
+          localStorage.removeItem(k);
+          applied.push(k);
+        }
       }
-    }
 
-    // 2. Derive candidate data. Legacy-only backups (no dune_state_v4) use
-    //    the pure Store.deriveStateFromLegacy(reader) reading ONLY from the
-    //    just-staged auxiliary keys.
-    let candidate;
-    if(STATE_KEY_NAME in backup.data){
-      const wrapperOrBare=backup.data[STATE_KEY_NAME];
-      const ver=(wrapperOrBare&&typeof wrapperOrBare.version==='number')?wrapperOrBare.version:0;
-      const rawData=(wrapperOrBare&&'data' in wrapperOrBare)?wrapperOrBare.data:wrapperOrBare;
-      candidate=window.Store.migrateData(rawData,ver);
-    } else {
-      const stagedReader=(k)=>{ try{ return JSON.parse(localStorage.getItem(k)||'null'); }catch(e){ return null; } };
-      candidate=window.Store.deriveStateFromLegacy(stagedReader);
-    }
-    if(typeof window.Store.normalizeLogbookDomain==='function') window.Store.normalizeLogbookDomain(candidate);
-    if(typeof window.Store.validateData==='function' && !window.Store.validateData(candidate)){
-      throw new Error('IMPORT_VALIDATION_FAILED');
-    }
+      // 2. Derive candidate data. Legacy-only backups (no dune_state_v4) use
+      //    the pure Store.deriveStateFromLegacy(reader) reading ONLY from the
+      //    just-staged auxiliary keys.
+      let candidate;
+      if(STATE_KEY_NAME in backup.data){
+        const wrapperOrBare=backup.data[STATE_KEY_NAME];
+        // Reject malformed schema-13 source wrappers up front.
+        if(wrapperOrBare && typeof wrapperOrBare === 'object' && wrapperOrBare.version === 13){
+          const rev=wrapperOrBare.revision;
+          if(!(typeof rev==='number' && Number.isFinite(rev) && Number.isInteger(rev) && rev>=0 && rev<=Number.MAX_SAFE_INTEGER)){
+            throw new Error('IMPORT_SOURCE_WRAPPER_INVALID_REVISION');
+          }
+        }
+        const ver=(wrapperOrBare&&typeof wrapperOrBare.version==='number')?wrapperOrBare.version:0;
+        const rawData=(wrapperOrBare&&'data' in wrapperOrBare)?wrapperOrBare.data:wrapperOrBare;
+        candidate=window.Store.migrateData(rawData,ver);
+      } else {
+        const stagedReader=(k)=>{ try{ return JSON.parse(localStorage.getItem(k)||'null'); }catch(e){ return null; } };
+        candidate=window.Store.deriveStateFromLegacy(stagedReader);
+      }
+      if(typeof window.Store.normalizeLogbookDomain==='function') window.Store.normalizeLogbookDomain(candidate);
+      if(typeof window.Store.validateData==='function' && !window.Store.validateData(candidate)){
+        throw new Error('IMPORT_VALIDATION_FAILED');
+      }
 
-    // 3. Commit under coordinator — writes STATE_KEY LAST as schema-13.
-    const res=await window.Store.commitFullStateWrapper(token,candidate,'import');
-    if(!res||!res.ok){ throw new Error(res&&res.error?res.error:'COMMIT_FAILED'); }
-    applied.push(STATE_KEY_NAME);
-  }catch(applyErr){
-    // Byte-exact rollback of every touched auxiliary key. STATE_KEY rollback
-    // is handled by writing back rawBefore if we managed to change it.
-    const rollbackFailures=[];
-    for(const k of applied){
-      try{
-        if(rawBefore[k]===null) localStorage.removeItem(k);
-        else localStorage.setItem(k,rawBefore[k]);
-      }catch(rbErr){ rollbackFailures.push(k); }
+      // 3. Commit under coordinator — writes STATE_KEY LAST as schema-13.
+      const res=await window.Store.commitFullStateWrapper(token,candidate,'import');
+      if(!res||!res.ok){ throw new Error(res&&res.error?res.error:'COMMIT_FAILED'); }
+      applied.push(STATE_KEY_NAME);
+      succeeded=true;
+    }catch(applyErr){
+      // Byte-exact rollback of every touched auxiliary key.
+      for(const k of applied){
+        try{
+          if(rawBefore[k]===null) localStorage.removeItem(k);
+          else localStorage.setItem(k,rawBefore[k]);
+        }catch(rbErr){ rollbackFailures.push(k); }
+      }
+      throw applyErr;
     }
+  }catch(topErr){
+    // Any pre-apply throw (capsule, raw read) lands here without a rollback
+    // to run — no auxiliary was written yet.
+    if(topErr && topErr.message==='CAPSULE_WRITE_FAILED'){ toastMsg='⚠ Could not save pre-import backup — aborting'; }
+    else if(topErr && topErr.message==='RAWBEFORE_READ_FAILED'){ toastMsg='⚠ Cannot read current storage — aborting'; }
+    else if(topErr && topErr.message==='IMPORT_SOURCE_WRAPPER_INVALID_REVISION'){ toastMsg='⚠ Backup source wrapper has an invalid revision — aborting'; }
+    else if(rollbackFailures.length){ toastMsg='⚠ Restore failed and rollback incomplete: '+rollbackFailures.join(', '); }
+    else{ toastMsg='⚠ Restore failed — '+((topErr&&topErr.message)||'unknown'); }
+  }finally{
+    // Always end the transaction. If end reports a durability blocker, the
+    // banner remains visible via the freeze-end event's detail.
     try{ window.Store.endFullStateTransaction(token); }catch(e){ /* best-effort */ }
-    if(rollbackFailures.length){
-      showBackupToast('⚠ Restore failed and rollback incomplete: '+rollbackFailures.join(', '));
-    } else {
-      showBackupToast('⚠ Restore failed — original data restored');
-    }
+  }
+  if(!succeeded){
+    if(toastMsg) showBackupToast(toastMsg);
     return false;
   }
-
-  // Success. endFullStateTransaction re-reads authoritative disk in finally.
-  try{ window.Store.endFullStateTransaction(token); }catch(e){ /* best-effort */ }
   try{ localStorage.setItem('dune_change_count_v1','0'); }catch(e){ /* non-fatal */ }
   showBackupToast('✓ Restored — '+preview);
   setTimeout(()=>location.reload(),1200);
