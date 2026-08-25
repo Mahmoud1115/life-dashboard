@@ -1,4 +1,4 @@
-# Architecture — as of 2026-08-24
+# Architecture — as of 2026-08-25
 
 Snapshot of how the code actually works today. Update when reality changes, not when a plan changes.
 
@@ -20,16 +20,26 @@ Snapshot of how the code actually works today. Update when reality changes, not 
 - `dune_gist_id_v1` — cached Gist ID for sync target
 
 ### Gen-2 (reactive Store, in `core.js`)
-One versioned JSON blob under `dune_state_v4` (schema `SCHEMA_VERSION = 12`). Owns:
+One versioned JSON blob under `dune_state_v4` (schema `SCHEMA_VERSION = 13` — B0 wrapper: `{version, revision, committedAt, data}`). Owns:
 - `money`, `qatarVisit`, `todayFocus`, `goals`, `career`, `easa`, `logbook`, `reviews`, `decisions`, `timeline`, `about`, `apartments`, `sbTasks`, `bht`, `telemetry`, `ideas`
 
 Features:
 - Dot-path get/set (`Store.get('money.salary_net')`, `Store.set('bht.entries', [...])`)
+- **CAS-based writes** — every `Store.set/update` enqueues an absent-path-safe operation. `Store.get()` returns a defensive `clonePersistable` clone; internal state is never exposed by reference.
+- **Persistence coordinator** — same-tab Promise serializer plus `navigator.locks.request('lifeos-state-write-v1', {mode:'exclusive'})` when available. Inside the lock, read → migrate → validate → rebase → strict-replay → primary write → snapshot write is synchronous.
+- **Capability probe** — `Store.capabilities.crossTabSafe` reports whether Web Locks are available. Phase B2 canonical Logbook activation is gated on `true`.
+- **Storage-event rebasing** — a newer revision seen on `window.storage` is adopted as the new base; equal-revision + different raw triggers a defensive current-disk reread and emits `STORE_REVISION_COLLISION`; lower revisions raise `STORE_REVISION_REGRESSION`. Events never trigger writes.
+- **Full-state transaction protocol** — `import`, snapshot restore, and reset share `beginFullStateTransaction / commitFullStateWrapper / endFullStateTransaction`. During freeze, `Store.set/update` return `FULL_STATE_TRANSACTION_IN_PROGRESS`; storage events are deferred; `endFullStateTransaction` always fires in `finally`.
+- **Conflict lifecycle** — a typed `Store.conflict` record freezes persistence but not enqueueing. Resolution: `use-this-tab` (`force-set` in place) or `use-saved-version` (drop the conflicting op only; later same-path ops are not silently subsumed). Accessible banner UI in `index.html`.
 - Pub/sub subscriptions (`Store.subscribe('qatarVisit', fn)`)
-- 300ms debounced autosave
-- Rolling snapshot buffer (`dune_snapshots_v1`, max 8)
-- Forward-only migration chain in `migrateUp()`
-- Validate-on-load — `validate()` at `core.js:254` requires `qatarVisit` to exist; missing → full reset to defaults
+- 300ms debounced flush
+- Rolling snapshot buffer (`dune_snapshots_v1`, max 8) — outer format `[{at, payload}]` unchanged; payload is a schema-13 wrapper.
+- Forward-only migration chain in `migrateUp()`; schema-12 blobs still load and are re-wrapped as schema-13 on the next commit.
+- Validate-on-load — missing `qatarVisit`/`money.salary_net` → snapshot recovery, then legacy migration.
+- **Revision exhaustion** — the last accepted revision is `Number.MAX_SAFE_INTEGER`; the next write fails with `STORE_REVISION_EXHAUSTED`.
+- **Pure legacy derivation** — `Store.deriveStateFromLegacy(read)` reads only from a caller-supplied reader; used by boot (live localStorage) and future legacy-only import paths (staged auxiliaries).
+
+See `docs/lifeos/DECISIONS.md` ADR-010 for the full protocol.
 
 ### The bridge
 `core.js`'s `migrateFromLegacy()` reads Gen-1 keys **once, on first load**, to seed `dune_state_v4`. After that, Gen-1 code keeps writing legacy keys independently — **with two live reconciliation exceptions**: Money-Russia (Gen-1 `dune_finance_v1.russia` shadowed one-way into `state.money`) and Logbook (Tracker + Builder legacy sources reconciled into `state.logbook` on boot and after every add/delete write, `authority: 'legacy-mirror'`). For all other domains (EASA, Goals, Apartments, Study Board, …), the Gen-1 key remains the write-authoritative source and the corresponding field inside `dune_state_v4` may be empty or stale. See `STORAGE_MAP.md`.

@@ -10,11 +10,12 @@
   // ──────────────────────────────────────────────
   // SCHEMA
   // ──────────────────────────────────────────────
-  const SCHEMA_VERSION = 12;
+  const SCHEMA_VERSION = 13;
   const STATE_KEY = 'dune_state_v4';
   const SNAPSHOTS_KEY = 'dune_snapshots_v1';
   const MAX_SNAPSHOTS = 8;
   const SAVE_DEBOUNCE_MS = 300;
+  const WEB_LOCK_NAME = 'lifeos-state-write-v1';
 
   function nowISO() { return new Date().toISOString(); }
 
@@ -497,9 +498,15 @@
   // ──────────────────────────────────────────────
   // MIGRATIONS
   // ──────────────────────────────────────────────
-  function migrateFromLegacy() {
+  // Pure legacy → Gen-2 candidate derivation. `read` is `(key) => parsedJsonOrNull`.
+  // No live localStorage access here, no Store mutation. Used by initial boot
+  // (default reader = live localStorage) and by legacy-only import derivation
+  // (reader = staged map of the freshly-written auxiliary keys).
+  function deriveStateFromLegacy(read) {
     const s = defaultState();
-    function safe(k) { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } }
+    const safe = (typeof read === 'function')
+      ? read
+      : function (k) { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } };
 
     const oldFin = safe('dune_finance_v1');
     if (oldFin && oldFin.russia) {
@@ -534,6 +541,11 @@
     if (oldSb && typeof oldSb === 'object') s.sbTasks = oldSb;
 
     return s;
+  }
+
+  // Backwards-compatible thin wrapper. Live localStorage reader.
+  function migrateFromLegacy() {
+    return deriveStateFromLegacy(null);
   }
 
   function migrateUp(data, fromVersion) {
@@ -622,8 +634,152 @@
   }
 
   // ──────────────────────────────────────────────
-  // LOAD / SAVE / SNAPSHOTS / INTEGRITY
+  // B0 · STORE DURABILITY (schema-13 wrapper + CAS + coordinator)
+  // Reviewed design: docs/lifeos/DECISIONS.md ADR-010.
+  //
+  // Wire diagram:
+  //   baseState  = last accepted persisted data
+  //   pendingOps = ordered CAS operations enqueued by callers
+  //   state      = optimisticReplay(baseState, pendingOps)
+  //
+  //   flush = webLock + sameTabSerializer(
+  //             read → migrate → validate → rebase → strict-replay
+  //             → primary write → snapshot write → accept new base
+  //           )
+  //
+  //   storage event = rebase-only (never triggers a write)
+  //
+  //   full-state transaction (import/snapshot/reset) freezes ordinary
+  //   Store.set/update; always unfreezes in finally.
   // ──────────────────────────────────────────────
+
+  // ── PATH PRIMITIVES ──────────────────────────────
+  function isSafeStringKey(k) {
+    return typeof k === 'string' && k.length > 0;
+  }
+  function splitPath(path) {
+    if (typeof path !== 'string' || path.length === 0) throw new Error('STORE_INVALID_PATH');
+    const segs = path.split('.');
+    for (const s of segs) if (!isSafeStringKey(s)) throw new Error('STORE_INVALID_PATH');
+    return segs;
+  }
+  // Descriptor-based own-property read. Never invokes accessors, never
+  // traverses prototypes; __proto__ / constructor / prototype are safe as
+  // own data keys.
+  function readOwnPath(root, path) {
+    const segs = splitPath(path);
+    let cur = root;
+    for (let i = 0; i < segs.length; i++) {
+      if (cur === null || typeof cur !== 'object') return { exists: false, value: null };
+      const desc = Object.getOwnPropertyDescriptor(cur, segs[i]);
+      if (!desc) return { exists: false, value: null };
+      if ('get' in desc || 'set' in desc) throw new Error('STORE_ACCESSOR_ENCOUNTERED');
+      if (i === segs.length - 1) return { exists: true, value: desc.value };
+      cur = desc.value;
+    }
+    return { exists: true, value: cur };
+  }
+  // Write via defineProperty so Object.prototype setters are never invoked.
+  // Intermediate parents are null-prototype for safety.
+  function applyOwnPath(root, path, op) {
+    const segs = splitPath(path);
+    let cur = root;
+    for (let i = 0; i < segs.length - 1; i++) {
+      const seg = segs[i];
+      const desc = Object.getOwnPropertyDescriptor(cur, seg);
+      if (!desc) {
+        const child = Object.create(null);
+        Object.defineProperty(cur, seg, { value: child, writable: true, enumerable: true, configurable: true });
+        cur = child;
+      } else {
+        if ('get' in desc || 'set' in desc) throw new Error('STORE_ACCESSOR_ENCOUNTERED');
+        if (desc.value === null || typeof desc.value !== 'object') {
+          throw new Error('PATH_PARENT_NOT_OBJECT');
+        }
+        cur = desc.value;
+      }
+    }
+    const tail = segs[segs.length - 1];
+    if (op.kind === 'delete') {
+      const d = Object.getOwnPropertyDescriptor(cur, tail);
+      if (d && !d.configurable) throw new Error('STORE_KEY_NOT_CONFIGURABLE');
+      if (d) delete cur[tail];
+    } else {
+      Object.defineProperty(cur, tail, { value: op.value, writable: true, enumerable: true, configurable: true });
+    }
+  }
+
+  // ── PERSISTABLE VALUE CONTRACT ───────────────────
+  function isPlainOrNullProtoObject(v) {
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
+    const p = Object.getPrototypeOf(v);
+    return p === null || p === Object.prototype;
+  }
+  function clonePersistable(v, seen) {
+    if (v === null) return null;
+    const t = typeof v;
+    if (t === 'undefined') throw new Error('STORE_UNPERSISTABLE');
+    if (t === 'boolean' || t === 'string') return v;
+    if (t === 'number') { if (!Number.isFinite(v)) throw new Error('STORE_UNPERSISTABLE'); return v; }
+    if (t === 'function' || t === 'symbol' || t === 'bigint') throw new Error('STORE_UNPERSISTABLE');
+    if (t !== 'object') throw new Error('STORE_UNPERSISTABLE');
+    // Reject Date/Map/Set/RegExp/DOM/others
+    if (v instanceof Date || v instanceof RegExp) throw new Error('STORE_UNPERSISTABLE');
+    if (typeof Map !== 'undefined' && v instanceof Map) throw new Error('STORE_UNPERSISTABLE');
+    if (typeof Set !== 'undefined' && v instanceof Set) throw new Error('STORE_UNPERSISTABLE');
+    if (typeof Node !== 'undefined' && v instanceof Node) throw new Error('STORE_UNPERSISTABLE');
+    seen = seen || new WeakSet();
+    if (seen.has(v)) throw new Error('STORE_CYCLE');
+    seen.add(v);
+    if (Array.isArray(v)) {
+      const out = new Array(v.length);
+      for (let i = 0; i < v.length; i++) {
+        // Reject sparse holes.
+        if (!(i in v)) throw new Error('STORE_UNPERSISTABLE');
+        out[i] = clonePersistable(v[i], seen);
+      }
+      return out;
+    }
+    if (!isPlainOrNullProtoObject(v)) throw new Error('STORE_UNPERSISTABLE');
+    const proto = Object.getPrototypeOf(v);
+    const out = proto === null ? Object.create(null) : {};
+    const keys = Object.keys(v);
+    for (const k of keys) {
+      if (typeof k !== 'string') throw new Error('STORE_UNPERSISTABLE');
+      const desc = Object.getOwnPropertyDescriptor(v, k);
+      if ('get' in desc || 'set' in desc) throw new Error('STORE_UNPERSISTABLE');
+      Object.defineProperty(out, k, {
+        value: clonePersistable(desc.value, seen),
+        writable: true, enumerable: true, configurable: true
+      });
+    }
+    return out;
+  }
+  function deepEqualPersistable(a, b) {
+    if (a === b) return true;
+    if (a === null || b === null) return a === b;
+    const ta = typeof a, tb = typeof b;
+    if (ta !== tb) return false;
+    if (ta !== 'object') return a === b;
+    const aIsArr = Array.isArray(a), bIsArr = Array.isArray(b);
+    if (aIsArr !== bIsArr) return false;
+    if (aIsArr) {
+      if (a.length !== b.length) return false;
+      for (let i = 0; i < a.length; i++) if (!deepEqualPersistable(a[i], b[i])) return false;
+      return true;
+    }
+    const ka = Object.keys(a).sort(), kb = Object.keys(b).sort();
+    if (ka.length !== kb.length) return false;
+    for (let i = 0; i < ka.length; i++) if (ka[i] !== kb[i]) return false;
+    for (const k of ka) {
+      const da = Object.getOwnPropertyDescriptor(a, k);
+      const db = Object.getOwnPropertyDescriptor(b, k);
+      if (!deepEqualPersistable(da.value, db.value)) return false;
+    }
+    return true;
+  }
+
+  // ── SNAPSHOTS ────────────────────────────────────
   function pushSnapshot(payload) {
     try {
       const snaps = JSON.parse(localStorage.getItem(SNAPSHOTS_KEY) || '[]');
@@ -632,7 +788,6 @@
       localStorage.setItem(SNAPSHOTS_KEY, JSON.stringify(snaps));
     } catch (e) { /* quota — silent */ }
   }
-
   function restoreFromSnapshot() {
     try {
       const snaps = JSON.parse(localStorage.getItem(SNAPSHOTS_KEY) || '[]');
@@ -645,18 +800,12 @@
     } catch (e) { }
     return null;
   }
-
   function validate(data) {
     if (!data || typeof data !== 'object') return false;
     if (!data.money || typeof data.money.salary_net !== 'number') return false;
     if (!data.qatarVisit) return false;
     return true;
   }
-
-  // Domain-local normaliser. Runs after load()/migrateUp so a malformed
-  // Logbook envelope (e.g. schema-12 payload where state.logbook is a
-  // string or plain array) is recovered without triggering a full-state
-  // reset. Unrelated slices are never touched.
   function normalizeLogbookDomain(data) {
     if (!data || typeof data !== 'object') return;
     if (Array.isArray(data.logbook)) {
@@ -672,110 +821,127 @@
     }
   }
 
-  function load() {
+  // ── WRAPPER · LOAD ───────────────────────────────
+  // Accepted wrapper shapes:
+  //   schema 13 → { version:13, revision:int, committedAt:ISO, data:{} }
+  //   schema ≤12 → { version:<n>, data:{} }              (migrated up)
+  //   legacy bare data (no wrapper) → treated as v0 data
+  function parseWrapperRaw(raw) {
+    if (raw === null || raw === undefined) return null;
+    let parsed;
+    try { parsed = JSON.parse(raw); } catch (e) { return { corrupt: true }; }
+    if (!parsed || typeof parsed !== 'object') return { corrupt: true };
+    const version = (typeof parsed.version === 'number') ? parsed.version : 0;
+    const revision = (typeof parsed.revision === 'number' && Number.isFinite(parsed.revision) && parsed.revision >= 0)
+      ? parsed.revision : 0;
+    const committedAt = (typeof parsed.committedAt === 'string') ? parsed.committedAt : null;
+    const data = parsed.data || null;
+    return { version, revision, committedAt, data, corrupt: false };
+  }
+  function migrateAndValidate(rawParsed) {
+    // Returns { ok, data } — data is a defensive clone if ok.
+    if (!rawParsed) return { ok: false };
+    if (rawParsed.corrupt) return { ok: false };
+    const rawData = rawParsed.data;
+    const data = (rawParsed.version === SCHEMA_VERSION && rawData)
+      ? rawData
+      : migrateUp(rawData || {}, rawParsed.version || 0);
+    normalizeLogbookDomain(data);
+    if (!validate(data)) return { ok: false };
     try {
-      const raw = localStorage.getItem(STATE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        const data = (parsed && parsed.version === SCHEMA_VERSION && parsed.data)
-          ? parsed.data
-          : migrateUp((parsed && parsed.data) || {}, (parsed && parsed.version) || 0);
-        normalizeLogbookDomain(data);
-        if (validate(data)) return data;
-        console.warn('[Store] integrity check failed — trying snapshot');
-        return restoreFromSnapshot() || migrateFromLegacy();
-      }
-      // First load — migrate from legacy keys if present
-      return migrateFromLegacy();
+      const cloned = clonePersistable(data);
+      return { ok: true, data: cloned };
     } catch (e) {
-      console.error('[Store] load failed:', e);
-      return restoreFromSnapshot() || defaultState();
+      return { ok: false };
     }
   }
+  function initialLoad() {
+    let raw = null;
+    try { raw = localStorage.getItem(STATE_KEY); } catch (e) { raw = null; }
+    if (raw !== null) {
+      const parsed = parseWrapperRaw(raw);
+      const m = migrateAndValidate(parsed);
+      if (m.ok) return { data: m.data, revision: parsed.revision, committedAt: parsed.committedAt, rawWrapper: raw };
+      // Corrupt / invalid — fall through to snapshot then legacy.
+      const snap = restoreFromSnapshot();
+      if (snap && validate(snap)) return { data: clonePersistable(snap), revision: 0, committedAt: null, rawWrapper: null };
+      return { data: clonePersistable(migrateFromLegacy()), revision: 0, committedAt: null, rawWrapper: null };
+    }
+    return { data: clonePersistable(migrateFromLegacy()), revision: 0, committedAt: null, rawWrapper: null };
+  }
 
-  let state = load();
-  let saveTimer = null;
-  let saveListeners = new Set();
-  // Persistence pause flag. When true, both scheduleSave() and persistNow()
-  // become no-ops so a pending stale in-memory snapshot cannot overwrite a
-  // freshly-imported dune_state_v4 during the reload window. Set/cleared via
-  // Store.pausePersistence / Store.resumePersistence.
+  // ── INTERNAL STATE ───────────────────────────────
+  const _boot = initialLoad();
+  let baseState      = _boot.data;
+  let knownRevision  = _boot.revision;
+  let committedAt    = _boot.committedAt;
+  let baseWrapperRaw = _boot.rawWrapper;
+  let state          = clonePersistable(baseState);   // optimistic projection
+  let pendingOps     = [];
+  let nextSeq        = 1;
+  let conflict       = null;
+  let saveTimer      = null;
+  let flushChain     = Promise.resolve();
+  let activeFullStateTransaction = false;
+  let flushInProgress = false;
+  let deferredStorageEvents = [];
+  const saveListeners = new Set();
+  const errorListeners = new Set();
+
+  // Backward-compat pause flag: legacy import code (b4083a8) calls
+  // pausePersistence/resumePersistence and relies on scheduleSave being a
+  // no-op while paused. Under B0 this is a subset of the freeze protocol.
   let paused = false;
-  // Set when either (a) a save was pending at the moment we paused, or (b) a
-  // Store.set/update happened while paused. On resumePersistence() we
-  // re-arm one debounced save so the legitimate in-memory state eventually
-  // persists — this avoids losing a real user edit that was already queued
-  // when a failed import canceled its debounce timer. Successful import
-  // never resumes (stays paused until reload), so this flag is never
-  // consulted on the success path.
   let dirtyWhilePaused = false;
 
-  function scheduleSave() {
-    clearTimeout(saveTimer);
-    saveTimer = null;
-    if (paused) { dirtyWhilePaused = true; return; }
-    // Clear saveTimer in the callback BEFORE persistNow runs so that
-    // `saveTimer !== null` is a truthful signal of "a debounce is
-    // pending". Otherwise a completed save leaves the handle in place
-    // and a later pause() would misclassify it as pending and re-arm
-    // an unnecessary write on resume.
-    saveTimer = setTimeout(function () {
-      saveTimer = null;
-      persistNow();
-    }, SAVE_DEBOUNCE_MS);
+  // ── REPLAY ───────────────────────────────────────
+  function existenceEqual(a, b) { return a === b; }
+  function opAppliesCleanlyToBase(current, before) {
+    return existenceEqual(current.exists, before.exists) && deepEqualPersistable(current.value, before.value);
   }
-
-  function persistNow() {
-    if (paused) return;
-    try {
-      state.meta.lastUpdated = nowISO();
-      const payload = JSON.stringify({ version: SCHEMA_VERSION, data: state });
-      localStorage.setItem(STATE_KEY, payload);
-      pushSnapshot(payload);
-      saveListeners.forEach(fn => { try { fn(state); } catch (e) {} });
-    } catch (e) {
-      console.error('[Store] save failed:', e);
+  function strictReplay(baseData, ops) {
+    const data = clonePersistable(baseData);
+    for (let i = 0; i < ops.length; i++) {
+      const op = ops[i];
+      if (op.kind === 'force-set') {
+        if (op.afterExists) applyOwnPath(data, op.path, { kind: 'set', value: clonePersistable(op.after) });
+        else applyOwnPath(data, op.path, { kind: 'delete' });
+        continue;
+      }
+      const cur = readOwnPath(data, op.path);
+      const before = { exists: op.beforeExists, value: op.before };
+      const after  = { exists: op.afterExists,  value: op.after  };
+      if (opAppliesCleanlyToBase(cur, before)) {
+        if (op.afterExists) applyOwnPath(data, op.path, { kind: 'set', value: clonePersistable(op.after) });
+        else applyOwnPath(data, op.path, { kind: 'delete' });
+      } else if (opAppliesCleanlyToBase(cur, after)) {
+        // idempotently satisfied — no write, no conflict
+      } else {
+        return { conflict: { op, savedExists: cur.exists, savedValue: clonePersistable(cur.value) } };
+      }
     }
+    return { data };
   }
-
-  function pausePersistence() {
-    // Capture pending-save state before cancelling the timer so a failed
-    // import can re-arm it on resume. Repeated pause() calls remain
-    // idempotent: dirtyWhilePaused is a set-only-once-until-resume flag,
-    // and saveTimer is null after the first pause so subsequent pauses
-    // are true no-ops.
-    if (saveTimer !== null) {
-      dirtyWhilePaused = true;
-      clearTimeout(saveTimer);
-      saveTimer = null;
+  function optimisticReplay(baseData, ops) {
+    const data = clonePersistable(baseData);
+    for (const op of ops) {
+      if (op.afterExists) applyOwnPath(data, op.path, { kind: 'set', value: clonePersistable(op.after) });
+      else applyOwnPath(data, op.path, { kind: 'delete' });
     }
-    paused = true;
+    return data;
+  }
+  function rebuildOptimistic() {
+    state = optimisticReplay(baseState, pendingOps);
   }
 
-  function resumePersistence() {
-    if (!paused) return; // idempotent — a duplicate resume is a no-op
-    paused = false;
-    if (dirtyWhilePaused) {
-      dirtyWhilePaused = false;
-      scheduleSave();
-    }
-  }
-
-  function isPersistencePaused() { return paused; }
-
-  // ──────────────────────────────────────────────
-  // PUB/SUB
-  // ──────────────────────────────────────────────
+  // ── SUBSCRIBERS / NOTIFY ─────────────────────────
   const subscribers = new Map(); // path → Set<fn>
-
   function subscribe(path, fn) {
     if (!subscribers.has(path)) subscribers.set(path, new Set());
     subscribers.get(path).add(fn);
-    // Fire immediately with current state so subscribers can hydrate
     try { fn(state); } catch (e) { console.error('[Store] sub immediate:', e); }
     return () => { const set = subscribers.get(path); if (set) set.delete(fn); };
   }
-
   function notify(changedPath) {
     for (const [path, fns] of subscribers) {
       if (path === '*' || path === changedPath || changedPath.startsWith(path + '.') || path.startsWith(changedPath + '.')) {
@@ -783,32 +949,421 @@
       }
     }
   }
-
-  // ──────────────────────────────────────────────
-  // GET / SET / UPDATE
-  // ──────────────────────────────────────────────
-  function get(path) {
-    if (!path) return state;
-    return path.split('.').reduce((o, k) => (o == null ? o : o[k]), state);
-  }
-
-  function set(path, val) {
-    const keys = path.split('.');
-    let cur = state;
-    for (let i = 0; i < keys.length - 1; i++) {
-      const k = keys[i];
-      if (typeof cur[k] !== 'object' || cur[k] === null) cur[k] = {};
-      cur = cur[k];
+  function notifyAll() {
+    const seen = new Set();
+    for (const [, fns] of subscribers) {
+      for (const fn of fns) {
+        if (seen.has(fn)) continue;
+        seen.add(fn);
+        try { fn(state); } catch (e) { console.error('[Store] notify(*):', e); }
+      }
     }
-    cur[keys[keys.length - 1]] = val;
-    scheduleSave();
-    notify(path);
+  }
+  function emitError(err) {
+    errorListeners.forEach(fn => { try { fn(err); } catch (e) { /* swallow */ } });
   }
 
+  // ── PUBLIC READS ─────────────────────────────────
+  function get(path) {
+    if (!path) return clonePersistable(state);
+    const { exists, value } = readOwnPath(state, path);
+    if (!exists) return undefined;
+    try { return clonePersistable(value); } catch (e) { return value; }
+  }
+
+  // ── PUBLIC WRITES ────────────────────────────────
+  function set(path, val) {
+    if (activeFullStateTransaction) return { ok: false, error: 'FULL_STATE_TRANSACTION_IN_PROGRESS' };
+    if (val === undefined) return { ok: false, error: 'STORE_INVALID_OPERATION' };
+    let cloned;
+    try { cloned = clonePersistable(val); } catch (e) { return { ok: false, error: 'STORE_UNPERSISTABLE' }; }
+    let cur;
+    try { cur = readOwnPath(state, path); } catch (e) { return { ok: false, error: e.message || 'STORE_INVALID_PATH' }; }
+    let before = null;
+    if (cur.exists) {
+      try { before = clonePersistable(cur.value); } catch (e) { before = cur.value; }
+      if (!pendingOpsAffect(path) && deepEqualPersistable(before, cloned)) {
+        return { ok: true, noop: true };
+      }
+    }
+    const op = {
+      seq: nextSeq++,
+      kind: 'cas-set',
+      path: path,
+      beforeExists: cur.exists,
+      before: cur.exists ? before : null,
+      afterExists: true,
+      after: cloned,
+      createdAt: nowISO()
+    };
+    // Trial-apply to a clone of optimistic state so any path-shape violation
+    // is caught BEFORE pendingOps changes visible state.
+    try {
+      const trial = optimisticReplay(baseState, pendingOps.concat([op]));
+      state = trial;
+    } catch (e) {
+      return { ok: false, error: e.message || 'STORE_APPLY_FAILED' };
+    }
+    pendingOps.push(op);
+    notify(path);
+    scheduleFlush();
+    return { ok: true, seq: op.seq };
+  }
   function update(path, updater) {
-    const cur = get(path);
-    const next = updater(cur);
-    set(path, next);
+    if (activeFullStateTransaction) return { ok: false, error: 'FULL_STATE_TRANSACTION_IN_PROGRESS' };
+    let cur;
+    try { cur = readOwnPath(state, path); } catch (e) { return { ok: false, error: e.message || 'STORE_INVALID_PATH' }; }
+    let arg;
+    if (cur.exists) {
+      try { arg = clonePersistable(cur.value); } catch (e) { arg = cur.value; }
+    } else {
+      arg = undefined;
+    }
+    const ret = updater(arg);
+    if (ret === undefined) return { ok: false, error: 'STORE_INVALID_OPERATION' };
+    return set(path, ret);
+  }
+  function pendingOpsAffect(path) {
+    for (const op of pendingOps) if (op.path === path) return true;
+    return false;
+  }
+
+  // ── COORDINATOR / FLUSH ──────────────────────────
+  const capabilities = {
+    crossTabSafe: !!(typeof navigator !== 'undefined' && navigator.locks && typeof navigator.locks.request === 'function'),
+    webStorage:   (typeof localStorage !== 'undefined')
+  };
+
+  function withCoordinator(fn) {
+    // Same-tab serializer + optional Web Lock.
+    flushChain = flushChain.then(async () => {
+      if (capabilities.crossTabSafe) {
+        return await navigator.locks.request(WEB_LOCK_NAME, { mode: 'exclusive' }, async () => {
+          return fn();
+        });
+      }
+      return fn();
+    }, () => {});
+    return flushChain;
+  }
+
+  function scheduleFlush() {
+    if (paused) { dirtyWhilePaused = true; return; }
+    if (activeFullStateTransaction) return;
+    if (conflict) return; // persistence blocked while conflict live
+    clearTimeout(saveTimer);
+    saveTimer = null;
+    saveTimer = setTimeout(function () {
+      saveTimer = null;
+      flushNow();
+    }, SAVE_DEBOUNCE_MS);
+  }
+
+  function flushNow() {
+    if (paused) return Promise.resolve({ committed: false, reason: 'PAUSED' });
+    if (activeFullStateTransaction) return Promise.resolve({ committed: false, reason: 'FROZEN' });
+    if (conflict) return Promise.resolve({ committed: false, reason: 'CONFLICT' });
+    if (pendingOps.length === 0) return Promise.resolve({ committed: false, reason: 'NOOP' });
+    return withCoordinator(() => commitLocked());
+  }
+
+  // Runs inside coordinator (Web Lock when available). SYNCHRONOUS body.
+  function commitLocked() {
+    if (activeFullStateTransaction) return { committed: false, reason: 'FROZEN' };
+    if (pendingOps.length === 0) return { committed: false, reason: 'NOOP' };
+
+    // 1. Re-read disk under lock and rebase if needed.
+    let rawNow;
+    try { rawNow = localStorage.getItem(STATE_KEY); } catch (e) { rawNow = null; }
+    if (rawNow !== null && rawNow !== baseWrapperRaw) {
+      const parsed = parseWrapperRaw(rawNow);
+      const m = migrateAndValidate(parsed);
+      if (m.ok && parsed.revision > knownRevision) {
+        // Newer external state — adopt as new base before replay.
+        baseState      = m.data;
+        knownRevision  = parsed.revision;
+        committedAt    = parsed.committedAt;
+        baseWrapperRaw = rawNow;
+      } else if (m.ok && parsed.revision < knownRevision) {
+        // Regression on disk. Refuse to write.
+        emitError({ code: 'STORE_REVISION_REGRESSION', diskRevision: parsed.revision, knownRevision });
+        return { committed: false, reason: 'STORE_REVISION_REGRESSION' };
+      } else if (m.ok && parsed.revision === knownRevision) {
+        // Equal revision, different raw wrapper — collision.
+        // Adopt disk defensively; surface warning.
+        baseState      = m.data;
+        committedAt    = parsed.committedAt;
+        baseWrapperRaw = rawNow;
+        emitError({ code: 'STORE_REVISION_COLLISION', revision: parsed.revision });
+      }
+      // If !m.ok we keep our accepted base and continue; primary write will
+      // overwrite the corrupt disk value.
+    }
+
+    // 2. Capture generation and strict-replay.
+    const capturedMaxSeq = pendingOps[pendingOps.length - 1].seq;
+    const captured = pendingOps.filter(op => op.seq <= capturedMaxSeq);
+    const r = strictReplay(baseState, captured);
+    if (r.conflict) {
+      setConflict(r.conflict);
+      return { committed: false, reason: 'CONFLICT' };
+    }
+    // 3. If nothing actually changed → drop captured ops; no new revision.
+    if (deepEqualPersistable(r.data, baseState)) {
+      pendingOps = pendingOps.filter(op => op.seq > capturedMaxSeq);
+      rebuildOptimistic();
+      return { committed: false, reason: 'IDEMPOTENT' };
+    }
+    // 4. Revision exhaustion.
+    if (knownRevision >= Number.MAX_SAFE_INTEGER) {
+      emitError({ code: 'STORE_REVISION_EXHAUSTED' });
+      return { committed: false, reason: 'STORE_REVISION_EXHAUSTED' };
+    }
+    // 5. Write primary + snapshot (both synchronous inside lock).
+    const nextRevision = knownRevision + 1;
+    const committedAtNow = nowISO();
+    const wrapper = { version: SCHEMA_VERSION, revision: nextRevision, committedAt: committedAtNow, data: r.data };
+    let payload;
+    try { payload = JSON.stringify(wrapper); } catch (e) { emitError({ code: 'STORE_SERIALIZE_FAILED', error: e }); return { committed: false, reason: 'SERIALIZE' }; }
+    try {
+      localStorage.setItem(STATE_KEY, payload);
+    } catch (e) {
+      emitError({ code: 'STORE_QUOTA', error: e });
+      return { committed: false, reason: 'QUOTA' };
+    }
+    try { pushSnapshot(payload); } catch (e) { /* snapshot best-effort */ }
+    baseState      = r.data;
+    knownRevision  = nextRevision;
+    committedAt    = committedAtNow;
+    baseWrapperRaw = payload;
+    pendingOps     = pendingOps.filter(op => op.seq > capturedMaxSeq);
+    rebuildOptimistic();
+
+    // 6. Post-commit hooks (fire outside lock — collect here, caller fires).
+    const listenersSnapshot = Array.from(saveListeners);
+    return {
+      committed: true,
+      revision: nextRevision,
+      committedAt: committedAtNow,
+      listeners: listenersSnapshot,
+      snapshotForListeners: clonePersistable(baseState),
+      reason: 'user'
+    };
+  }
+
+  // Wrap flushNow so post-commit hooks fire outside the lock.
+  const _originalFlushNow = flushNow;
+  flushNow = function () {
+    return _originalFlushNow().then(res => {
+      if (res && res.committed && res.listeners) {
+        for (const fn of res.listeners) {
+          try { fn(res.snapshotForListeners, { revision: res.revision, committedAt: res.committedAt, reason: res.reason }); } catch (e) { /* isolate */ }
+        }
+        if (pendingOps.length > 0 && !conflict) scheduleFlush();
+      }
+      return res;
+    });
+  };
+
+  // ── CONFLICT ─────────────────────────────────────
+  function setConflict(c) {
+    conflict = {
+      id: 'c_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
+      seq: c.op.seq,
+      path: c.op.path,
+      beforeExists: c.op.beforeExists,
+      before: c.op.before,
+      localAfterExists: c.op.afterExists,
+      localAfter: c.op.after,
+      savedExists: c.savedExists,
+      savedValue: c.savedValue,
+      createdAt: nowISO()
+    };
+    // Global signal so any UI can react.
+    try {
+      if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+        window.dispatchEvent(new CustomEvent('lifeos:store-conflict', { detail: { path: conflict.path } }));
+      }
+    } catch (e) { /* ignore */ }
+  }
+  function resolveConflict(choice) {
+    if (!conflict) return { ok: false, error: 'NO_CONFLICT' };
+    const idx = pendingOps.findIndex(op => op.seq === conflict.seq);
+    if (idx === -1) { conflict = null; rebuildOptimistic(); return { ok: true }; }
+    if (choice === 'use-this-tab') {
+      const orig = pendingOps[idx];
+      pendingOps[idx] = {
+        seq: orig.seq,
+        kind: 'force-set',
+        path: orig.path,
+        beforeExists: orig.beforeExists,
+        before: orig.before,
+        afterExists: orig.afterExists,
+        after: orig.after,
+        createdAt: orig.createdAt
+      };
+    } else if (choice === 'use-saved-version') {
+      pendingOps.splice(idx, 1);
+    } else {
+      return { ok: false, error: 'INVALID_CHOICE' };
+    }
+    conflict = null;
+    rebuildOptimistic();
+    notifyAll();
+    scheduleFlush();
+    try {
+      if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+        window.dispatchEvent(new CustomEvent('lifeos:store-conflict-resolved'));
+      }
+    } catch (e) { /* ignore */ }
+    return { ok: true };
+  }
+
+  // ── FULL-STATE TRANSACTIONS ──────────────────────
+  // Import / snapshot restore / reset. Freezes ordinary Store.set/update.
+  // Always unfreezes in finally; deferred storage events reconciled by
+  // re-reading actual current disk after settlement.
+  function beginFullStateTransaction(opts) {
+    opts = opts || {};
+    if (activeFullStateTransaction) return { ok: false, error: 'FULL_STATE_TRANSACTION_IN_PROGRESS' };
+    if (pendingOps.length > 0 && !opts.force) return { ok: false, error: 'PENDING_CHANGES' };
+    clearTimeout(saveTimer); saveTimer = null;
+    activeFullStateTransaction = true;
+    return { ok: true };
+  }
+  function endFullStateTransaction() {
+    activeFullStateTransaction = false;
+    // Discard queued event payloads; re-read authoritative disk now.
+    deferredStorageEvents.length = 0;
+    let rawNow = null;
+    try { rawNow = localStorage.getItem(STATE_KEY); } catch (e) { rawNow = null; }
+    if (rawNow !== null) {
+      const parsed = parseWrapperRaw(rawNow);
+      const m = migrateAndValidate(parsed);
+      if (m.ok && (parsed.revision !== knownRevision || rawNow !== baseWrapperRaw)) {
+        baseState      = m.data;
+        knownRevision  = parsed.revision;
+        committedAt    = parsed.committedAt;
+        baseWrapperRaw = rawNow;
+      }
+    }
+    rebuildOptimistic();
+    notifyAll();
+    if (pendingOps.length > 0 && !conflict) scheduleFlush();
+  }
+  // Commit a full-state candidate (import / snapshot / reset) inside the
+  // coordinator. Freeze must already be active. Returns a Promise.
+  function commitFullStateWrapper(candidateData, reason) {
+    return withCoordinator(() => {
+      // Re-read disk revision under lock.
+      let rawNow;
+      try { rawNow = localStorage.getItem(STATE_KEY); } catch (e) { rawNow = null; }
+      let diskRevision = 0;
+      if (rawNow !== null) {
+        const parsed = parseWrapperRaw(rawNow);
+        if (parsed && !parsed.corrupt) diskRevision = parsed.revision || 0;
+      }
+      let cloned;
+      try { cloned = clonePersistable(candidateData); } catch (e) { return { ok: false, error: 'STORE_UNPERSISTABLE' }; }
+      normalizeLogbookDomain(cloned);
+      if (!validate(cloned)) return { ok: false, error: 'FULL_STATE_INVALID' };
+      const base = Math.max(diskRevision, knownRevision);
+      if (base >= Number.MAX_SAFE_INTEGER) return { ok: false, error: 'STORE_REVISION_EXHAUSTED' };
+      const nextRevision = base + 1;
+      const committedAtNow = nowISO();
+      const wrapper = { version: SCHEMA_VERSION, revision: nextRevision, committedAt: committedAtNow, data: cloned };
+      let payload;
+      try { payload = JSON.stringify(wrapper); } catch (e) { return { ok: false, error: 'STORE_SERIALIZE_FAILED' }; }
+      try { localStorage.setItem(STATE_KEY, payload); } catch (e) { return { ok: false, error: 'STORE_QUOTA' }; }
+      try { pushSnapshot(payload); } catch (e) { /* best-effort */ }
+      baseState      = cloned;
+      knownRevision  = nextRevision;
+      committedAt    = committedAtNow;
+      baseWrapperRaw = payload;
+      pendingOps     = [];
+      conflict       = null;
+      return { ok: true, revision: nextRevision, committedAt: committedAtNow, reason: reason || 'full-state' };
+    });
+  }
+
+  // ── STORAGE EVENTS ───────────────────────────────
+  function onStorage(e) {
+    if (!e || e.key !== STATE_KEY) return;
+    if (activeFullStateTransaction) { deferredStorageEvents.push(e); return; }
+    const rawNow = e.newValue;
+    if (rawNow === null) {
+      // External clear. Treat as regression; block persistence.
+      emitError({ code: 'STORE_REVISION_REGRESSION', reason: 'external-clear' });
+      return;
+    }
+    if (rawNow === baseWrapperRaw) return;
+    const parsed = parseWrapperRaw(rawNow);
+    if (!parsed || parsed.corrupt) { emitError({ code: 'STORE_WRAPPER_CORRUPT' }); return; }
+    const m = migrateAndValidate(parsed);
+    if (!m.ok) { emitError({ code: 'STORE_WRAPPER_INVALID' }); return; }
+    if (parsed.revision > knownRevision) {
+      adoptExternal(m.data, parsed, rawNow);
+      return;
+    }
+    if (parsed.revision === knownRevision) {
+      // Equal revision — defensively reread actual current disk.
+      let diskRaw = null;
+      try { diskRaw = localStorage.getItem(STATE_KEY); } catch (err) { diskRaw = null; }
+      if (diskRaw === baseWrapperRaw) return;
+      if (diskRaw === null) return;
+      const dparsed = parseWrapperRaw(diskRaw);
+      const dm = migrateAndValidate(dparsed);
+      if (dm.ok && dparsed.revision >= knownRevision) {
+        adoptExternal(dm.data, dparsed, diskRaw);
+        if (dparsed.revision === knownRevision) emitError({ code: 'STORE_REVISION_COLLISION', revision: dparsed.revision });
+      }
+      return;
+    }
+    // parsed.revision < knownRevision — regression.
+    emitError({ code: 'STORE_REVISION_REGRESSION', diskRevision: parsed.revision, knownRevision });
+  }
+  function adoptExternal(data, parsed, rawWrapper) {
+    baseState      = data;
+    knownRevision  = parsed.revision;
+    committedAt    = parsed.committedAt;
+    baseWrapperRaw = rawWrapper;
+    clearTimeout(saveTimer); saveTimer = null;
+    const r = strictReplay(baseState, pendingOps);
+    if (r.conflict) {
+      setConflict(r.conflict);
+    }
+    rebuildOptimistic();
+    notifyAll();
+    if (!conflict && pendingOps.length > 0) scheduleFlush();
+  }
+  try {
+    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+      window.addEventListener('storage', onStorage);
+    }
+  } catch (e) { /* ignore */ }
+
+  // ── BACKWARDS-COMPAT PAUSE API ───────────────────
+  function pausePersistence() {
+    if (saveTimer !== null) { dirtyWhilePaused = true; clearTimeout(saveTimer); saveTimer = null; }
+    paused = true;
+  }
+  function resumePersistence() {
+    if (!paused) return;
+    paused = false;
+    if (dirtyWhilePaused) { dirtyWhilePaused = false; scheduleFlush(); }
+  }
+  function isPersistencePaused() { return paused; }
+
+  // Synchronous best-effort persist for callers relying on the pre-B0 API.
+  // Kicks the coordinator and does not await it. If a caller genuinely needs
+  // a completed write it should call Store.flushNow().
+  function persistNow() {
+    if (paused) return;
+    if (activeFullStateTransaction) return;
+    if (pendingOps.length === 0) return;
+    // Best-effort: schedule an immediate flush without debounce.
+    clearTimeout(saveTimer); saveTimer = null;
+    flushNow();
   }
 
   // ──────────────────────────────────────────────
@@ -925,8 +1480,10 @@
     update,
     subscribe,
     onSave: (fn) => { saveListeners.add(fn); return () => saveListeners.delete(fn); },
-    raw: () => state,
+    onError: (fn) => { errorListeners.add(fn); return () => errorListeners.delete(fn); },
+    raw: () => clonePersistable(state),
     persistNow,
+    flushNow,
     pausePersistence,
     resumePersistence,
     isPersistencePaused,
@@ -947,22 +1504,67 @@
       stableHash: logbookStableHash
     },
     defaultState,
+    deriveStateFromLegacy,
     snapshots: () => {
       try { return JSON.parse(localStorage.getItem(SNAPSHOTS_KEY) || '[]'); } catch (e) { return []; }
     },
-    restoreSnapshot: (i) => {
+    // Snapshot restore + reset become full-state transactions.
+    // Kept sync-callable for backward compat with existing UI: begin freeze,
+    // fire the commit through the coordinator, settle on completion. The
+    // returned boolean reports whether the transaction was accepted for
+    // dispatch (mirrors legacy semantics); durability lands under the lock.
+    restoreSnapshot: function (i, opts) {
+      opts = opts || {};
+      let snap;
       try {
         const snaps = JSON.parse(localStorage.getItem(SNAPSHOTS_KEY) || '[]');
-        const snap = snaps[i || 0];
-        if (!snap) return false;
-        const parsed = JSON.parse(snap.payload);
-        state = migrateUp(parsed.data, parsed.version);
-        persistNow();
-        notify('*');
-        return true;
+        snap = snaps[i || 0];
       } catch (e) { return false; }
+      if (!snap) return false;
+      let parsed;
+      try { parsed = JSON.parse(snap.payload); } catch (e) { return false; }
+      const data = (parsed && parsed.version === SCHEMA_VERSION && parsed.data)
+        ? parsed.data
+        : migrateUp((parsed && parsed.data) || {}, (parsed && parsed.version) || 0);
+      normalizeLogbookDomain(data);
+      const gate = beginFullStateTransaction({ force: !!opts.force });
+      if (!gate.ok) return false;
+      commitFullStateWrapper(data, 'snapshot').then(res => {
+        try {
+          if (res && res.ok) {
+            for (const fn of saveListeners) {
+              try { fn(clonePersistable(baseState), { revision: res.revision, committedAt: res.committedAt, reason: res.reason }); } catch (e) {}
+            }
+          }
+        } finally { endFullStateTransaction(); }
+      }, () => { endFullStateTransaction(); });
+      return true;
     },
-    reset: () => { state = defaultState(); persistNow(); notify('*'); },
+    reset: function (opts) {
+      opts = opts || {};
+      const gate = beginFullStateTransaction({ force: !!opts.force });
+      if (!gate.ok) return false;
+      commitFullStateWrapper(defaultState(), 'reset').then(res => {
+        try {
+          if (res && res.ok) {
+            for (const fn of saveListeners) {
+              try { fn(clonePersistable(baseState), { revision: res.revision, committedAt: res.committedAt, reason: res.reason }); } catch (e) {}
+            }
+          }
+        } finally { endFullStateTransaction(); }
+      }, () => { endFullStateTransaction(); });
+      return true;
+    },
+    // Full-state transaction primitives — for import/snapshot/reset callers.
+    beginFullStateTransaction,
+    endFullStateTransaction,
+    commitFullStateWrapper,
+    // Read-only wrapper metadata for About/status UI.
+    wrapperMeta: () => ({ revision: knownRevision, committedAt: committedAt, capabilities: Object.assign({}, capabilities) }),
+    capabilities,
+    // Conflict surface.
+    getConflict: () => (conflict ? Object.assign({}, conflict) : null),
+    resolveConflict,
     derive
   };
 })(window);

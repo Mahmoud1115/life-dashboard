@@ -846,6 +846,16 @@ body.public-mode [data-private="true"]{display:none !important}
 .gist-connect-row .icl-small-btn{white-space:nowrap}
 .backup-toast{position:fixed;bottom:32px;left:50%;transform:translateX(-50%) translateY(20px);background:rgba(26,24,20,.92);color:#fff;font-family:var(--mono);font-size:11px;padding:10px 20px;border-radius:100px;z-index:700;opacity:0;transition:opacity .3s,transform .3s;white-space:nowrap;pointer-events:none}
 .backup-toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+/* B0 · Store conflict + freeze banners (ADR-010). */
+.store-conflict-banner{position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:900;max-width:520px;width:calc(100% - 32px);background:#1a1814;color:#fff;border:1px solid #c94d3a;border-radius:8px;box-shadow:0 8px 32px rgba(0,0,0,.35);font-family:var(--sans);padding:14px 18px}
+.store-conflict-inner{display:flex;flex-direction:column;gap:8px}
+.store-conflict-title{font-size:14px;font-weight:600}
+.store-conflict-body{font-size:12px;opacity:.85}
+.store-conflict-actions{display:flex;gap:8px;margin-top:4px}
+.store-conflict-btn{font-family:inherit;font-size:12px;padding:6px 12px;border:1px solid rgba(255,255,255,.35);background:transparent;color:#fff;border-radius:6px;cursor:pointer}
+.store-conflict-btn.primary{background:#c94d3a;border-color:#c94d3a}
+.store-conflict-btn:focus-visible{outline:2px solid #fff;outline-offset:2px}
+.store-freeze-banner{position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:850;background:rgba(26,24,20,.92);color:#fff;font-family:var(--mono);font-size:11px;padding:8px 16px;border-radius:100px}
 @media(max-width:600px){.backup-panel-overlay{padding:60px 12px 12px;align-items:flex-end}.backup-panel{width:100%;border-radius:16px 16px 0 0}.gist-connect-row{align-items:stretch;flex-direction:column}.gist-connect-row .icl-small-btn{width:100%}}
 
 /* ═══════════════════════════════════════════

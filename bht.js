@@ -35,10 +35,14 @@
     'anxious', 'flat', 'content', 'frustrated', 'hopeful'
   ];
 
+  // Deterministic seed habits (fixed IDs so two first-run tabs converge).
+  // User-created habits still receive uid('b') at action time; only boot
+  // defaults are pinned.
+  const DEFAULT_EPOCH_ISO = '2026-06-01T00:00:00.000Z';
   const DEFAULT_HABITS = [
-    { name: 'Procrastination',     category: 'focus',       severityWeight: 3 },
-    { name: 'Doomscrolling',       category: 'screen',      severityWeight: 3 },
-    { name: 'Late-night snacking', category: 'consumption', severityWeight: 2 }
+    { id: 'b_default_procrastination', name: 'Procrastination',     category: 'focus',       severityWeight: 3 },
+    { id: 'b_default_doomscrolling',   name: 'Doomscrolling',       category: 'screen',      severityWeight: 3 },
+    { id: 'b_default_late_snack',      name: 'Late-night snacking', category: 'consumption', severityWeight: 2 }
   ];
 
   // ──────────────────────────────────────────────
@@ -62,14 +66,17 @@
   // ──────────────────────────────────────────────
   function defaultBhtState() {
     return {
-      meta: { version: BHT_VERSION, createdAt: nowISO(), lastUpdated: nowISO() },
+      // Deterministic first-run defaults: no wall-clock reads, no random IDs.
+      // meta.lastUpdated is minted only by real user data changes; boot is a
+      // pure copy so two tabs converge on identical initial slices.
+      meta: { version: BHT_VERSION, createdAt: DEFAULT_EPOCH_ISO, lastUpdated: DEFAULT_EPOCH_ISO },
       habits: DEFAULT_HABITS.map(h => ({
-        id: uid('b'),
+        id: h.id,
         name: h.name,
         category: h.category,
         severityWeight: h.severityWeight,
         archived: false,
-        createdAt: nowISO()
+        createdAt: DEFAULT_EPOCH_ISO
       })),
       entries: [],
       snapshots: [],
@@ -90,22 +97,33 @@
   // ──────────────────────────────────────────────
   // MIGRATION
   // ──────────────────────────────────────────────
+  // Pure, idempotent migration:
+  //   - never mutates input;
+  //   - returns the SAME reference when no repair is needed;
+  //   - returns a NEW slice when structural repair is required;
+  //   - never sets meta.lastUpdated as a side effect of loading.
   function migrateSlice(slice) {
+    if (!slice || typeof slice !== 'object') return defaultBhtState();
     const def = defaultBhtState();
-    if (!slice || typeof slice !== 'object') return def;
+    let changed = false;
+    let out = slice;
+    function fork() { if (!changed) { out = Object.assign({}, slice); changed = true; } return out; }
     for (const k of Object.keys(def)) {
-      if (!(k in slice)) slice[k] = def[k];
+      if (!(k in slice)) { fork()[k] = def[k]; }
     }
-    if (!Array.isArray(slice.habits))     slice.habits     = [];
-    if (!Array.isArray(slice.entries))    slice.entries    = [];
-    if (!Array.isArray(slice.snapshots))  slice.snapshots  = [];
-    if (!Array.isArray(slice.lifeEvents)) slice.lifeEvents = [];
-    if (!slice.vocab) slice.vocab = def.vocab;
-    slice.ai = sanitizeAI(slice.ai, def.ai);
-    slice.meta = slice.meta || def.meta;
-    slice.meta.version = BHT_VERSION;
-    slice.meta.lastUpdated = nowISO();
-    return slice;
+    if (!Array.isArray(out.habits))     { fork().habits     = []; }
+    if (!Array.isArray(out.entries))    { fork().entries    = []; }
+    if (!Array.isArray(out.snapshots))  { fork().snapshots  = []; }
+    if (!Array.isArray(out.lifeEvents)) { fork().lifeEvents = []; }
+    if (!out.vocab) { fork().vocab = def.vocab; }
+    const sanitized = sanitizeAI(out.ai, def.ai);
+    if (sanitized !== out.ai) { fork().ai = sanitized; }
+    if (!out.meta) { fork().meta = def.meta; }
+    if (out.meta && out.meta.version !== BHT_VERSION) {
+      const newMeta = Object.assign({}, out.meta, { version: BHT_VERSION });
+      fork().meta = newMeta;
+    }
+    return out;
   }
 
   // Normalize BHT AI config into the ADR-005 invariant:
@@ -124,40 +142,40 @@
       }
       return Object.assign({}, defAI);
     }
-    let changed = false;
-    if (ALLOWED.indexOf(ai.provider) === -1) {
-      ai.provider = 'fallback';
-      changed = true;
-    }
-    if (Object.prototype.hasOwnProperty.call(ai, 'apiKey')) {
-      delete ai.apiKey;
-      changed = true;
-    }
-    if (changed && typeof console !== 'undefined' && console.info) {
+    let providerBad = ALLOWED.indexOf(ai.provider) === -1;
+    let apiKeyPresent = Object.prototype.hasOwnProperty.call(ai, 'apiKey');
+    if (!providerBad && !apiKeyPresent) return ai; // already clean → same reference
+    const next = Object.assign({}, ai);
+    if (providerBad) next.provider = 'fallback';
+    if (apiKeyPresent) delete next.apiKey;
+    if (typeof console !== 'undefined' && console.info) {
       console.info('[BHT] Legacy/invalid AI config normalized (ADR-005).');
     }
-    return ai;
+    return next;
   }
 
+  // Idempotent boot: repair AND empty-husk reseed collapse into a single
+  // decision so first boot performs exactly one write and subsequent boots
+  // of the same slice perform zero. Deterministic default habits (see
+  // DEFAULT_HABITS) ensure two first-run tabs converge to the same slice.
   (function ensureSlice() {
     const cur = global.Store.get('bht');
-    if (!cur) {
+    if (cur === undefined || cur === null) {
       global.Store.set('bht', defaultBhtState());
       return;
     }
-    const fixed = migrateSlice(cur);
-    // Re-seed defaults if an earlier core.js fallback created an empty husk
-    // (happens on first load after upgrade — core.js can't see BHT defaults
-    // until bht.js has executed).
+    let fixed = migrateSlice(cur);
     const empty = (!fixed.habits || fixed.habits.length === 0) &&
                   (!fixed.entries || fixed.entries.length === 0);
     if (empty) {
       const def = defaultBhtState();
-      fixed.habits = def.habits;
-      if (!fixed.vocab || !fixed.vocab.triggers || fixed.vocab.triggers.length === 0) fixed.vocab = def.vocab;
-      if (!fixed.ai) fixed.ai = def.ai;
+      fixed = Object.assign({}, fixed, {
+        habits: def.habits,
+        vocab: (!fixed.vocab || !fixed.vocab.triggers || fixed.vocab.triggers.length === 0) ? def.vocab : fixed.vocab,
+        ai:    (!fixed.ai) ? def.ai : fixed.ai
+      });
     }
-    global.Store.set('bht', fixed);
+    if (fixed !== cur) global.Store.set('bht', fixed);
   })();
 
   // ──────────────────────────────────────────────
@@ -337,11 +355,10 @@
     touch();
   }
 
-  function touch() {
-    const m = global.Store.get('bht.meta') || { version: BHT_VERSION, createdAt: nowISO() };
-    m.lastUpdated = nowISO();
-    global.Store.set('bht.meta', m);
-  }
+  // B0: commit clock lives on the wrapper (Store.wrapperMeta().committedAt).
+  // No per-action lastUpdated write — two tabs performing unrelated BHT
+  // actions must not conflict on bht.meta.
+  function touch() { /* no-op — see docs/lifeos/DECISIONS.md ADR-010 */ }
 
   // ──────────────────────────────────────────────
   // DERIVATIONS

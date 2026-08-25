@@ -120,3 +120,34 @@ Format per ADR: **decision**, **status**, **context**, **decision made**, **reje
   - Reading ADR-002 as forbidding `package.json` entirely — over-reads it; the intent was to keep the runtime unchanged, not to ban tooling.
 - **Date**: 2026-08-24
 - **Relates to**: ADR-002 (does not supersede — narrows the interpretation of its scope to *runtime*)
+
+---
+
+## ADR-010 — B0 Store durability protocol
+
+- **Status**: Accepted (implementation landed on `claude/lifeos-master-handoff-4c2347`, awaiting Codex implementation review before merge)
+- **Context**: Before Logbook can safely become the canonical authority (Phase B2), the global Store persistence layer must be safe against stale full-state overwrites, multi-tab races, debounced-flush races, imports bypassing Store, and snapshot/reset replacement races. Prior to B0, `Store.set()` overwrote the entire `dune_state_v4` blob from in-memory optimistic state with no revision, no lock, and no rebase; a second tab could silently erase the first tab's most recent change on its own next flush.
+- **Decision** — the reviewed and now-implemented B0 protocol:
+  1. **Persisted wrapper schema 13** — `{ version:13, revision:int, committedAt:ISO, data:{} }`. `revision` is a monotonically increasing non-negative integer; `committedAt` is the wrapper-level commit clock. Old schema-12 blobs still load via `migrateUp`. A wrapper with a revision below the currently-known revision is rejected as `STORE_REVISION_REGRESSION`.
+  2. **State model split** — `baseState` (last accepted persisted data), `pendingOps` (ordered CAS queue), and `state` = `optimisticReplay(baseState, pendingOps)`. Callers observe the optimistic projection; the base is only advanced by a successful commit or an accepted external event.
+  3. **Absent-path-safe CAS operation** — every op carries `beforeExists`/`before` and `afterExists`/`after`. Absent paths are represented by existence flags, never by persisting `undefined`. `Store.set(path, undefined)` is rejected.
+  4. **Defensive read boundary** — `Store.get(path)` returns a defensive `clonePersistable` clone; the eight prior mutation-before-set callers now mutate their own copies without corrupting internal state.
+  5. **Execute-once updater** — `Store.update(path, fn)` invokes `fn` exactly once immediately on a defensive clone, then enqueues only concrete `before`/`after` intent. The updater closure is never retained or replayed.
+  6. **Strict vs optimistic replay** — persistence uses strict replay (compares existence AND value; conflicts when neither the `before` nor `after` shape matches disk). UI uses optimistic replay (baseState + all pending). Same-path chain `A→B, B→C` with external base `C` conflicts on op1 only; `B→C` is not auto-subsumed.
+  7. **Conflict lifecycle** — a typed `conflict` record freezes persistence but not enqueueing. Resolution is `use-this-tab` (replace op in-place with `force-set`) or `use-saved-version` (remove only the conflicting op). Banner UI in `index.html` is accessible, keyboard-operable, and never displays raw stored values.
+  8. **Persistence coordinator** — same-tab Promise serializer plus `navigator.locks.request('lifeos-state-write-v1', {mode:'exclusive'})` when available. Inside the lock, the read → migrate → validate → rebase → replay → primary write → snapshot write chain stays synchronous.
+  9. **Fallback capability** — when `navigator.locks` is unavailable, `Store.capabilities.crossTabSafe === false`. Store remains functional; equal-revision events still trigger a defensive current-disk reread and may adopt/rebase; Phase B2 canonical Logbook authority stays gated on this being `true`.
+  10. **Storage-event model** — newer revisions adopt; lower revisions raise `STORE_REVISION_REGRESSION`; equal-revision events with different raw wrapper trigger a current-disk reread and, if the disk still shows the different value, emit `STORE_REVISION_COLLISION` and adopt the disk. Events never trigger a write.
+  11. **Full-state transaction freeze** — `import`, snapshot restore, and reset share `beginFullStateTransaction / commitFullStateWrapper / endFullStateTransaction`. During freeze, `Store.set/update` return `FULL_STATE_TRANSACTION_IN_PROGRESS`; storage events are deferred; `endFullStateTransaction` always fires in `finally` and re-reads the authoritative disk.
+  12. **Revision exhaustion** — the last accepted revision is `Number.MAX_SAFE_INTEGER`; the next write fails with `STORE_REVISION_EXHAUSTED`. Resetting the counter requires an out-of-band protocol-epoch migration; snapshot restore does not reset it.
+  13. **Pure legacy derivation** — `Store.deriveStateFromLegacy(read)` reads only from a caller-supplied reader; the boot path uses live localStorage, the legacy-only import path uses staged auxiliary keys. No live-Store mutation, no wall-clock defaults inside the derivation.
+  14. **BHT deterministic boot** — `defaultBhtState()` uses fixed IDs (`b_default_procrastination`, etc.) and a fixed epoch (`DEFAULT_EPOCH_ISO`). `migrateSlice` is pure, returns the same reference when no repair is needed, and never touches `meta.lastUpdated` as a side effect. `ensureSlice` writes only when structural repair or empty-husk reseed is required. Per-action `touch()` is now a no-op; the commit clock lives on the wrapper. Two first-run tabs converge on identical initial slices.
+  15. **Phase A Logbook compatibility** — `state.logbook.schemaVersion` stays `1` and `state.logbook.authority` stays `'legacy-mirror'`. Tracker/Builder legacy readers, Home, CSV, and backup summary readers are unchanged. `LOGBOOK.reconcile()` writes via ordinary CAS; if the mirror CAS conflicts, the legacy authoritative writes survive and the mirror recovers on the next reconcile.
+  16. **Import capsule** — `dune_pre_import_backup_v1` remains in localStorage after both success and apply failure (preserving `b4083a8` behaviour). Byte-exact rollback of `BACKUP_KEYS`, rollback-failure surfacing, and the state-key-last apply order are unchanged.
+- **Rejected alternatives**:
+  - **Deep-frozen internal state** — would require rewriting every mutation-before-set caller and interacts poorly with null-prototype `legacyExtra` objects.
+  - **Auto-subsumed same-path chains** — masks user intent; conservative pin-only-first is safer.
+  - **Reject writes while `conflict !== null`** — silently drops UI actions because current callers ignore Store return codes; freezing only during full-state transactions is safer.
+  - **`state.systemMeta` for commit clock** — adds a hidden mutable slice touched by every commit; the wrapper-level `committedAt` is cleaner and reads via `Store.wrapperMeta()`.
+- **Date**: 2026-08-25
+- **Relates to**: ADR-006 (storage strategy), ADR-002 (no build step — B0 remains vanilla), Logbook Phase A canonical mirror (commit 521fe70).
