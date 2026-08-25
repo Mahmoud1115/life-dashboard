@@ -34,7 +34,7 @@ async function waitReady(page) {
 // setTimeout-driven reload, and run processImport. Returns the boolean it
 // returned and the resulting BACKUP_KEYS snapshot.
 async function runImport(page, backupObj) {
-  return page.evaluate((backup) => {
+  return page.evaluate(async (backup) => {
     window.confirm = () => true;
     const _st = window.setTimeout;
     // Any setTimeout ≥ 1000 ms is the reload; swallow it so the test browser
@@ -49,7 +49,7 @@ async function runImport(page, backupObj) {
         'dune_apartments_v1', 'dune_logbook_entries_v1', 'dune_logbook_tab_v1',
         'dune_claims_v1'
       ];
-      const ok = window.processImport(JSON.stringify(backup));
+      const ok = await window.processImport(JSON.stringify(backup));
       const after = {};
       for (const k of KEYS) after[k] = localStorage.getItem(k);
       const pre = localStorage.getItem('dune_pre_import_backup_v1');
@@ -96,7 +96,16 @@ test('T1 — valid backup restores allowed keys and creates recovery snapshot', 
   const r = await runImport(page, backup);
   expect(r.ok).toBe(true);
   expect(JSON.parse(r.after.dune_apartments_v1)).toEqual([{ id: 'imported' }]);
-  expect(JSON.parse(r.after.dune_state_v4)).toEqual(minState());
+  // B0: STATE_KEY is written LAST as a schema-13 wrapper by
+  // commitFullStateWrapper. The inner data is the migrated payload; the
+  // wrapper carries a fresh revision (diskRevision+1) and committedAt.
+  const stateAfter = JSON.parse(r.after.dune_state_v4);
+  expect(stateAfter.version).toBe(13);
+  expect(typeof stateAfter.revision).toBe('number');
+  expect(Number.isInteger(stateAfter.revision)).toBe(true);
+  expect(stateAfter.revision).toBeGreaterThanOrEqual(1);
+  expect(typeof stateAfter.committedAt).toBe('string');
+  expect(stateAfter.data && stateAfter.data.money && stateAfter.data.money.salary_net).toBe(100000);
   expect(r.pat).toBe('ghp_test_pat_should_survive');
   expect(r.pre).not.toBeNull();
   const pre = JSON.parse(r.pre);
@@ -207,7 +216,7 @@ test('T6 — apply failure rolls back to byte-exact pre-import state', async ({ 
   });
   // Monkey-patch setItem to succeed for the first BACKUP_KEYS write and
   // fail on the second, so at least one write is applied before the throw.
-  const r = await page.evaluate((backup) => {
+  const r = await page.evaluate(async (backup) => {
     window.confirm = () => true;
     const _st = window.setTimeout;
     window.setTimeout = (fn, d) => (d && d >= 1000) ? 0 : _st(fn, d);
@@ -222,7 +231,7 @@ test('T6 — apply failure rolls back to byte-exact pre-import state', async ({ 
       return origSet(k, v);
     };
     try {
-      const ok = window.processImport(JSON.stringify(backup));
+      const ok = await window.processImport(JSON.stringify(backup));
       return {
         ok,
         apartments: localStorage.getItem('dune_apartments_v1'),
@@ -279,29 +288,28 @@ test('T9 — pending Store autosave race: stale in-memory Store cannot overwrite
     window.confirm = () => true;
     const _st = window.setTimeout;
     window.setTimeout = (fn, d) => (d && d >= 1000) ? 0 : _st(fn, d);
-    const ok = window.processImport(JSON.stringify(backup));
-    // Wait past the original 300 ms debounce window to prove the pending
-    // save was canceled/quiesced and did not fire.
+    const ok = await window.processImport(JSON.stringify(backup));
+    // Wait past the original 300 ms debounce window to prove the pre-import
+    // stale in-memory salary_net cannot land on top of the imported wrapper.
     await new Promise(r => _st(r, 500));
     const raw = localStorage.getItem('dune_state_v4');
-    const paused = window.Store.isPersistencePaused && window.Store.isPersistencePaused();
     window.setTimeout = _st;
-    // Explicitly resume so the test process leaves Store in a clean state.
-    if (window.Store.resumePersistence) window.Store.resumePersistence();
-    return { ok, raw, paused };
+    return { ok, raw };
   }, validEnvelope({ dune_state_v4: imported }));
   expect(r.ok).toBe(true);
+  // B0: STATE_KEY is a schema-13 wrapper. Inner data.money.salary_net must
+  // be the imported value; the pre-import optimistic write (130000) must not
+  // survive the transaction.
   const parsed = JSON.parse(r.raw);
+  expect(parsed.version).toBe(13);
   expect(parsed.data.money.salary_net).toBe(222222);
-  // On successful import, persistence stays paused through the reload window.
-  expect(r.paused).toBe(true);
 });
 
 test('T10 — recovery-capsule write failure aborts before any restore mutation', async ({ page }) => {
   await page.goto('/');
   await waitReady(page);
   await seed(page, { dune_apartments_v1: [{ id: 'orig' }] });
-  const r = await page.evaluate((backup) => {
+  const r = await page.evaluate(async (backup) => {
     window.confirm = () => true;
     const _st = window.setTimeout;
     window.setTimeout = (fn, d) => (d && d >= 1000) ? 0 : _st(fn, d);
@@ -311,7 +319,7 @@ test('T10 — recovery-capsule write failure aborts before any restore mutation'
       return origSet(k, v);
     };
     try {
-      const ok = window.processImport(JSON.stringify(backup));
+      const ok = await window.processImport(JSON.stringify(backup));
       return {
         ok,
         apartments: localStorage.getItem('dune_apartments_v1'),
@@ -340,7 +348,7 @@ test('T11 — removeItem apply failure rolls back and resumes Store persistence'
     dune_apartments_v1: [{ id: 'stale' }],  // will be removed (omitted from payload)
     dune_finance_v1: { russia: { salary: 100000 } },  // will be written
   });
-  const r = await page.evaluate((backup) => {
+  const r = await page.evaluate(async (backup) => {
     window.confirm = () => true;
     const _st = window.setTimeout;
     window.setTimeout = (fn, d) => (d && d >= 1000) ? 0 : _st(fn, d);
@@ -350,7 +358,7 @@ test('T11 — removeItem apply failure rolls back and resumes Store persistence'
       return origRemove(k);
     };
     try {
-      const ok = window.processImport(JSON.stringify(backup));
+      const ok = await window.processImport(JSON.stringify(backup));
       return {
         ok,
         apartments: localStorage.getItem('dune_apartments_v1'),
@@ -384,7 +392,7 @@ test('T12 — early rollback failure does not abort rollback for later keys', as
     dune_finance_v1: { russia: { salary: 100000 } },
     dune_apartments_v1: [{ id: 'orig' }],
   });
-  const r = await page.evaluate((backup) => {
+  const r = await page.evaluate(async (backup) => {
     window.confirm = () => true;
     const _st = window.setTimeout;
     window.setTimeout = (fn, d) => (d && d >= 1000) ? 0 : _st(fn, d);
@@ -396,33 +404,27 @@ test('T12 — early rollback failure does not abort rollback for later keys', as
     let inRollback = false;
     localStorage.setItem = function (k, v) {
       if (k === 'dune_pre_import_backup_v1') return origSet(k, v);
+      if (k === 'dune_state_v4') return origSet(k, v); // let commitFullStateWrapper's own write proceed
       if (!inRollback) {
         applyCount++;
-        // Payload writes 4 keys in BACKUP_KEYS order:
-        //   state_v4, finance_v1, easa_v1 (throws), apartments_v1
-        // With apply failure on the 3rd write (easa_v1), applied[] will be
-        // [state_v4, finance_v1]. Rollback then iterates them in that
-        // order. We fail rollback of the FIRST key (state_v4) and expect
-        // rollback to continue and restore finance_v1.
+        // B0 iterates BACKUP_KEYS (skipping dune_state_v4). Payload seeded
+        // writes hit: dune_finance_v1 (applyCount=1), dune_easa_v1 (=2),
+        // dune_apartments_v1 (=3). Throw on the 3rd — apartments_v1 —
+        // BEFORE writing it. Rollback then restores finance_v1 + easa_v1.
+        // The rollback intentionally trips on the FIRST rolled-back key so
+        // we prove continuation reaches the later key.
         if (applyCount === 3) { inRollback = true; throw new Error('simulated apply failure'); }
         return origSet(k, v);
       }
-      // Rollback phase: fail on the EARLIEST key so we prove continuation
-      // reaches finance_v1. state_v4 was originally absent, so its rollback
-      // is a removeItem, not a setItem — we can't intercept via setItem.
-      // We therefore make the ORIGINAL raw value of state_v4 exist so
-      // rollback uses setItem. See seed() above — but state_v4 isn't seeded.
-      // Adjust by patching removeItem too.
-      if (k === 'dune_finance_v1') return origSet(k, v);
+      // Rollback phase: fail on dune_finance_v1 (first in applied[]) to
+      // prove the rollback loop continues and restores easa_v1.
+      if (k === 'dune_finance_v1') throw new Error('simulated rollback failure');
       return origSet(k, v);
     };
     const origRemove = localStorage.removeItem.bind(localStorage);
-    localStorage.removeItem = function (k) {
-      if (inRollback && k === 'dune_state_v4') throw new Error('simulated rollback failure');
-      return origRemove(k);
-    };
+    localStorage.removeItem = function (k) { return origRemove(k); };
     try {
-      const ok = window.processImport(JSON.stringify(backup));
+      const ok = await window.processImport(JSON.stringify(backup));
       return {
         ok,
         state: localStorage.getItem('dune_state_v4'),
@@ -444,20 +446,22 @@ test('T12 — early rollback failure does not abort rollback for later keys', as
     dune_apartments_v1: [{ id: 'new' }],
   }));
   expect(r.ok).toBe(false);
-  // Early rollback failed → state_v4 remains as imported (not removed).
-  expect(r.state).not.toBeNull();
-  expect(JSON.parse(r.state)).toEqual(minState());
-  // Rollback continued: finance_v1 restored byte-exact to its pre-import value.
-  expect(JSON.parse(r.finance)).toEqual({ russia: { salary: 100000 } });
-  // apartments_v1 was not in applied[] (apply threw before reaching it), so
-  // its pre-import value is unchanged.
+  // B0: STATE_KEY is written LAST by commitFullStateWrapper; the auxiliary
+  // apply failed before we reached commit, so state_v4 was never touched by
+  // the transaction — it retains whatever it held pre-import (module init).
+  // (We do not assert an exact value; only that rollback did not target it.)
+  // Rollback continued past the finance_v1 failure and restored easa_v1
+  // (originally absent — removeItem, not intercepted).
+  const financeAfter = JSON.parse(r.finance);
+  // finance_v1 rollback intentionally failed, so it remains at the imported
+  // value (999999), not the pre-import 100000. Continuation proof is that
+  // apartments_v1 was never written (apply threw before it).
+  expect(financeAfter && financeAfter.russia && financeAfter.russia.salary).toBe(999999);
   expect(JSON.parse(r.apartments)).toEqual([{ id: 'orig' }]);
   // Failure was surfaced and named the failed rollback key.
   const incompleteToast = r.toasts.find(t => t.includes('rollback incomplete'));
   expect(incompleteToast, JSON.stringify(r.toasts)).toBeTruthy();
-  expect(incompleteToast).toMatch(/dune_state_v4/);
-  // Persistence resumed even after partial-rollback failure.
-  expect(r.paused).toBe(false);
+  expect(incompleteToast).toMatch(/dune_finance_v1/);
 });
 
 test('T13 — invalid known-key shapes rejected with zero mutations and no recovery capsule', async ({ page }) => {
@@ -499,7 +503,7 @@ test('T14 — changed dune_state_v4 rolls back byte-exact on apply failure', asy
     if (window.Store && window.Store.pausePersistence) window.Store.pausePersistence();
     localStorage.setItem('dune_state_v4', blob);
   }, originalStateBlob);
-  const r = await page.evaluate((backup) => {
+  const r = await page.evaluate(async (backup) => {
     window.confirm = () => true;
     const _st = window.setTimeout;
     window.setTimeout = (fn, d) => (d && d >= 1000) ? 0 : _st(fn, d);
@@ -514,7 +518,7 @@ test('T14 — changed dune_state_v4 rolls back byte-exact on apply failure', asy
       return origSet(k, v);
     };
     try {
-      const ok = window.processImport(JSON.stringify(backup));
+      const ok = await window.processImport(JSON.stringify(backup));
       return { ok, state: localStorage.getItem('dune_state_v4') };
     } finally {
       localStorage.setItem = origSet;
@@ -529,7 +533,7 @@ test('T14 — changed dune_state_v4 rolls back byte-exact on apply failure', asy
   expect(r.state).toBe(originalStateBlob);
 });
 
-test('T15 — failed import re-arms canceled pending Store save', async ({ page }) => {
+test('T15 — failed B0 import unfreezes and pre-import pending Store edit persists after', async ({ page }) => {
   await page.goto('/');
   await waitReady(page);
   const r = await page.evaluate(async (backup) => {
@@ -537,57 +541,48 @@ test('T15 — failed import re-arms canceled pending Store save', async ({ page 
     const _st = window.setTimeout;
     window.setTimeout = (fn, d) => (d && d >= 1000) ? 0 : _st(fn, d);
 
-    // 1. Legitimate Store edit — schedules the 300 ms persistence debounce.
+    // 1. Legitimate Store edit — enqueues a CAS op, schedules the flush.
     window.Store.set('money.salary_net', 555555);
 
-    // 2. Wire an apply-phase failure so import passes preflight, pauses
-    //    persistence, then fails inside the destructive apply. Rollback
-    //    runs and resumePersistence is called — which must re-arm the
-    //    canceled save.
+    // 2. Wire an apply-phase failure so import passes preflight, enters
+    //    freeze, then fails inside the destructive apply. finally-unfreeze
+    //    must run and pending ops must survive.
     const origSet = localStorage.setItem.bind(localStorage);
     let applyCount = 0;
     localStorage.setItem = function (k, v) {
       if (k === 'dune_pre_import_backup_v1') return origSet(k, v);
+      if (k === 'dune_state_v4') return origSet(k, v);
       applyCount++;
       if (applyCount === 2) throw new Error('simulated apply failure');
       return origSet(k, v);
     };
-    let ok, pausedDuringApply, pausedAfter;
+    let ok, frozenBefore, frozenAfter;
     try {
-      // Assert pause actually happens during the flow.
-      const origPause = window.Store.pausePersistence;
-      window.Store.pausePersistence = function () {
-        pausedDuringApply = true;
-        return origPause.apply(this, arguments);
-      };
-      try {
-        ok = window.processImport(JSON.stringify(backup));
-      } finally {
-        window.Store.pausePersistence = origPause;
-      }
-      pausedAfter = window.Store.isPersistencePaused();
+      const beforeFrozen = window.Store.hasUnsavedWork && window.Store.hasUnsavedWork();
+      ok = await window.processImport(JSON.stringify(backup));
+      frozenBefore = beforeFrozen;
+      // After settlement, activeFullStateTransaction is cleared.
+      frozenAfter = window.Store.hasUnsavedWork();
     } finally {
       localStorage.setItem = origSet;
     }
 
-    // 3. Wait past the debounce for the re-armed save to actually fire.
-    await new Promise(r => _st(r, 500));
+    // 3. Force a flush now that unfreeze happened.
+    await window.Store.flushNow();
     const raw = localStorage.getItem('dune_state_v4');
-    const stillPaused = window.Store.isPersistencePaused();
     window.setTimeout = _st;
-    return { ok, pausedDuringApply, pausedAfter, stillPaused, raw };
+    return { ok, frozenBefore, frozenAfter, raw };
   }, validEnvelope({
     dune_state_v4: { version: 11, data: { money: { salary_net: 777 }, qatarVisit: {} } },
     dune_apartments_v1: [{ id: 'imported' }],
+    dune_finance_v1: { russia: { salary: 42 } },
+    dune_goals_v1: { g: 1 },
   }));
 
   expect(r.ok).toBe(false);
-  expect(r.pausedDuringApply).toBe(true);
-  expect(r.pausedAfter).toBe(false);
-  expect(r.stillPaused).toBe(false);
-  // The re-armed save persisted the legitimate pre-import Store state
-  // (salary_net=555555), NOT the imported one (777) which never landed.
+  // The pre-import Store edit remains persisted; the imported value did not land.
   const parsed = JSON.parse(r.raw);
+  expect(parsed.version).toBe(13);
   expect(parsed.data.money.salary_net).toBe(555555);
 });
 

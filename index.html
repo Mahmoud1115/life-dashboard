@@ -627,59 +627,93 @@
 <script>
 // B0 · Conflict + freeze banner wiring. Purely presentational; state lives in
 // window.Store. See core.js and docs/lifeos/DECISIONS.md ADR-010.
+// Deferred to DOMContentLoaded so core.js has definitely loaded (index.html
+// script tags load in-order; this inline block sits in the body before the
+// script tags for core/app/bht, so we cannot rely on Store existing at parse
+// time).
 (function () {
-  if (!window.Store) return;
-  var banner   = document.getElementById('store-conflict-banner');
-  var section  = document.getElementById('store-conflict-section');
-  var useThis  = document.getElementById('store-conflict-use-this');
-  var useSaved = document.getElementById('store-conflict-use-saved');
-  var freeze   = document.getElementById('store-freeze-banner');
-  var lastFocused = null;
-  function label(path) {
-    var head = String(path || '').split('.')[0] || 'this section';
-    var friendly = {
-      bht: 'Habits', logbook: 'Logbook', career: 'Career', ideas: 'Ideas',
-      money: 'Finance', reviews: 'Reviews', decisions: 'Decisions',
-      timeline: 'Timeline', qatarVisit: 'Qatar visit', easa: 'EASA',
-      goals: 'Goals', todayFocus: 'Today focus', apartments: 'Apartments',
-      about: 'About', sbTasks: 'Study blocks', meta: 'App metadata'
-    };
-    return friendly[head] || head;
-  }
-  function show(path) {
-    if (!banner) return;
-    lastFocused = document.activeElement;
-    if (section) section.textContent = label(path);
-    banner.hidden = false;
-    banner.setAttribute('aria-hidden', 'false');
-    if (useThis) { try { useThis.focus(); } catch (e) {} }
-  }
-  function hide() {
-    if (!banner) return;
-    banner.hidden = true;
-    banner.setAttribute('aria-hidden', 'true');
-    if (lastFocused && typeof lastFocused.focus === 'function') { try { lastFocused.focus(); } catch (e) {} }
-    lastFocused = null;
-  }
-  if (useThis)  useThis.addEventListener('click', function () { try { window.Store.resolveConflict('use-this-tab'); } catch (e) {} hide(); });
-  if (useSaved) useSaved.addEventListener('click', function () { try { window.Store.resolveConflict('use-saved-version'); } catch (e) {} hide(); });
-  window.addEventListener('lifeos:store-conflict', function (e) { var p = (e && e.detail && e.detail.path) || ''; show(p); });
-  window.addEventListener('lifeos:store-conflict-resolved', hide);
-  // Freeze banner is driven by the same beforeunload / freeze API — for now
-  // the banner only reflects import UX (existing showBackupToast covers that).
-  window.addEventListener('beforeunload', function (e) {
-    try {
-      var hasPending = false;
-      // Conservative signal: if Store reports a conflict OR there is unsent
-      // work in flight, warn. Store internals aren't fully exposed; use the
-      // conflict getter and current freeze state as best-effort.
-      if (typeof window.Store.getConflict === 'function' && window.Store.getConflict()) hasPending = true;
-      if (hasPending) {
-        e.preventDefault();
-        e.returnValue = '';
+  function init() {
+    if (!window.Store) return; // core.js failed to load — nothing to wire
+    var banner   = document.getElementById('store-conflict-banner');
+    var section  = document.getElementById('store-conflict-section');
+    var useThis  = document.getElementById('store-conflict-use-this');
+    var useSaved = document.getElementById('store-conflict-use-saved');
+    var freeze   = document.getElementById('store-freeze-banner');
+    var freezeMsg = document.getElementById('store-freeze-message');
+    var lastFocused = null;
+    function label(path) {
+      var head = String(path || '').split('.')[0] || 'this section';
+      var friendly = {
+        bht: 'Habits', logbook: 'Logbook', career: 'Career', ideas: 'Ideas',
+        money: 'Finance', reviews: 'Reviews', decisions: 'Decisions',
+        timeline: 'Timeline', qatarVisit: 'Qatar visit', easa: 'EASA',
+        goals: 'Goals', todayFocus: 'Today focus', apartments: 'Apartments',
+        about: 'About', sbTasks: 'Study blocks', meta: 'App metadata'
+      };
+      return friendly[head] || head;
+    }
+    function showConflict(path) {
+      if (!banner) return;
+      lastFocused = document.activeElement;
+      if (section) section.textContent = label(path);
+      banner.hidden = false;
+      banner.setAttribute('aria-hidden', 'false');
+      if (useThis) { try { useThis.focus(); } catch (e) {} }
+    }
+    function hideConflict() {
+      if (!banner) return;
+      banner.hidden = true;
+      banner.setAttribute('aria-hidden', 'true');
+      if (lastFocused && typeof lastFocused.focus === 'function') { try { lastFocused.focus(); } catch (e) {} }
+      lastFocused = null;
+    }
+    function showFreeze(reason) {
+      if (!freeze) return;
+      if (freezeMsg) {
+        var text = 'Restore in progress — saves paused';
+        if (reason === 'import') text = 'Restore in progress — saves paused';
+        else if (reason === 'snapshot') text = 'Restoring snapshot — saves paused';
+        else if (reason === 'reset') text = 'Resetting — saves paused';
+        freezeMsg.textContent = text;
       }
-    } catch (err) { /* ignore */ }
-  });
+      freeze.hidden = false;
+      freeze.setAttribute('aria-hidden', 'false');
+    }
+    function hideFreeze() {
+      if (!freeze) return;
+      freeze.hidden = true;
+      freeze.setAttribute('aria-hidden', 'true');
+    }
+    if (useThis)  useThis.addEventListener('click', function () { try { window.Store.resolveConflict('use-this-tab'); } catch (e) {} hideConflict(); });
+    if (useSaved) useSaved.addEventListener('click', function () { try { window.Store.resolveConflict('use-saved-version'); } catch (e) {} hideConflict(); });
+    window.addEventListener('lifeos:store-conflict',           function (e) { var p = (e && e.detail && e.detail.path) || ''; showConflict(p); });
+    window.addEventListener('lifeos:store-conflict-resolved',  hideConflict);
+    window.addEventListener('lifeos:store-freeze-begin',       function (e) { var r = (e && e.detail && e.detail.reason) || 'full-state'; showFreeze(r); });
+    window.addEventListener('lifeos:store-freeze-end',         hideFreeze);
+    window.addEventListener('lifeos:store-durability-blocked', function (e) {
+      if (freeze && freezeMsg) {
+        var code = (e && e.detail && e.detail.code) || 'STORE_DURABILITY_BLOCKED';
+        freezeMsg.textContent = 'Saving is blocked (' + code + '). Please export a backup before making changes.';
+        freeze.hidden = false;
+        freeze.setAttribute('aria-hidden', 'false');
+      }
+    });
+    window.addEventListener('lifeos:store-durability-cleared', hideFreeze);
+    // beforeunload covers ALL unsaved / unsafe states.
+    window.addEventListener('beforeunload', function (e) {
+      try {
+        if (typeof window.Store.hasUnsavedWork === 'function' && window.Store.hasUnsavedWork()) {
+          e.preventDefault();
+          e.returnValue = '';
+        }
+      } catch (err) { /* ignore */ }
+    });
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
 })();
 </script>
 

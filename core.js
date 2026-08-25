@@ -715,7 +715,10 @@
     const p = Object.getPrototypeOf(v);
     return p === null || p === Object.prototype;
   }
-  function clonePersistable(v, seen) {
+  // ancestry-based cycle detection: only ancestors on the current recursion
+  // path count as cycles. Shared non-cyclic references (a = {x:1}; {p:a, q:a})
+  // are allowed and produce structurally-cloned copies at each site.
+  function clonePersistable(v, ancestry) {
     if (v === null) return null;
     const t = typeof v;
     if (t === 'undefined') throw new Error('STORE_UNPERSISTABLE');
@@ -723,37 +726,58 @@
     if (t === 'number') { if (!Number.isFinite(v)) throw new Error('STORE_UNPERSISTABLE'); return v; }
     if (t === 'function' || t === 'symbol' || t === 'bigint') throw new Error('STORE_UNPERSISTABLE');
     if (t !== 'object') throw new Error('STORE_UNPERSISTABLE');
-    // Reject Date/Map/Set/RegExp/DOM/others
     if (v instanceof Date || v instanceof RegExp) throw new Error('STORE_UNPERSISTABLE');
     if (typeof Map !== 'undefined' && v instanceof Map) throw new Error('STORE_UNPERSISTABLE');
     if (typeof Set !== 'undefined' && v instanceof Set) throw new Error('STORE_UNPERSISTABLE');
     if (typeof Node !== 'undefined' && v instanceof Node) throw new Error('STORE_UNPERSISTABLE');
-    seen = seen || new WeakSet();
-    if (seen.has(v)) throw new Error('STORE_CYCLE');
-    seen.add(v);
-    if (Array.isArray(v)) {
-      const out = new Array(v.length);
-      for (let i = 0; i < v.length; i++) {
-        // Reject sparse holes.
-        if (!(i in v)) throw new Error('STORE_UNPERSISTABLE');
-        out[i] = clonePersistable(v[i], seen);
+    ancestry = ancestry || [];
+    for (let i = 0; i < ancestry.length; i++) if (ancestry[i] === v) throw new Error('STORE_CYCLE');
+    ancestry.push(v);
+    try {
+      if (Array.isArray(v)) {
+        const out = new Array(v.length);
+        for (let i = 0; i < v.length; i++) {
+          if (!(i in v)) throw new Error('STORE_UNPERSISTABLE');
+          out[i] = clonePersistable(v[i], ancestry);
+        }
+        return out;
+      }
+      if (!isPlainOrNullProtoObject(v)) throw new Error('STORE_UNPERSISTABLE');
+      // Any own symbol key is a hard reject — never silently dropped.
+      if (Object.getOwnPropertySymbols(v).length > 0) throw new Error('STORE_UNPERSISTABLE');
+      const proto = Object.getPrototypeOf(v);
+      const out = proto === null ? Object.create(null) : {};
+      const keys = Object.keys(v);
+      for (const k of keys) {
+        if (typeof k !== 'string') throw new Error('STORE_UNPERSISTABLE');
+        const desc = Object.getOwnPropertyDescriptor(v, k);
+        if ('get' in desc || 'set' in desc) throw new Error('STORE_UNPERSISTABLE');
+        Object.defineProperty(out, k, {
+          value: clonePersistable(desc.value, ancestry),
+          writable: true, enumerable: true, configurable: true
+        });
       }
       return out;
+    } finally {
+      ancestry.pop();
     }
-    if (!isPlainOrNullProtoObject(v)) throw new Error('STORE_UNPERSISTABLE');
-    const proto = Object.getPrototypeOf(v);
-    const out = proto === null ? Object.create(null) : {};
-    const keys = Object.keys(v);
-    for (const k of keys) {
-      if (typeof k !== 'string') throw new Error('STORE_UNPERSISTABLE');
-      const desc = Object.getOwnPropertyDescriptor(v, k);
-      if ('get' in desc || 'set' in desc) throw new Error('STORE_UNPERSISTABLE');
-      Object.defineProperty(out, k, {
-        value: clonePersistable(desc.value, seen),
-        writable: true, enumerable: true, configurable: true
-      });
+  }
+  // Deeply freeze a persistable value in place. Used to hand read-only
+  // snapshots to subscribers/onSave without cloning per callback.
+  function deepFreezePersistable(v) {
+    if (v === null || typeof v !== 'object') return v;
+    if (Object.isFrozen(v)) return v;
+    if (Array.isArray(v)) {
+      for (let i = 0; i < v.length; i++) deepFreezePersistable(v[i]);
+    } else {
+      const keys = Object.keys(v);
+      for (const k of keys) {
+        const desc = Object.getOwnPropertyDescriptor(v, k);
+        if (desc && ('value' in desc)) deepFreezePersistable(desc.value);
+      }
     }
-    return out;
+    Object.freeze(v);
+    return v;
   }
   function deepEqualPersistable(a, b) {
     if (a === b) return true;
@@ -826,14 +850,30 @@
   //   schema 13 → { version:13, revision:int, committedAt:ISO, data:{} }
   //   schema ≤12 → { version:<n>, data:{} }              (migrated up)
   //   legacy bare data (no wrapper) → treated as v0 data
+  function isValidRevision(n) {
+    return typeof n === 'number' && Number.isFinite(n) && Number.isInteger(n)
+      && n >= 0 && n <= Number.MAX_SAFE_INTEGER;
+  }
   function parseWrapperRaw(raw) {
     if (raw === null || raw === undefined) return null;
     let parsed;
     try { parsed = JSON.parse(raw); } catch (e) { return { corrupt: true }; }
     if (!parsed || typeof parsed !== 'object') return { corrupt: true };
     const version = (typeof parsed.version === 'number') ? parsed.version : 0;
-    const revision = (typeof parsed.revision === 'number' && Number.isFinite(parsed.revision) && parsed.revision >= 0)
-      ? parsed.revision : 0;
+    // Schema-13 wrappers MUST carry an integer revision in range.
+    // Any other numeric shape (1.5, NaN, Infinity, negative, string) is a
+    // hard corruption signal, not a fall-back-to-zero.
+    let revision = 0;
+    if (version >= 13) {
+      if (!isValidRevision(parsed.revision)) return { corrupt: true };
+      revision = parsed.revision;
+    } else if ('revision' in parsed) {
+      // Older versions never wrote revision; if present but invalid, corrupt.
+      if (parsed.revision !== undefined && parsed.revision !== null && !isValidRevision(parsed.revision)) {
+        return { corrupt: true };
+      }
+      if (isValidRevision(parsed.revision)) revision = parsed.revision;
+    }
     const committedAt = (typeof parsed.committedAt === 'string') ? parsed.committedAt : null;
     const data = parsed.data || null;
     return { version, revision, committedAt, data, corrupt: false };
@@ -883,8 +923,13 @@
   let saveTimer      = null;
   let flushChain     = Promise.resolve();
   let activeFullStateTransaction = false;
-  let flushInProgress = false;
+  let fullStateTxToken = null;
   let deferredStorageEvents = [];
+  // Persistent durability blocker (corrupt disk, revision regression, etc.).
+  // Set to a {code, since, detail?} record; when non-null Store rejects new
+  // writes AND flushes with STORE_DURABILITY_BLOCKED until cleared via
+  // Store.clearDurabilityBlocker (or an approved full-state transaction).
+  let durabilityBlocker = null;
   const saveListeners = new Set();
   const errorListeners = new Set();
 
@@ -932,35 +977,76 @@
   }
   function rebuildOptimistic() {
     state = optimisticReplay(baseState, pendingOps);
+    invalidateFrozenSnapshot();
   }
 
   // ── SUBSCRIBERS / NOTIFY ─────────────────────────
   const subscribers = new Map(); // path → Set<fn>
+  // Build one deeply-frozen snapshot per notification cycle. Subscribers
+  // receive this shared frozen reference; mutation attempts throw in strict
+  // mode and are silently ignored otherwise — either way internal state is
+  // protected. `null` cache means "rebuild on next read".
+  let _frozenSnapshot = null;
+  function invalidateFrozenSnapshot() { _frozenSnapshot = null; }
+  function currentFrozenSnapshot() {
+    if (_frozenSnapshot === null) _frozenSnapshot = deepFreezePersistable(clonePersistable(state));
+    return _frozenSnapshot;
+  }
   function subscribe(path, fn) {
     if (!subscribers.has(path)) subscribers.set(path, new Set());
     subscribers.get(path).add(fn);
-    try { fn(state); } catch (e) { console.error('[Store] sub immediate:', e); }
+    // Immediate hydration also gets the frozen snapshot.
+    try { fn(currentFrozenSnapshot()); } catch (e) { console.error('[Store] sub immediate:', e); }
     return () => { const set = subscribers.get(path); if (set) set.delete(fn); };
   }
   function notify(changedPath) {
+    const snap = currentFrozenSnapshot();
+    // Dedup callbacks — a subscriber registered on both '*' and a specific
+    // path must only fire once per notification cycle.
+    const fired = new Set();
     for (const [path, fns] of subscribers) {
       if (path === '*' || path === changedPath || changedPath.startsWith(path + '.') || path.startsWith(changedPath + '.')) {
-        fns.forEach(fn => { try { fn(state); } catch (e) { console.error('[Store] notify:', e); } });
+        for (const fn of fns) {
+          if (fired.has(fn)) continue;
+          fired.add(fn);
+          try { fn(snap); } catch (e) { console.error('[Store] notify:', e); }
+        }
       }
     }
   }
   function notifyAll() {
+    const snap = currentFrozenSnapshot();
     const seen = new Set();
     for (const [, fns] of subscribers) {
       for (const fn of fns) {
         if (seen.has(fn)) continue;
         seen.add(fn);
-        try { fn(state); } catch (e) { console.error('[Store] notify(*):', e); }
+        try { fn(snap); } catch (e) { console.error('[Store] notify(*):', e); }
       }
     }
   }
   function emitError(err) {
     errorListeners.forEach(fn => { try { fn(err); } catch (e) { /* swallow */ } });
+  }
+  function setDurabilityBlocker(code, detail) {
+    durabilityBlocker = { code: code, since: nowISO(), detail: detail || null };
+    emitError(durabilityBlocker);
+    try {
+      if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+        window.dispatchEvent(new CustomEvent('lifeos:store-durability-blocked', { detail: { code: code } }));
+      }
+    } catch (e) { /* ignore */ }
+  }
+  function clearDurabilityBlocker() {
+    if (!durabilityBlocker) return { ok: true };
+    durabilityBlocker = null;
+    try {
+      if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+        window.dispatchEvent(new CustomEvent('lifeos:store-durability-cleared'));
+      }
+    } catch (e) { /* ignore */ }
+    if (pendingOps.length > 0 && !conflict) scheduleFlush();
+    return { ok: true };
   }
 
   // ── PUBLIC READS ─────────────────────────────────
@@ -974,6 +1060,9 @@
   // ── PUBLIC WRITES ────────────────────────────────
   function set(path, val) {
     if (activeFullStateTransaction) return { ok: false, error: 'FULL_STATE_TRANSACTION_IN_PROGRESS' };
+    // Ordinary writes still enqueue during conflict (spec §9). They are
+    // rejected only during full-state freeze or durability block.
+    if (durabilityBlocker) return { ok: false, error: 'STORE_DURABILITY_BLOCKED', code: durabilityBlocker.code };
     if (val === undefined) return { ok: false, error: 'STORE_INVALID_OPERATION' };
     let cloned;
     try { cloned = clonePersistable(val); } catch (e) { return { ok: false, error: 'STORE_UNPERSISTABLE' }; }
@@ -1001,6 +1090,7 @@
     try {
       const trial = optimisticReplay(baseState, pendingOps.concat([op]));
       state = trial;
+      invalidateFrozenSnapshot();
     } catch (e) {
       return { ok: false, error: e.message || 'STORE_APPLY_FAILED' };
     }
@@ -1011,6 +1101,7 @@
   }
   function update(path, updater) {
     if (activeFullStateTransaction) return { ok: false, error: 'FULL_STATE_TRANSACTION_IN_PROGRESS' };
+    if (durabilityBlocker) return { ok: false, error: 'STORE_DURABILITY_BLOCKED', code: durabilityBlocker.code };
     let cur;
     try { cur = readOwnPath(state, path); } catch (e) { return { ok: false, error: e.message || 'STORE_INVALID_PATH' }; }
     let arg;
@@ -1036,21 +1127,29 @@
 
   function withCoordinator(fn) {
     // Same-tab serializer + optional Web Lock.
-    flushChain = flushChain.then(async () => {
+    // IMPORTANT: catch prior rejection SEPARATELY from running the current
+    // task, so the current task always executes (a previous rejection must
+    // not consume the current queued work).
+    const recovered = flushChain.catch(function (prev) {
+      try { console.warn('[Store] previous coordinator task rejected:', prev); } catch (e) {}
+    });
+    const runCurrent = recovered.then(async function () {
       if (capabilities.crossTabSafe) {
-        return await navigator.locks.request(WEB_LOCK_NAME, { mode: 'exclusive' }, async () => {
+        return await navigator.locks.request(WEB_LOCK_NAME, { mode: 'exclusive' }, async function () {
           return fn();
         });
       }
       return fn();
-    }, () => {});
-    return flushChain;
+    });
+    flushChain = runCurrent;
+    return runCurrent;
   }
 
   function scheduleFlush() {
     if (paused) { dirtyWhilePaused = true; return; }
     if (activeFullStateTransaction) return;
     if (conflict) return; // persistence blocked while conflict live
+    if (durabilityBlocker) return; // persistence blocked while durability blocker set
     clearTimeout(saveTimer);
     saveTimer = null;
     saveTimer = setTimeout(function () {
@@ -1062,9 +1161,10 @@
   function flushNow() {
     if (paused) return Promise.resolve({ committed: false, reason: 'PAUSED' });
     if (activeFullStateTransaction) return Promise.resolve({ committed: false, reason: 'FROZEN' });
+    if (durabilityBlocker) return Promise.resolve({ committed: false, reason: 'STORE_DURABILITY_BLOCKED', code: durabilityBlocker.code });
     if (conflict) return Promise.resolve({ committed: false, reason: 'CONFLICT' });
     if (pendingOps.length === 0) return Promise.resolve({ committed: false, reason: 'NOOP' });
-    return withCoordinator(() => commitLocked());
+    return withCoordinator(function () { return commitLocked(); });
   }
 
   // Runs inside coordinator (Web Lock when available). SYNCHRONOUS body.
@@ -1072,32 +1172,47 @@
     if (activeFullStateTransaction) return { committed: false, reason: 'FROZEN' };
     if (pendingOps.length === 0) return { committed: false, reason: 'NOOP' };
 
-    // 1. Re-read disk under lock and rebase if needed.
+    // 1. Re-read disk under lock and rebase if needed. Corrupt / regressed
+    // / cleared authoritative storage sets a persistent durability blocker
+    // and refuses to overwrite; the human must recover via an approved
+    // full-state transaction (snapshot restore, import, reset) or explicit
+    // clearDurabilityBlocker after inspection.
     let rawNow;
     try { rawNow = localStorage.getItem(STATE_KEY); } catch (e) { rawNow = null; }
+    if (rawNow === null && baseWrapperRaw !== null) {
+      // External clear of an accepted STATE_KEY — invariant break, block writes.
+      setDurabilityBlocker('STORE_STATE_CLEARED_EXTERNAL', { knownRevision });
+      return { committed: false, reason: 'STORE_STATE_CLEARED_EXTERNAL' };
+    }
     if (rawNow !== null && rawNow !== baseWrapperRaw) {
       const parsed = parseWrapperRaw(rawNow);
+      if (!parsed || parsed.corrupt) {
+        setDurabilityBlocker('STORE_CORRUPT_AUTHORITATIVE_STATE');
+        return { committed: false, reason: 'STORE_CORRUPT_AUTHORITATIVE_STATE' };
+      }
       const m = migrateAndValidate(parsed);
-      if (m.ok && parsed.revision > knownRevision) {
+      if (!m.ok) {
+        setDurabilityBlocker('STORE_CORRUPT_AUTHORITATIVE_STATE');
+        return { committed: false, reason: 'STORE_CORRUPT_AUTHORITATIVE_STATE' };
+      }
+      if (parsed.revision > knownRevision) {
         // Newer external state — adopt as new base before replay.
         baseState      = m.data;
         knownRevision  = parsed.revision;
         committedAt    = parsed.committedAt;
         baseWrapperRaw = rawNow;
-      } else if (m.ok && parsed.revision < knownRevision) {
-        // Regression on disk. Refuse to write.
-        emitError({ code: 'STORE_REVISION_REGRESSION', diskRevision: parsed.revision, knownRevision });
+      } else if (parsed.revision < knownRevision) {
+        // Regression on disk — invariant break, block writes.
+        setDurabilityBlocker('STORE_REVISION_REGRESSION', { diskRevision: parsed.revision, knownRevision });
         return { committed: false, reason: 'STORE_REVISION_REGRESSION' };
-      } else if (m.ok && parsed.revision === knownRevision) {
-        // Equal revision, different raw wrapper — collision.
-        // Adopt disk defensively; surface warning.
+      } else { // parsed.revision === knownRevision, raw differs
+        // Equal revision, different raw wrapper — collision. Adopt disk
+        // defensively; surface warning.
         baseState      = m.data;
         committedAt    = parsed.committedAt;
         baseWrapperRaw = rawNow;
         emitError({ code: 'STORE_REVISION_COLLISION', revision: parsed.revision });
       }
-      // If !m.ok we keep our accepted base and continue; primary write will
-      // overwrite the corrupt disk value.
     }
 
     // 2. Capture generation and strict-replay.
@@ -1146,7 +1261,7 @@
       revision: nextRevision,
       committedAt: committedAtNow,
       listeners: listenersSnapshot,
-      snapshotForListeners: clonePersistable(baseState),
+      snapshotForListeners: deepFreezePersistable(clonePersistable(baseState)),
       reason: 'user'
     };
   }
@@ -1159,7 +1274,7 @@
         for (const fn of res.listeners) {
           try { fn(res.snapshotForListeners, { revision: res.revision, committedAt: res.committedAt, reason: res.reason }); } catch (e) { /* isolate */ }
         }
-        if (pendingOps.length > 0 && !conflict) scheduleFlush();
+        if (pendingOps.length > 0 && !conflict && !durabilityBlocker) scheduleFlush();
       }
       return res;
     });
@@ -1221,55 +1336,91 @@
 
   // ── FULL-STATE TRANSACTIONS ──────────────────────
   // Import / snapshot restore / reset. Freezes ordinary Store.set/update.
-  // Always unfreezes in finally; deferred storage events reconciled by
-  // re-reading actual current disk after settlement.
+  // commitFullStateWrapper is token-guarded — no caller can bypass the freeze,
+  // event deferral, or finally-cleanup guarantees.
   function beginFullStateTransaction(opts) {
     opts = opts || {};
     if (activeFullStateTransaction) return { ok: false, error: 'FULL_STATE_TRANSACTION_IN_PROGRESS' };
     if (pendingOps.length > 0 && !opts.force) return { ok: false, error: 'PENDING_CHANGES' };
     clearTimeout(saveTimer); saveTimer = null;
     activeFullStateTransaction = true;
-    return { ok: true };
+    fullStateTxToken = { id: 'tx_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8), reason: opts.reason || 'full-state' };
+    // Fire freeze-begin so UI can render the banner.
+    try {
+      if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+        window.dispatchEvent(new CustomEvent('lifeos:store-freeze-begin', { detail: { reason: fullStateTxToken.reason } }));
+      }
+    } catch (e) { /* ignore */ }
+    return { ok: true, token: fullStateTxToken };
   }
-  function endFullStateTransaction() {
+  function endFullStateTransaction(token) {
+    // Token guard: only the holder of the current token may end it. Prevents
+    // one caller ending another caller's transaction mid-flight.
+    if (fullStateTxToken && token && token !== fullStateTxToken) {
+      return { ok: false, error: 'FULL_STATE_TX_TOKEN_MISMATCH' };
+    }
     activeFullStateTransaction = false;
-    // Discard queued event payloads; re-read authoritative disk now.
+    fullStateTxToken = null;
+    // Discard queued event payload assumptions; re-read authoritative disk now.
+    // Corrupt disk after transaction settlement blocks writes — do not silently
+    // recover from stale memory.
     deferredStorageEvents.length = 0;
     let rawNow = null;
     try { rawNow = localStorage.getItem(STATE_KEY); } catch (e) { rawNow = null; }
     if (rawNow !== null) {
       const parsed = parseWrapperRaw(rawNow);
-      const m = migrateAndValidate(parsed);
-      if (m.ok && (parsed.revision !== knownRevision || rawNow !== baseWrapperRaw)) {
-        baseState      = m.data;
-        knownRevision  = parsed.revision;
-        committedAt    = parsed.committedAt;
-        baseWrapperRaw = rawNow;
+      if (parsed && !parsed.corrupt) {
+        const m = migrateAndValidate(parsed);
+        if (m.ok) {
+          if (parsed.revision !== knownRevision || rawNow !== baseWrapperRaw) {
+            baseState      = m.data;
+            knownRevision  = parsed.revision;
+            committedAt    = parsed.committedAt;
+            baseWrapperRaw = rawNow;
+          }
+        } else {
+          setDurabilityBlocker('STORE_CORRUPT_AUTHORITATIVE_STATE');
+        }
+      } else {
+        setDurabilityBlocker('STORE_CORRUPT_AUTHORITATIVE_STATE');
       }
     }
     rebuildOptimistic();
     notifyAll();
-    if (pendingOps.length > 0 && !conflict) scheduleFlush();
+    try {
+      if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+        window.dispatchEvent(new CustomEvent('lifeos:store-freeze-end'));
+      }
+    } catch (e) { /* ignore */ }
+    if (pendingOps.length > 0 && !conflict && !durabilityBlocker) scheduleFlush();
+    return { ok: true };
   }
   // Commit a full-state candidate (import / snapshot / reset) inside the
-  // coordinator. Freeze must already be active. Returns a Promise.
-  function commitFullStateWrapper(candidateData, reason) {
-    return withCoordinator(() => {
-      // Re-read disk revision under lock.
+  // coordinator. Token guard enforces freeze; latest validated disk revision
+  // + 1 is the ONLY revision source; Math.max shortcuts are forbidden.
+  function commitFullStateWrapper(token, candidateData, reason) {
+    if (!activeFullStateTransaction) return Promise.resolve({ ok: false, error: 'FULL_STATE_TRANSACTION_NOT_ACTIVE' });
+    if (!fullStateTxToken || token !== fullStateTxToken) return Promise.resolve({ ok: false, error: 'FULL_STATE_TX_TOKEN_MISMATCH' });
+    return withCoordinator(function () {
+      // Re-read disk under lock. Corrupt disk = fail closed.
       let rawNow;
       try { rawNow = localStorage.getItem(STATE_KEY); } catch (e) { rawNow = null; }
       let diskRevision = 0;
       if (rawNow !== null) {
         const parsed = parseWrapperRaw(rawNow);
-        if (parsed && !parsed.corrupt) diskRevision = parsed.revision || 0;
+        if (!parsed || parsed.corrupt) {
+          setDurabilityBlocker('STORE_CORRUPT_AUTHORITATIVE_STATE');
+          return { ok: false, error: 'STORE_CORRUPT_AUTHORITATIVE_STATE' };
+        }
+        diskRevision = parsed.revision;
       }
       let cloned;
       try { cloned = clonePersistable(candidateData); } catch (e) { return { ok: false, error: 'STORE_UNPERSISTABLE' }; }
       normalizeLogbookDomain(cloned);
       if (!validate(cloned)) return { ok: false, error: 'FULL_STATE_INVALID' };
-      const base = Math.max(diskRevision, knownRevision);
-      if (base >= Number.MAX_SAFE_INTEGER) return { ok: false, error: 'STORE_REVISION_EXHAUSTED' };
-      const nextRevision = base + 1;
+      // Latest validated disk revision + 1 — no Math.max, no knownRevision shortcut.
+      if (diskRevision >= Number.MAX_SAFE_INTEGER) return { ok: false, error: 'STORE_REVISION_EXHAUSTED' };
+      const nextRevision = diskRevision + 1;
       const committedAtNow = nowISO();
       const wrapper = { version: SCHEMA_VERSION, revision: nextRevision, committedAt: committedAtNow, data: cloned };
       let payload;
@@ -1282,6 +1433,7 @@
       baseWrapperRaw = payload;
       pendingOps     = [];
       conflict       = null;
+      durabilityBlocker = null; // an approved full-state transaction clears the blocker
       return { ok: true, revision: nextRevision, committedAt: committedAtNow, reason: reason || 'full-state' };
     });
   }
@@ -1289,38 +1441,49 @@
   // ── STORAGE EVENTS ───────────────────────────────
   function onStorage(e) {
     if (!e || e.key !== STATE_KEY) return;
-    if (activeFullStateTransaction) { deferredStorageEvents.push(e); return; }
+    if (activeFullStateTransaction) {
+      // Queue only "something changed" — do not trust old queued payload
+      // when we settle; endFullStateTransaction rereads authoritative disk.
+      deferredStorageEvents.push({ at: nowISO() });
+      return;
+    }
     const rawNow = e.newValue;
     if (rawNow === null) {
-      // External clear. Treat as regression; block persistence.
-      emitError({ code: 'STORE_REVISION_REGRESSION', reason: 'external-clear' });
+      // External clear of an accepted STATE_KEY — persistent invariant break.
+      if (baseWrapperRaw !== null) setDurabilityBlocker('STORE_STATE_CLEARED_EXTERNAL');
       return;
     }
     if (rawNow === baseWrapperRaw) return;
     const parsed = parseWrapperRaw(rawNow);
-    if (!parsed || parsed.corrupt) { emitError({ code: 'STORE_WRAPPER_CORRUPT' }); return; }
+    if (!parsed || parsed.corrupt) { setDurabilityBlocker('STORE_CORRUPT_AUTHORITATIVE_STATE'); return; }
     const m = migrateAndValidate(parsed);
-    if (!m.ok) { emitError({ code: 'STORE_WRAPPER_INVALID' }); return; }
+    if (!m.ok) { setDurabilityBlocker('STORE_CORRUPT_AUTHORITATIVE_STATE'); return; }
     if (parsed.revision > knownRevision) {
       adoptExternal(m.data, parsed, rawNow);
       return;
     }
     if (parsed.revision === knownRevision) {
-      // Equal revision — defensively reread actual current disk.
+      // Equal revision — defensively reread actual current disk even with
+      // Web Locks (per Codex §15 correction). If disk still shows a raw
+      // different from what we hold, adopt/rebase and surface collision.
       let diskRaw = null;
       try { diskRaw = localStorage.getItem(STATE_KEY); } catch (err) { diskRaw = null; }
       if (diskRaw === baseWrapperRaw) return;
-      if (diskRaw === null) return;
+      if (diskRaw === null) { setDurabilityBlocker('STORE_STATE_CLEARED_EXTERNAL'); return; }
       const dparsed = parseWrapperRaw(diskRaw);
+      if (!dparsed || dparsed.corrupt) { setDurabilityBlocker('STORE_CORRUPT_AUTHORITATIVE_STATE'); return; }
       const dm = migrateAndValidate(dparsed);
-      if (dm.ok && dparsed.revision >= knownRevision) {
+      if (!dm.ok) { setDurabilityBlocker('STORE_CORRUPT_AUTHORITATIVE_STATE'); return; }
+      if (dparsed.revision >= knownRevision) {
         adoptExternal(dm.data, dparsed, diskRaw);
         if (dparsed.revision === knownRevision) emitError({ code: 'STORE_REVISION_COLLISION', revision: dparsed.revision });
+      } else {
+        setDurabilityBlocker('STORE_REVISION_REGRESSION', { diskRevision: dparsed.revision, knownRevision });
       }
       return;
     }
-    // parsed.revision < knownRevision — regression.
-    emitError({ code: 'STORE_REVISION_REGRESSION', diskRevision: parsed.revision, knownRevision });
+    // parsed.revision < knownRevision — persistent regression blocker.
+    setDurabilityBlocker('STORE_REVISION_REGRESSION', { diskRevision: parsed.revision, knownRevision });
   }
   function adoptExternal(data, parsed, rawWrapper) {
     baseState      = data;
@@ -1505,6 +1668,13 @@
     },
     defaultState,
     deriveStateFromLegacy,
+    // Exposed for import derivation: migrate a bare `data` object (of any
+    // prior schema version) up to the current schema. Never touches Store.
+    migrateData: function (data, fromVersion) {
+      return migrateUp(data || {}, fromVersion || 0);
+    },
+    normalizeLogbookDomain,
+    validateData: validate,
     snapshots: () => {
       try { return JSON.parse(localStorage.getItem(SNAPSHOTS_KEY) || '[]'); } catch (e) { return []; }
     },
@@ -1527,44 +1697,60 @@
         ? parsed.data
         : migrateUp((parsed && parsed.data) || {}, (parsed && parsed.version) || 0);
       normalizeLogbookDomain(data);
-      const gate = beginFullStateTransaction({ force: !!opts.force });
+      const gate = beginFullStateTransaction({ force: !!opts.force, reason: 'snapshot' });
       if (!gate.ok) return false;
-      commitFullStateWrapper(data, 'snapshot').then(res => {
+      commitFullStateWrapper(gate.token, data, 'snapshot').then(res => {
         try {
           if (res && res.ok) {
+            const snap = deepFreezePersistable(clonePersistable(baseState));
             for (const fn of saveListeners) {
-              try { fn(clonePersistable(baseState), { revision: res.revision, committedAt: res.committedAt, reason: res.reason }); } catch (e) {}
+              try { fn(snap, { revision: res.revision, committedAt: res.committedAt, reason: res.reason }); } catch (e) {}
             }
           }
-        } finally { endFullStateTransaction(); }
-      }, () => { endFullStateTransaction(); });
+        } finally { endFullStateTransaction(gate.token); }
+      }, () => { endFullStateTransaction(gate.token); });
       return true;
     },
     reset: function (opts) {
       opts = opts || {};
-      const gate = beginFullStateTransaction({ force: !!opts.force });
+      const gate = beginFullStateTransaction({ force: !!opts.force, reason: 'reset' });
       if (!gate.ok) return false;
-      commitFullStateWrapper(defaultState(), 'reset').then(res => {
+      commitFullStateWrapper(gate.token, defaultState(), 'reset').then(res => {
         try {
           if (res && res.ok) {
+            const snap = deepFreezePersistable(clonePersistable(baseState));
             for (const fn of saveListeners) {
-              try { fn(clonePersistable(baseState), { revision: res.revision, committedAt: res.committedAt, reason: res.reason }); } catch (e) {}
+              try { fn(snap, { revision: res.revision, committedAt: res.committedAt, reason: res.reason }); } catch (e) {}
             }
           }
-        } finally { endFullStateTransaction(); }
-      }, () => { endFullStateTransaction(); });
+        } finally { endFullStateTransaction(gate.token); }
+      }, () => { endFullStateTransaction(gate.token); });
       return true;
     },
     // Full-state transaction primitives — for import/snapshot/reset callers.
+    // commitFullStateWrapper is token-guarded (must be preceded by
+    // beginFullStateTransaction; endFullStateTransaction must be called in a
+    // finally).
     beginFullStateTransaction,
     endFullStateTransaction,
     commitFullStateWrapper,
+    // Durability blocker surface.
+    getDurabilityBlocker: function () { return durabilityBlocker ? Object.assign({}, durabilityBlocker) : null; },
+    clearDurabilityBlocker,
+    // "Something unsaved / unsafe" predicate for beforeunload wiring.
+    hasUnsavedWork: function () {
+      return !!(pendingOps.length > 0 || conflict || activeFullStateTransaction || durabilityBlocker);
+    },
     // Read-only wrapper metadata for About/status UI.
     wrapperMeta: () => ({ revision: knownRevision, committedAt: committedAt, capabilities: Object.assign({}, capabilities) }),
     capabilities,
     // Conflict surface.
     getConflict: () => (conflict ? Object.assign({}, conflict) : null),
     resolveConflict,
+    // For post-commit listener firing.
+    _internal_fireSaveListeners: function (frozenSnap, meta) {
+      for (const fn of saveListeners) { try { fn(frozenSnap, meta); } catch (e) {} }
+    },
     derive
   };
 })(window);

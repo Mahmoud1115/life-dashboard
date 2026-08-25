@@ -1645,7 +1645,7 @@ window.copyBackupToClipboard=async function(){
 window.importFromClipboard=async function(){
   try{
     const text=await navigator.clipboard.readText();
-    processImport(text);
+    await processImport(text);
   }catch(e){showBackupToast('⚠ Cannot read clipboard — use file import instead');}
 };
 window.triggerImportFile=function(){
@@ -1655,7 +1655,7 @@ window.handleImportFile=function(input){
   const file=input.files[0];
   if(!file) return;
   const reader=new FileReader();
-  reader.onload=e=>processImport(e.target.result);
+  reader.onload=async e=>{ try{ await processImport(e.target.result); }catch(err){ /* toast already surfaced inside processImport */ } };
   reader.readAsText(file);
   input.value='';
 };
@@ -1711,7 +1711,15 @@ function preflightBackup(backup){
   }
   return null;
 }
-function processImport(text){
+// B0-coordinated import (ADR-010). Async; every caller must await.
+// Full-state transaction owns the entire import window: freezes ordinary
+// Store writes, defers storage events, writes STATE_KEY LAST as a schema-13
+// wrapper with revision = latest validated disk revision + 1, and
+// byte-exact rollbacks on any apply failure. Recovery capsule
+// (`dune_pre_import_backup_v1`) is written before any destructive change
+// and survives both success and failure (per b4083a8).
+const STATE_KEY_NAME='dune_state_v4';
+async function processImport(text){
   let backup;
   try{backup=JSON.parse(text);}catch(e){showBackupToast('⚠ Invalid file — cannot parse JSON');return false;}
   const err=preflightBackup(backup);
@@ -1721,45 +1729,47 @@ function processImport(text){
   const confirmed=confirm('Restore backup from '+backup.exported_at+'?\n\n'+preview+'\n\n⚠ Overwrites current data. Current data saved as pre-restore backup.');
   if(!confirmed) return false;
 
-  // Capture the current allowlisted state so we can (a) publish the pre-import
-  // recovery snapshot and (b) roll back if the apply fails mid-flight.
-  // Uses getItem (raw strings) so restoration is byte-exact even if a value
-  // is JSON we would re-serialise slightly differently.
+  if(!window.Store
+     ||typeof window.Store.beginFullStateTransaction!=='function'
+     ||typeof window.Store.commitFullStateWrapper!=='function'
+     ||typeof window.Store.endFullStateTransaction!=='function'){
+    showBackupToast('⚠ Store durability API unavailable — aborting');
+    return false;
+  }
+
+  // Freeze BEFORE any destructive write. `force:true` so a user with pending
+  // edits can still explicitly confirm the destructive import (the confirm()
+  // above serves as the destructive confirmation).
+  const gate=window.Store.beginFullStateTransaction({force:true,reason:'import'});
+  if(!gate.ok){
+    if(gate.error==='FULL_STATE_TRANSACTION_IN_PROGRESS'){ showBackupToast('⚠ Another restore is in progress — try again'); }
+    else if(gate.error==='PENDING_CHANGES'){ showBackupToast('⚠ Unsaved edits present — aborting'); }
+    else{ showBackupToast('⚠ Cannot enter restore mode: '+gate.error); }
+    return false;
+  }
+  const token=gate.token;
+
+  // Snapshot byte-exact BACKUP_KEYS state for rollback.
   const rawBefore={};
   for(const k of BACKUP_KEYS){ rawBefore[k]=localStorage.getItem(k); }
 
-  // Write the recovery snapshot BEFORE any restore mutation. The payload
-  // cannot overwrite it because dune_pre_import_backup_v1 is not in BACKUP_KEYS
-  // and preflight rejects it explicitly. Use direct localStorage.setItem
-  // (not LS.set) so a quota/permission failure surfaces here and aborts
-  // before any destructive write happens.
+  // Write recovery capsule BEFORE any destructive change. Kept after success
+  // and after apply failure (b4083a8 semantics).
   try{
     const recovery=JSON.stringify({version:'2026.1',exported_at:new Date().toISOString(),data:getAllBackupData()});
     localStorage.setItem('dune_pre_import_backup_v1',recovery);
   }catch(e){
     showBackupToast('⚠ Could not save pre-import backup — aborting');
+    try{ window.Store.endFullStateTransaction(token); }catch(err){}
     return false;
   }
 
-  // Quiesce Store persistence AFTER preflight+recovery succeed and BEFORE
-  // any destructive write. Prevents a debounced Store.persistNow() from
-  // firing during apply/reload and overwriting the imported dune_state_v4
-  // with stale in-memory state. Fail-safe: if the API is unavailable at
-  // runtime, abort rather than risk the race.
-  if(!window.Store||typeof window.Store.pausePersistence!=='function'||typeof window.Store.resumePersistence!=='function'){
-    showBackupToast('⚠ Store persistence API unavailable — aborting');
-    return false;
-  }
-  try{ window.Store.pausePersistence(); }
-  catch(e){ showBackupToast('⚠ Could not pause Store persistence — aborting'); return false; }
-
-  // Complete-replacement apply over the BACKUP_KEYS set only:
-  //   present in payload → write imported value
-  //   absent from payload → remove existing key so no hybrid state remains
-  // Unrelated localStorage (PAT, gist bookkeeping, UI) is untouched.
   const applied=[];
   try{
+    // 1. Stage/apply NON-STATE backup keys first. STATE_KEY is written LAST
+    //    as part of commitFullStateWrapper.
     for(const k of BACKUP_KEYS){
+      if(k===STATE_KEY_NAME) continue;
       if(k in backup.data){
         localStorage.setItem(k,JSON.stringify(backup.data[k]));
         applied.push(k);
@@ -1768,8 +1778,32 @@ function processImport(text){
         applied.push(k);
       }
     }
+
+    // 2. Derive candidate data. Legacy-only backups (no dune_state_v4) use
+    //    the pure Store.deriveStateFromLegacy(reader) reading ONLY from the
+    //    just-staged auxiliary keys.
+    let candidate;
+    if(STATE_KEY_NAME in backup.data){
+      const wrapperOrBare=backup.data[STATE_KEY_NAME];
+      const ver=(wrapperOrBare&&typeof wrapperOrBare.version==='number')?wrapperOrBare.version:0;
+      const rawData=(wrapperOrBare&&'data' in wrapperOrBare)?wrapperOrBare.data:wrapperOrBare;
+      candidate=window.Store.migrateData(rawData,ver);
+    } else {
+      const stagedReader=(k)=>{ try{ return JSON.parse(localStorage.getItem(k)||'null'); }catch(e){ return null; } };
+      candidate=window.Store.deriveStateFromLegacy(stagedReader);
+    }
+    if(typeof window.Store.normalizeLogbookDomain==='function') window.Store.normalizeLogbookDomain(candidate);
+    if(typeof window.Store.validateData==='function' && !window.Store.validateData(candidate)){
+      throw new Error('IMPORT_VALIDATION_FAILED');
+    }
+
+    // 3. Commit under coordinator — writes STATE_KEY LAST as schema-13.
+    const res=await window.Store.commitFullStateWrapper(token,candidate,'import');
+    if(!res||!res.ok){ throw new Error(res&&res.error?res.error:'COMMIT_FAILED'); }
+    applied.push(STATE_KEY_NAME);
   }catch(applyErr){
-    // Roll back everything we touched to the byte-exact prior state.
+    // Byte-exact rollback of every touched auxiliary key. STATE_KEY rollback
+    // is handled by writing back rawBefore if we managed to change it.
     const rollbackFailures=[];
     for(const k of applied){
       try{
@@ -1777,9 +1811,7 @@ function processImport(text){
         else localStorage.setItem(k,rawBefore[k]);
       }catch(rbErr){ rollbackFailures.push(k); }
     }
-    // Resume Store persistence AFTER rollback so a subsequent user edit
-    // triggers a normal save cycle.
-    try{ window.Store.resumePersistence(); }catch(e){ /* best-effort */ }
+    try{ window.Store.endFullStateTransaction(token); }catch(e){ /* best-effort */ }
     if(rollbackFailures.length){
       showBackupToast('⚠ Restore failed and rollback incomplete: '+rollbackFailures.join(', '));
     } else {
@@ -1788,10 +1820,8 @@ function processImport(text){
     return false;
   }
 
-  // Only reset the change counter and reload after a fully successful apply.
-  // Do NOT resume Store persistence — the reload replaces the page and
-  // Store initialises fresh from the imported dune_state_v4. Resuming here
-  // would re-arm the debounce and re-introduce the race we just closed.
+  // Success. endFullStateTransaction re-reads authoritative disk in finally.
+  try{ window.Store.endFullStateTransaction(token); }catch(e){ /* best-effort */ }
   try{ localStorage.setItem('dune_change_count_v1','0'); }catch(e){ /* non-fatal */ }
   showBackupToast('✓ Restored — '+preview);
   setTimeout(()=>location.reload(),1200);
@@ -1996,7 +2026,7 @@ window.loadFromGistId=async function(gistId,remoteUpdatedAt){
     const gist=await res.json();
     const content=gist.files['dune-backup.json']?.content;
     if(!content){showBackupToast('⚠ dune-backup.json not found in this Gist');return;}
-    const imported=processImport(content);
+    const imported=await processImport(content);
     if(!imported){setGistStatus('Load cancelled. Nothing changed.');return;}
     LS.set('dune_gist_id_v1',gistId.trim());
     const resolvedRemoteUpdated=remoteUpdatedAt||gist.updated_at||'';

@@ -151,3 +151,23 @@ Format per ADR: **decision**, **status**, **context**, **decision made**, **reje
   - **`state.systemMeta` for commit clock** — adds a hidden mutable slice touched by every commit; the wrapper-level `committedAt` is cleaner and reads via `Store.wrapperMeta()`.
 - **Date**: 2026-08-25
 - **Relates to**: ADR-006 (storage strategy), ADR-002 (no build step — B0 remains vanilla), Logbook Phase A canonical mirror (commit 521fe70).
+
+### ADR-010 addendum (2026-08-25 focused fix pass, post Codex implementation review)
+
+Codex identified P1 blockers on the initial B0 implementation. Repaired items:
+
+- **Coordinated production import.** `app.js:processImport` is now `async` and uses `Store.beginFullStateTransaction / commitFullStateWrapper / endFullStateTransaction` under the coordinator. STATE_KEY is written LAST as a schema-13 wrapper with revision = latest validated disk revision + 1. All callers (file input, clipboard, Gist restore) `await`. Byte-exact rollback of touched auxiliary keys on any apply failure; recovery capsule survives success and failure (unchanged from `b4083a8`). Legacy-only backups derive the candidate via the pure `Store.deriveStateFromLegacy(stagedReader)` reading only the freshly-staged auxiliary keys.
+- **Token-guarded full-state API.** `beginFullStateTransaction` mints a token; `commitFullStateWrapper(token, ...)` rejects if no transaction is active or the token doesn't match. `endFullStateTransaction(token)` requires the same token. Fires `lifeos:store-freeze-begin` / `lifeos:store-freeze-end` events so the freeze banner in `index.html` renders during the transaction and hides after.
+- **Persistent durability blocker.** Corrupt authoritative wrapper, external `STATE_KEY` clear, and lower-revision + different-raw storage events set a `durabilityBlocker` record. While set, `Store.set/update` return `STORE_DURABILITY_BLOCKED` and flushes reject; recovery is via `Store.clearDurabilityBlocker()` (explicit human intervention) or an approved full-state transaction. `Store.getDurabilityBlocker()` exposes the record. Events: `lifeos:store-durability-blocked`, `lifeos:store-durability-cleared`.
+- **Corrupt-state fail-closed under lock.** `commitLocked` now sets the blocker and refuses to overwrite on: corrupt disk wrapper, external clear of an accepted STATE_KEY, or disk revision below the known revision.
+- **Coordinator rejection recovery.** `flushChain` now `.catch(recover).then(runCurrent)` — a previous rejection is observed but does not consume the current queued task. Regression: `T-coordinator-recovers`.
+- **Frozen subscriber boundary.** `subscribe`, `notify(path)`, `notify('*')`, immediate hydration, and `onSave` all deliver ONE `deepFreezePersistable(clonePersistable(state))` snapshot per notification cycle. Subscribers cannot mutate internal state; `notify('*')` deduplicates callbacks across paths.
+- **`clonePersistable` corrections.** Symbol keys hard-reject as `STORE_UNPERSISTABLE` (never silently dropped). Cycle detection uses recursion-ancestry, so shared non-cyclic references are accepted and produce structurally-cloned copies at each site. Actual cycles still throw `STORE_CYCLE`.
+- **Wrapper revision validation.** Schema-13 wrappers require `Number.isInteger(revision) && 0 <= revision <= MAX_SAFE_INTEGER`. Non-integer or out-of-range values are corrupt and trigger the durability blocker.
+- **Latest-disk revision rule.** `commitFullStateWrapper` uses `diskRevision + 1` exclusively — no `Math.max(diskRevision, knownRevision)` shortcut, no adopting the imported/snapshot revision.
+- **Conflict UI initialization.** The banner-wiring script now defers to `DOMContentLoaded` so `window.Store` is always defined when it runs.
+- **Freeze UI functional.** Same banner element listens for `lifeos:store-freeze-begin` / `-end` and `lifeos:store-durability-blocked` / `-cleared`.
+- **`beforeunload` covers all unsafe states.** `Store.hasUnsavedWork()` returns true for pending ops, active conflict, active full-state transaction, or a durability blocker; the banner script uses it to gate the warning.
+- **Storage-event equal-revision reread** happens even with Web Locks available (per Codex §15 correction). Corrupt or regressed disk seen from a storage event sets the durability blocker.
+
+The behavioural claims above are backed by tests in `tests/store-durability.spec.js` (`T-clone-symbol-reject`, `T-clone-shared-ref`, `T-clone-cycle-reject`, `T-wrapper-revision-integer`, `T-corrupt-blocks`, `T-full-state-token-guard`, `T-full-state-freeze-write-rejection`, `T-subscriber-frozen`, `T-coordinator-recovers`, `T-chain-C-use-saved`, `T-derive-pure`) plus the existing baseline suites.

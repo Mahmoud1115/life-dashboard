@@ -239,3 +239,248 @@ test('T-mirror-conflict — legacy Logbook write survives a mirror CAS conflict 
   });
   expect(r.legacyIntact).toBe(true);
 });
+
+// ────────────────────────────────────────────────────────
+// T-clone-symbol-reject — clonePersistable rejects symbol keys hard
+// ────────────────────────────────────────────────────────
+test('T-clone-symbol-reject — Store.set rejects objects containing own symbol keys', async ({ page }) => {
+  await page.goto('/');
+  await waitForStore(page);
+  const r = await page.evaluate(() => {
+    const sym = Symbol('x');
+    const obj = { visible: 1 };
+    obj[sym] = 'hidden';
+    const res = window.Store.set('goals.__b0_sym__', obj);
+    return { ok: res.ok, err: res.error };
+  });
+  expect(r.ok).toBe(false);
+  expect(r.err).toBe('STORE_UNPERSISTABLE');
+});
+
+// ────────────────────────────────────────────────────────
+// T-clone-shared-ref — shared non-cyclic references are accepted
+// ────────────────────────────────────────────────────────
+test('T-clone-shared-ref — clonePersistable accepts shared non-cyclic references', async ({ page }) => {
+  await page.goto('/');
+  await waitForStore(page);
+  const r = await page.evaluate(() => {
+    const shared = { x: 1 };
+    const value = { a: shared, b: shared };
+    const setRes = window.Store.set('goals.__b0_shared__', value);
+    const back = window.Store.get('goals.__b0_shared__');
+    return { setOk: setRes.ok, aX: back.a.x, bX: back.b.x, distinct: back.a !== back.b };
+  });
+  expect(r.setOk).toBe(true);
+  expect(r.aX).toBe(1);
+  expect(r.bX).toBe(1);
+  // Structural clone: aliases become distinct copies. That's acceptable.
+  expect(r.distinct).toBe(true);
+});
+
+// ────────────────────────────────────────────────────────
+// T-clone-cycle-reject — actual cycle still rejects
+// ────────────────────────────────────────────────────────
+test('T-clone-cycle-reject — actual cyclic reference is rejected', async ({ page }) => {
+  await page.goto('/');
+  await waitForStore(page);
+  const r = await page.evaluate(() => {
+    const cycle = { a: 1 };
+    cycle.self = cycle;
+    const res = window.Store.set('goals.__b0_cycle__', cycle);
+    return { ok: res.ok, err: res.error };
+  });
+  expect(r.ok).toBe(false);
+  // Either STORE_CYCLE or STORE_UNPERSISTABLE mapped to the outer generic
+  // rejection is acceptable.
+  expect(['STORE_UNPERSISTABLE', 'STORE_CYCLE']).toContain(r.err);
+});
+
+// ────────────────────────────────────────────────────────
+// T-wrapper-revision-integer — non-integer revision on schema-13 is corrupt
+// ────────────────────────────────────────────────────────
+test('T-wrapper-revision-integer — non-integer wrapper revision triggers durability blocker', async ({ page }) => {
+  await page.goto('/');
+  await waitForStore(page);
+  const r = await page.evaluate(async () => {
+    // Prime a pending op then poison the wrapper with a non-integer revision.
+    window.Store.set('goals.__b0_revshape__', 1);
+    const cur = JSON.parse(localStorage.getItem('dune_state_v4') || 'null');
+    if (!cur) return { skipped: true };
+    // Write a wrapper with an invalid revision (float).
+    const bad = { version: window.Store.SCHEMA_VERSION, revision: 1.5, committedAt: new Date().toISOString(), data: cur.data };
+    localStorage.setItem('dune_state_v4', JSON.stringify(bad));
+    const res = await window.Store.flushNow();
+    const blocker = window.Store.getDurabilityBlocker && window.Store.getDurabilityBlocker();
+    // Clean up so downstream tests don't inherit the blocker.
+    if (window.Store.clearDurabilityBlocker) window.Store.clearDurabilityBlocker();
+    return { reason: res && res.reason, code: blocker && blocker.code };
+  });
+  if (r.skipped) return;
+  expect(r.reason).toBe('STORE_CORRUPT_AUTHORITATIVE_STATE');
+  expect(r.code).toBe('STORE_CORRUPT_AUTHORITATIVE_STATE');
+});
+
+// ────────────────────────────────────────────────────────
+// T-corrupt-blocks — corrupt authoritative wrapper blocks new writes
+// ────────────────────────────────────────────────────────
+test('T-corrupt-blocks — corrupt authoritative disk state blocks writes until cleared', async ({ page }) => {
+  await page.goto('/');
+  await waitForStore(page);
+  const r = await page.evaluate(async () => {
+    // Force a flush to know we have a known revision baseline.
+    await window.Store.flushNow();
+    // Poison disk with unparseable content.
+    localStorage.setItem('dune_state_v4', '{{not json');
+    // Provoke commitLocked path via a write + flush.
+    window.Store.set('goals.__b0_corrupt__', 1);
+    const res = await window.Store.flushNow();
+    const set2 = window.Store.set('goals.__b0_corrupt__', 2);
+    const blocker = window.Store.getDurabilityBlocker && window.Store.getDurabilityBlocker();
+    if (window.Store.clearDurabilityBlocker) window.Store.clearDurabilityBlocker();
+    return { flushReason: res && res.reason, writeErr: set2 && set2.error, code: blocker && blocker.code };
+  });
+  expect(r.flushReason).toBe('STORE_CORRUPT_AUTHORITATIVE_STATE');
+  expect(r.writeErr).toBe('STORE_DURABILITY_BLOCKED');
+  expect(r.code).toBe('STORE_CORRUPT_AUTHORITATIVE_STATE');
+});
+
+// ────────────────────────────────────────────────────────
+// T-full-state-token-guard — commitFullStateWrapper rejects without token
+// ────────────────────────────────────────────────────────
+test('T-full-state-token-guard — commitFullStateWrapper rejects without an active token', async ({ page }) => {
+  await page.goto('/');
+  await waitForStore(page);
+  const r = await page.evaluate(async () => {
+    // No begin — direct call must be rejected.
+    const bogus = { id: 'fake', reason: 'fake' };
+    const res = await window.Store.commitFullStateWrapper(bogus, window.Store.defaultState(), 'test');
+    return { ok: res.ok, err: res.error };
+  });
+  expect(r.ok).toBe(false);
+  expect(r.err).toBe('FULL_STATE_TRANSACTION_NOT_ACTIVE');
+});
+
+// ────────────────────────────────────────────────────────
+// T-full-state-freeze-write-rejection — writes rejected during freeze
+// ────────────────────────────────────────────────────────
+test('T-full-state-freeze-write-rejection — Store.set returns FULL_STATE_TRANSACTION_IN_PROGRESS during freeze', async ({ page }) => {
+  await page.goto('/');
+  await waitForStore(page);
+  const r = await page.evaluate(() => {
+    const gate = window.Store.beginFullStateTransaction({ force: true, reason: 'test' });
+    if (!gate.ok) return { failedBegin: gate.error };
+    const set1 = window.Store.set('goals.__b0_freezerej__', 1);
+    const upd1 = window.Store.update('goals.__b0_freezerej__', v => (v || 0) + 1);
+    window.Store.endFullStateTransaction(gate.token);
+    return { setErr: set1.error, updErr: upd1.error };
+  });
+  expect(r.setErr).toBe('FULL_STATE_TRANSACTION_IN_PROGRESS');
+  expect(r.updErr).toBe('FULL_STATE_TRANSACTION_IN_PROGRESS');
+});
+
+// ────────────────────────────────────────────────────────
+// T-subscriber-frozen — subscriber snapshot is frozen; mutation cannot affect state
+// ────────────────────────────────────────────────────────
+test('T-subscriber-frozen — notify payload is deeply frozen', async ({ page }) => {
+  await page.goto('/');
+  await waitForStore(page);
+  const r = await page.evaluate(() => {
+    let seen = null;
+    let threw = false;
+    const unsub = window.Store.subscribe('goals', function (snap) { seen = snap; });
+    // Attempt mutation — Object.freeze makes assignment silently fail in
+    // sloppy mode and throw in strict; the returned Store.get should stay clean.
+    try { seen.__mutation_probe__ = 42; } catch (e) { threw = true; }
+    const frozen = Object.isFrozen(seen);
+    unsub();
+    return { frozen: !!frozen, threw };
+  });
+  expect(r.frozen).toBe(true);
+});
+
+// ────────────────────────────────────────────────────────
+// T-coordinator-recovers — a rejected coordinator task does not skip the next
+// ────────────────────────────────────────────────────────
+test('T-coordinator-recovers — after a coordinator task rejects, the next queued task still runs', async ({ page }) => {
+  await page.goto('/');
+  await waitForStore(page);
+  const r = await page.evaluate(async () => {
+    // Prime a normal write to build a healthy pending op.
+    window.Store.set('goals.__b0_coordrec__', { count: 1 });
+    // Manually schedule two flushes on the internal chain by piggy-backing
+    // on flushNow — the first is our real work; the second lands after.
+    const first = window.Store.flushNow();
+    const set2  = window.Store.set('goals.__b0_coordrec__', { count: 2 });
+    const second = window.Store.flushNow();
+    const [r1, r2] = await Promise.all([first, second]);
+    const val = window.Store.get('goals.__b0_coordrec__');
+    return { r1reason: r1 && r1.reason, r2committed: r2 && r2.committed, val };
+  });
+  // First flush should either commit or noop; second must at least run
+  // (not be silently consumed by an earlier rejection).
+  expect(r.val && r.val.count).toBe(2);
+});
+
+// ────────────────────────────────────────────────────────
+// T-chain-C-use-saved — same-path chain resolution: use-saved leaves op2 idempotent
+// ────────────────────────────────────────────────────────
+test('T-chain-C-use-saved — A→B, B→C, external base C, use-saved removes op1 only', async ({ page }) => {
+  await page.goto('/');
+  await waitForStore(page);
+  const r = await page.evaluate(async () => {
+    // Baseline: goals.__b0_chain__ = 'A' persisted at some revision.
+    window.Store.set('goals.__b0_chain__', 'A');
+    await window.Store.flushNow();
+    // Enqueue A→B, B→C.
+    window.Store.set('goals.__b0_chain__', 'B');
+    window.Store.set('goals.__b0_chain__', 'C');
+    // Simulate an external tab having committed 'C' at a higher revision.
+    const cur = JSON.parse(localStorage.getItem('dune_state_v4'));
+    cur.data.goals.__b0_chain__ = 'C';
+    cur.revision = cur.revision + 5;
+    cur.committedAt = new Date().toISOString();
+    localStorage.setItem('dune_state_v4', JSON.stringify(cur));
+    // Force a flush — should conflict on op1 (A→B).
+    const res = await window.Store.flushNow();
+    const cf = window.Store.getConflict && window.Store.getConflict();
+    // Resolve with use-saved-version.
+    let resolveRes = null;
+    if (cf) resolveRes = window.Store.resolveConflict('use-saved-version');
+    // After resolve, op2 (B→C) should be idempotently satisfied against C.
+    const res2 = await window.Store.flushNow();
+    const final = window.Store.get('goals.__b0_chain__');
+    return { reason: res && res.reason, hadConflict: !!cf, resolved: !!(resolveRes && resolveRes.ok), reason2: res2 && res2.reason, final };
+  });
+  expect(r.hadConflict).toBe(true);
+  expect(r.resolved).toBe(true);
+  // After use-saved, op2 is idempotently satisfied against C on disk.
+  expect(r.final).toBe('C');
+});
+
+// ────────────────────────────────────────────────────────
+// T-derive-pure — Store.deriveStateFromLegacy uses only supplied reader
+// ────────────────────────────────────────────────────────
+test('T-derive-pure — Store.deriveStateFromLegacy reads only from the supplied reader', async ({ page }) => {
+  await page.goto('/');
+  await waitForStore(page);
+  const r = await page.evaluate(() => {
+    // Reader supplies a Russia salary that is NOT the one in live localStorage.
+    const stagedReads = {};
+    const reader = (k) => {
+      stagedReads[k] = (stagedReads[k] || 0) + 1;
+      if (k === 'dune_finance_v1') return { russia: { salary: 424242, usd_rate: 88, save_target: 55000 } };
+      return null;
+    };
+    const before = JSON.stringify(localStorage.getItem('dune_state_v4'));
+    const derived = window.Store.deriveStateFromLegacy(reader);
+    const after = JSON.stringify(localStorage.getItem('dune_state_v4'));
+    return {
+      derivedSalary: derived.money.salary_net,
+      readerFired: !!stagedReads.dune_finance_v1,
+      touchedDisk: after !== before
+    };
+  });
+  expect(r.derivedSalary).toBe(424242);
+  expect(r.readerFired).toBe(true);
+  expect(r.touchedDisk).toBe(false);
+});
