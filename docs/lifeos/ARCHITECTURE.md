@@ -37,7 +37,7 @@ Features:
 - Forward-only migration chain in `migrateUp()`; schema-12 blobs still load and are re-wrapped as schema-13 on the next commit.
 - Validate-on-load — missing `qatarVisit`/`money.salary_net` → snapshot recovery, then legacy migration.
 - **Revision exhaustion** — the last accepted revision is `Number.MAX_SAFE_INTEGER`; the next write fails with `STORE_REVISION_EXHAUSTED`.
-- **Pure legacy derivation** — `Store.deriveStateFromLegacy(read)` reads only from a caller-supplied reader; used by boot (live localStorage) and future legacy-only import paths (staged auxiliaries).
+- **Pure, deterministic legacy derivation** — `Store.deriveStateFromLegacy(read)` reads only from a caller-supplied reader; no live localStorage access when a reader is supplied, no wall-clock (uses a fixed `DETERMINISTIC_META_ISO` epoch), no random defaults. Used by boot (live-localStorage reader) and by `processImport`'s legacy-only import derivation (staged-key reader). Same reader → byte-equivalent candidate across calls.
 
 See `docs/lifeos/DECISIONS.md` ADR-010 for the full protocol.
 
@@ -66,7 +66,7 @@ No server, no queue, no scheduled job. Every state change fires synchronously fr
 - User-initiated only, never automatic.
 - **Save to Gist**: `getAllBackupData()` collects the `BACKUP_KEYS` set (`app.js:1378`) → POST/PATCH `api.github.com/gists` with the PAT as a Bearer header → private Gist "Dune Life OS — Auto Backup" (file `dune-backup.json`).
 - **Load from Gist**: reverse. GET the Gist by cached ID (`dune_gist_id_v1`), overwrite matching `localStorage` keys, reload.
-- The PAT is deliberately excluded from `BACKUP_KEYS`. The BHT AI provider key (`state.bht.ai.apiKey`) lives inside `dune_state_v4` so it *is* backed up — feature currently unused.
+- The PAT is deliberately excluded from `BACKUP_KEYS`. `state.bht.ai` no longer carries an `apiKey` field: `bht.js:sanitizeAI` strips it on load and rejects it on write (ADR-005). BHT AI provider config is fallback/ollama only; nothing that touches a network key is persisted.
 - **Known UX bug**: the "load from a different Gist ID" input only appears when auto-discovery fails, which makes recovering from a bad cached `dune_gist_id_v1` hard. Slated for fix under Priority 1.
 - **Known correctness gap**: `processImport()` at `app.js:1483-1499` is commented `// atomic write` but is a sequential loop with no allowlist, no schema validation beyond `.version` / `.data` existence, and no rollback. Slated for fix under Priority 1.
 

@@ -339,7 +339,10 @@ test('F11 — snapshot restore is deliberately non-canonical for Gen-1 finance d
 
   // Restore snapshot index 1 (the older Gen-2 money).
   const restored = await page.evaluate(() => window.Store.restoreSnapshot(1));
-  expect(restored).toBe(true);
+  // B0 restoreSnapshot returns { ok, error? } — validate the accepted case.
+  expect(restored && restored.ok).toBe(true);
+  // Give the coordinator a beat to complete the full-state transaction.
+  await page.waitForTimeout(200);
 
   const s = await page.evaluate(() => ({
     gen1: JSON.parse(localStorage.getItem('dune_finance_v1') || '{}'),

@@ -392,7 +392,11 @@
     return logbookStableHash(rows.join('\n'));
   }
 
-  function defaultState() {
+  // Fixed epoch for deterministic (passive migration / legacy-derivation)
+  // metadata. User-action timestamps elsewhere continue to use nowISO().
+  const DETERMINISTIC_META_ISO = '2026-06-01T00:00:00.000Z';
+  function defaultState(opts) {
+    const isoNow = (opts && opts.deterministic) ? DETERMINISTIC_META_ISO : nowISO();
     return {
       money: {
         salary_net: 130000,
@@ -489,8 +493,8 @@
       ideas: [],
       meta: {
         version: SCHEMA_VERSION,
-        createdAt: nowISO(),
-        lastUpdated: nowISO()
+        createdAt: isoNow,
+        lastUpdated: isoNow
       }
     };
   }
@@ -499,11 +503,12 @@
   // MIGRATIONS
   // ──────────────────────────────────────────────
   // Pure legacy → Gen-2 candidate derivation. `read` is `(key) => parsedJsonOrNull`.
-  // No live localStorage access here, no Store mutation. Used by initial boot
-  // (default reader = live localStorage) and by legacy-only import derivation
-  // (reader = staged map of the freshly-written auxiliary keys).
+  // No live localStorage access here, no Store mutation, no wall-clock. Same
+  // staged legacy input → byte-equivalent derived candidate across calls.
+  // Used by initial boot (reader = live localStorage) and by legacy-only
+  // import derivation (reader = staged map of the freshly-written keys).
   function deriveStateFromLegacy(read) {
-    const s = defaultState();
+    const s = defaultState({ deterministic: true });
     const safe = (typeof read === 'function')
       ? read
       : function (k) { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } };
@@ -709,6 +714,20 @@
     }
   }
 
+  // Canonical ECMAScript array index: integer in [0, 2^32 - 2] whose
+  // decimal-string representation is exactly the property name (no leading
+  // zeros, no "-0", no "1.0"). "4294967295" is deliberately excluded — it
+  // is the length limit, not a valid index.
+  const MAX_ARRAY_INDEX = 4294967294; // 2^32 - 2
+  function isCanonicalArrayIndexKey(name) {
+    if (typeof name !== 'string' || name.length === 0) return false;
+    const n = Number(name);
+    return Number.isInteger(n)
+      && n >= 0
+      && n <= MAX_ARRAY_INDEX
+      && String(n) === name;
+  }
+
   // ── PERSISTABLE VALUE CONTRACT ───────────────────
   function isPlainOrNullProtoObject(v) {
     if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
@@ -740,11 +759,14 @@
         //   - no indexed accessors (never invoke a getter to check for one)
         //   - no non-index own data properties beyond length
         //   - no sparse holes
+        // Canonical array indices are exactly integers in [0, 2^32 - 2].
+        // "4294967295" (2^32 - 1) is NOT a valid array index; regex-based
+        // matching would misclassify it and silently drop the value.
         if (Object.getOwnPropertySymbols(v).length > 0) throw new Error('STORE_UNPERSISTABLE');
         const names = Object.getOwnPropertyNames(v);
         for (const n of names) {
           if (n === 'length') continue;
-          if (!/^(0|[1-9]\d*)$/.test(n)) throw new Error('STORE_UNPERSISTABLE'); // non-index own property
+          if (!isCanonicalArrayIndexKey(n)) throw new Error('STORE_UNPERSISTABLE'); // non-index own property
           const desc = Object.getOwnPropertyDescriptor(v, n);
           if (!desc || 'get' in desc || 'set' in desc) throw new Error('STORE_UNPERSISTABLE');
         }
@@ -842,13 +864,29 @@
       return { ok: true };
     } catch (e) { return { ok: false, error: e }; }
   }
+  // Validate a parsed snapshot wrapper. Schema-13 wrappers must have an
+  // integer revision in [0, MAX_SAFE_INTEGER]; malformed schema-13 sources
+  // are rejected outright (never re-wrapped, never migrated). Schema ≤12
+  // wrappers remain migratable.
+  function isValidSnapshotWrapper(parsed) {
+    if (!parsed || typeof parsed !== 'object') return false;
+    if (typeof parsed.version !== 'number' || !Number.isInteger(parsed.version)) return false;
+    if (parsed.version === 13) {
+      const rev = parsed.revision;
+      if (!(typeof rev === 'number' && Number.isFinite(rev) && Number.isInteger(rev) && rev >= 0 && rev <= Number.MAX_SAFE_INTEGER)) {
+        return false;
+      }
+    }
+    return !!parsed.data;
+  }
   function restoreFromSnapshot() {
     try {
       const snaps = JSON.parse(localStorage.getItem(SNAPSHOTS_KEY) || '[]');
       for (const s of snaps) {
         try {
           const parsed = JSON.parse(s.payload);
-          if (parsed && parsed.data) return migrateUp(parsed.data, parsed.version);
+          if (!isValidSnapshotWrapper(parsed)) continue; // skip malformed
+          return migrateUp(parsed.data, parsed.version);
         } catch (e) { continue; }
       }
     } catch (e) { }
@@ -933,8 +971,12 @@
       const m = migrateAndValidate(parsed);
       if (m.ok) return { data: m.data, revision: parsed.revision, committedAt: parsed.committedAt, rawWrapper: raw };
       // Corrupt / invalid — fall through to snapshot then legacy.
-      const snap = restoreFromSnapshot();
-      if (snap && validate(snap)) return { data: clonePersistable(snap), revision: 0, committedAt: null, rawWrapper: null };
+      let snap = null;
+      try { snap = restoreFromSnapshot(); } catch (e) { snap = null; }
+      if (snap && validate(snap)) {
+        try { return { data: clonePersistable(snap), revision: 0, committedAt: null, rawWrapper: null }; }
+        catch (e) { /* snap clone failed — fall through */ }
+      }
       return { data: clonePersistable(migrateFromLegacy()), revision: 0, committedAt: null, rawWrapper: null };
     }
     return { data: clonePersistable(migrateFromLegacy()), revision: 0, committedAt: null, rawWrapper: null };
@@ -1731,27 +1773,32 @@
       try {
         const snaps = JSON.parse(localStorage.getItem(SNAPSHOTS_KEY) || '[]');
         snap = snaps[i || 0];
-      } catch (e) { return false; }
-      if (!snap) return false;
+      } catch (e) { return { ok: false, error: 'SNAPSHOT_LIST_UNREADABLE' }; }
+      if (!snap) return { ok: false, error: 'SNAPSHOT_NOT_FOUND' };
       let parsed;
-      try { parsed = JSON.parse(snap.payload); } catch (e) { return false; }
-      const data = (parsed && parsed.version === SCHEMA_VERSION && parsed.data)
+      try { parsed = JSON.parse(snap.payload); } catch (e) { return { ok: false, error: 'SNAPSHOT_SOURCE_WRAPPER_INVALID' }; }
+      // Schema-13 snapshots must carry a valid integer revision; malformed
+      // sources are rejected outright — no Store state mutation, no new
+      // live wrapper minted from bad source data. Schema ≤12 remain
+      // migratable.
+      if (!isValidSnapshotWrapper(parsed)) return { ok: false, error: 'SNAPSHOT_SOURCE_WRAPPER_INVALID' };
+      const data = (parsed.version === SCHEMA_VERSION && parsed.data)
         ? parsed.data
-        : migrateUp((parsed && parsed.data) || {}, (parsed && parsed.version) || 0);
+        : migrateUp(parsed.data || {}, parsed.version || 0);
       normalizeLogbookDomain(data);
       const gate = beginFullStateTransaction({ force: !!opts.force, reason: 'snapshot' });
-      if (!gate.ok) return false;
+      if (!gate.ok) return { ok: false, error: gate.error };
       commitFullStateWrapper(gate.token, data, 'snapshot').then(res => {
         try {
           if (res && res.ok) {
-            const snap = deepFreezePersistable(clonePersistable(baseState));
+            const frozen = deepFreezePersistable(clonePersistable(baseState));
             for (const fn of saveListeners) {
-              try { fn(snap, { revision: res.revision, committedAt: res.committedAt, reason: res.reason }); } catch (e) {}
+              try { fn(frozen, { revision: res.revision, committedAt: res.committedAt, reason: res.reason }); } catch (e) {}
             }
           }
         } finally { endFullStateTransaction(gate.token); }
       }, () => { endFullStateTransaction(gate.token); });
-      return true;
+      return { ok: true };
     },
     reset: function (opts) {
       opts = opts || {};
