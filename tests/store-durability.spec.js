@@ -1124,3 +1124,242 @@ test('T-mirror-conflict-real-forced — a real LOGBOOK.reconcile mirror write CA
   expect(r.legacyIntact).toBe(true);
   expect(r.authority).toBe('legacy-mirror');
 });
+
+// ────────────────────────────────────────────────────────
+// T-snapshot-source-invalid-data-explicit — restoreSnapshot rejects data-invalid schema-13
+// ────────────────────────────────────────────────────────
+test('T-snapshot-source-invalid-data-explicit — restoreSnapshot rejects schema-13 wrappers whose data fails Store validation', async ({ page }) => {
+  await page.goto('/');
+  await waitForStore(page);
+  const cases = [
+    'not-an-object',
+    [],
+    { money: {} /* no salary_net */, qatarVisit: {} },
+    { money: { salary_net: 'not-a-number' }, qatarVisit: {} },
+    { qatarVisit: {} /* no money */ },
+    null
+  ];
+  for (const badData of cases) {
+    const r = await page.evaluate(async (bad) => {
+      // Establish a healthy baseline commit so we can prove no state mutation.
+      window.Store.set('goals.__b0_snapdatainv__', 'BASE-' + Math.random().toString(36).slice(2, 6));
+      await window.Store.flushNow();
+      const baselineRev = window.Store.wrapperMeta().revision;
+      const baselineVal = window.Store.get('goals.__b0_snapdatainv__');
+      // Structurally valid schema-13 wrapper, but data fails Store.validate.
+      const wrapper = { version: 13, revision: 5, committedAt: '2026-08-25T00:00:00Z', data: bad };
+      const list = JSON.parse(localStorage.getItem('dune_snapshots_v1') || '[]');
+      list.unshift({ at: new Date().toISOString(), payload: JSON.stringify(wrapper) });
+      localStorage.setItem('dune_snapshots_v1', JSON.stringify(list));
+      const res = window.Store.restoreSnapshot(0);
+      const afterRev = window.Store.wrapperMeta().revision;
+      const afterVal = window.Store.get('goals.__b0_snapdatainv__');
+      return { ok: res && res.ok, err: res && res.error, baselineRev, afterRev, baselineVal, afterVal };
+    }, badData);
+    expect(r.ok, `bad=${JSON.stringify(badData)}`).toBe(false);
+    expect(r.err).toBe('SNAPSHOT_SOURCE_WRAPPER_INVALID');
+    expect(r.afterRev).toBe(r.baselineRev);
+    expect(r.afterVal).toBe(r.baselineVal);
+  }
+});
+
+// ────────────────────────────────────────────────────────
+// T-snapshot-source-invalid-data-recovery — load-time recovery skips data-invalid snap and continues
+// ────────────────────────────────────────────────────────
+test('T-snapshot-source-invalid-data-recovery — load-time recovery skips data-invalid schema-13 wrappers and hydrates the next valid one', async ({ page }) => {
+  await page.goto('/');
+  await waitForStore(page);
+  await page.evaluate(() => {
+    // [bad-data, good] — snapshot[0] is a schema-13 wrapper with valid
+    // revision but validate()-rejected data; snapshot[1] is fully valid.
+    const badDataSnap = {
+      version: 13, revision: 7, committedAt: '2026-08-25T00:00:00Z',
+      data: { qatarVisit: {} /* missing money.salary_net */ }
+    };
+    const goodSnap = {
+      version: 13, revision: 42, committedAt: '2026-08-25T00:00:00Z',
+      data: {
+        money: { salary_net: 24680, expenses: { rent: 1, food: 1, transport: 1, utilities: 1, phone: 1, family_transfer: 0, other: 1, mai: 0 }, usd_rate: 88, save_target: 55000 },
+        qatarVisit: { from_airport: 'SVO', to_airport: 'DOH', travel_month: '', flights: 0, hotel: 0, food: 0, transport: 0, misc: 0, emergency: 0, saved: 0, notes: '' }
+      }
+    };
+    localStorage.setItem('dune_snapshots_v1', JSON.stringify([
+      { at: '2026-08-25T00:00:00Z', payload: JSON.stringify(badDataSnap) },
+      { at: '2026-08-25T00:00:00Z', payload: JSON.stringify(goodSnap) }
+    ]));
+    localStorage.setItem('dune_state_v4', '{corrupt-json');
+    // Align dune_finance_v1 with the good snap so the app.js bridge does
+    // not overwrite the recovered value on boot.
+    localStorage.setItem('dune_finance_v1', JSON.stringify({ russia: { salary: 24680, usd_rate: 88, save_target: 55000 } }));
+  });
+  await page.reload();
+  await waitForStore(page);
+  const salary = await page.evaluate(() => window.Store.get('money.salary_net'));
+  expect(salary).toBe(24680);
+});
+
+// ────────────────────────────────────────────────────────
+// T-coordinator-recovers-real-lock-rejection — real navigator.locks rejection does not skip next task
+// ────────────────────────────────────────────────────────
+test('T-coordinator-recovers-real-lock-rejection — a real coordinator boundary rejection does not consume the next queued task', async ({ page }) => {
+  await page.goto('/');
+  await waitForStore(page);
+  const r = await page.evaluate(async () => {
+    // Ensure any boot writes have settled so we can measure revision deltas cleanly.
+    await window.Store.flushNow();
+    const startRev = window.Store.wrapperMeta().revision;
+    if (!(navigator.locks && typeof navigator.locks.request === 'function')) {
+      return { skipped: true, reason: 'no-navigator-locks' };
+    }
+    // Patch navigator.locks.request to reject exactly ONCE at the real
+    // coordinator boundary, then restore. This exercises the same
+    // .catch(recover).then(runCurrent) semantics as production.
+    const origRequest = navigator.locks.request.bind(navigator.locks);
+    let firstRejected = false;
+    let secondEntered = 0;
+    navigator.locks.request = function (name, opts, cb) {
+      // Restore on first call so the SECOND flush hits the real lock.
+      navigator.locks.request = origRequest;
+      firstRejected = true;
+      return Promise.reject(new Error('forced-lock-rejection'));
+    };
+    // Task A: enqueue a normal write. Its flush enters withCoordinator → hits our patched navigator.locks.request → rejects.
+    window.Store.set('goals.__b0_coord_lock_A__', 'A');
+    let taskAResult = null;
+    try { taskAResult = await window.Store.flushNow(); } catch (e) { taskAResult = { rejected: String(e && e.message) }; }
+    // Task B: enqueue a normal write. Its flush enters withCoordinator → real lock → commits.
+    // Wrap navigator.locks.request one more time to count real callback executions for B.
+    const realRequest = navigator.locks.request.bind(navigator.locks);
+    navigator.locks.request = function (name, opts, cb) {
+      secondEntered++;
+      return realRequest(name, opts, cb);
+    };
+    window.Store.set('goals.__b0_coord_lock_B__', 'B');
+    const taskBResult = await window.Store.flushNow();
+    // Restore.
+    navigator.locks.request = origRequest;
+    const endRev = window.Store.wrapperMeta().revision;
+    const finalA = window.Store.get('goals.__b0_coord_lock_A__');
+    const finalB = window.Store.get('goals.__b0_coord_lock_B__');
+    return {
+      skipped: false,
+      firstRejected,
+      secondEnteredCount: secondEntered,
+      taskAOk: !!(taskAResult && taskAResult.rejected) || (taskAResult && taskAResult.committed === false),
+      taskBCommitted: !!(taskBResult && taskBResult.committed),
+      revDelta: endRev - startRev,
+      finalA, finalB
+    };
+  });
+  if (r.skipped) test.skip(true, r.reason);
+  expect(r.firstRejected).toBe(true);
+  expect(r.taskBCommitted).toBe(true);
+  expect(r.secondEnteredCount).toBe(1); // real coordinator ran the next task exactly once
+  expect(r.finalB).toBe('B');
+  // Task A's write is still in the queue after B commits (the rejection did
+  // not drop its op), so B's commit should carry BOTH ops → single revision bump.
+  expect(r.revDelta).toBeGreaterThanOrEqual(1);
+});
+
+// ────────────────────────────────────────────────────────
+// T-mirror-conflict-real-reconcile-generated — actor A's conflicting op is generated by LOGBOOK.reconcile()
+// ────────────────────────────────────────────────────────
+test('T-mirror-conflict-real-reconcile-generated — the conflicting mirror op is produced by production LOGBOOK.reconcile(), not by direct Store.set', async ({ page }) => {
+  await page.goto('/');
+  await waitForStore(page);
+  // Verify LOGBOOK.reconcile is available.
+  const hasReconcile = await page.evaluate(() => !!(window.LOGBOOK && typeof window.LOGBOOK.reconcile === 'function'));
+  test.skip(!hasReconcile, 'production LOGBOOK.reconcile not present');
+  const r = await page.evaluate(async () => {
+    // 1. Seed a valid Phase A Tracker legacy entry and reconcile so state.logbook has that entry.
+    const seededEntry = {
+      id: 't_recon_gen_1', date: '2026-08-25', hours: 2,
+      company: 'X', aircraft_type: 'A320', registration: 'RA-1',
+      engine_type: '', ata_chapter: '', system: '',
+      task_description: 'reconcile-generated conflict — seed', role: '', supervisor: '',
+      stamp_status: '', language: '', b1_relevance: ''
+    };
+    localStorage.setItem('dune_logbook_v1', JSON.stringify([seededEntry]));
+    window.LOGBOOK.reconcile();
+    await window.Store.flushNow();
+    const seededMirrorEntries = (window.Store.get('logbook') || {}).entries || [];
+
+    // 2. Make a REAL Tracker legacy change so the NEXT reconcile produces
+    //    a materially-different mirror envelope.
+    const newEntry = Object.assign({}, seededEntry, { id: 't_recon_gen_2', task_description: 'reconcile-generated conflict — new record' });
+    localStorage.setItem('dune_logbook_v1', JSON.stringify([seededEntry, newEntry]));
+
+    // 3. Before actor A reconciles, external actor B commits a DIFFERENT
+    //    canonical mirror on disk at a higher revision (drift = null,
+    //    entries = seededMirrorEntries — materially different from what A's
+    //    upcoming reconcile will produce).
+    const disk = JSON.parse(localStorage.getItem('dune_state_v4'));
+    disk.data.logbook = {
+      schemaVersion: 1, authority: 'legacy-mirror',
+      entries: [],  // deliberately empty so it materially differs from A's upcoming 2-entry mirror
+      migration: { version: 1, sourceCounts: { tracker: 0, builder: 0 } },
+      reconciled: true, drift: null
+    };
+    disk.revision = disk.revision + 7;
+    disk.committedAt = new Date().toISOString();
+    localStorage.setItem('dune_state_v4', JSON.stringify(disk));
+
+    // 4. Call production LOGBOOK.reconcile() — this MUST be the source of the
+    //    pending 'logbook' Store CAS op. No direct Store.set('logbook', ...)
+    //    from the test.
+    const opCountBefore = 0; // pending queue is empty after our earlier flush
+    window.LOGBOOK.reconcile();
+    // At this point Store.set('logbook', envelopeFromReconcile) has been called
+    // internally by production code. The pending op's before-value comes from
+    // the pre-disk-mutation baseState — which is stale relative to the disk we
+    // just poisoned — so the next flush must conflict on 'logbook'.
+
+    // 5. Flush.
+    const flushRes = await window.Store.flushNow();
+    const cf = window.Store.getConflict();
+
+    // 6. Assertions.
+    const optimisticMirror = window.Store.get('logbook');
+    const diskMirror = JSON.parse(localStorage.getItem('dune_state_v4')).data.logbook;
+    const legacyTracker = JSON.parse(localStorage.getItem('dune_logbook_v1'));
+
+    // Cleanup: resolve conflict so downstream test state is clean.
+    if (cf) window.Store.resolveConflict('use-saved-version');
+
+    return {
+      flushReason: flushRes && flushRes.reason,
+      hasConflict: !!cf,
+      conflictPath: cf && cf.path,
+      optimisticEntriesCount: (optimisticMirror && optimisticMirror.entries) ? optimisticMirror.entries.length : -1,
+      diskEntriesCount: (diskMirror && diskMirror.entries) ? diskMirror.entries.length : -1,
+      legacyIntact: Array.isArray(legacyTracker) && legacyTracker.length === 2,
+      authority: optimisticMirror && optimisticMirror.authority
+    };
+  });
+  expect(r.flushReason).toBe('CONFLICT');
+  expect(r.hasConflict).toBe(true);
+  expect(r.conflictPath).toBe('logbook');
+  // Optimistic mirror is A's reconcile-generated envelope (2 entries: seeded + new).
+  expect(r.optimisticEntriesCount).toBe(2);
+  // Disk mirror is B's externally-committed envelope (empty).
+  expect(r.diskEntriesCount).toBe(0);
+  expect(r.legacyIntact).toBe(true);
+  expect(r.authority).toBe('legacy-mirror');
+});
+
+// ────────────────────────────────────────────────────────
+// T-array-index-max-valid / max-plus-one-invalid — boundary of canonical-index helper
+// ────────────────────────────────────────────────────────
+test('T-array-index-max-valid — isCanonicalArrayIndexKey("4294967294") === true', async ({ page }) => {
+  await page.goto('/');
+  await waitForStore(page);
+  const r = await page.evaluate(() => window.Store._test_isCanonicalArrayIndexKey('4294967294'));
+  expect(r).toBe(true);
+});
+
+test('T-array-index-max-plus-one-invalid — isCanonicalArrayIndexKey("4294967295") === false', async ({ page }) => {
+  await page.goto('/');
+  await waitForStore(page);
+  const r = await page.evaluate(() => window.Store._test_isCanonicalArrayIndexKey('4294967295'));
+  expect(r).toBe(false);
+});

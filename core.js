@@ -864,11 +864,9 @@
       return { ok: true };
     } catch (e) { return { ok: false, error: e }; }
   }
-  // Validate a parsed snapshot wrapper. Schema-13 wrappers must have an
-  // integer revision in [0, MAX_SAFE_INTEGER]; malformed schema-13 sources
-  // are rejected outright (never re-wrapped, never migrated). Schema ≤12
-  // wrappers remain migratable.
-  function isValidSnapshotWrapper(parsed) {
+  // Wrapper-only structural gate. Used by both snapshot paths; data-level
+  // validation is performed separately (see validateSnapshotWrapperFull).
+  function isValidSnapshotWrapperShape(parsed) {
     if (!parsed || typeof parsed !== 'object') return false;
     if (typeof parsed.version !== 'number' || !Number.isInteger(parsed.version)) return false;
     if (parsed.version === 13) {
@@ -879,14 +877,37 @@
     }
     return !!parsed.data;
   }
+  // Full snapshot wrapper validation: structural gate + migrate + Store data
+  // validation. Never mutates Store. Returns { ok, data? }; on ok:true, data
+  // is the migrated candidate suitable for commitFullStateWrapper.
+  function validateSnapshotWrapperFull(parsed) {
+    if (!isValidSnapshotWrapperShape(parsed)) return { ok: false };
+    let migrated;
+    try {
+      migrated = (parsed.version === SCHEMA_VERSION && parsed.data)
+        ? parsed.data
+        : migrateUp(parsed.data || {}, parsed.version || 0);
+      normalizeLogbookDomain(migrated);
+    } catch (e) { return { ok: false }; }
+    if (!validate(migrated)) return { ok: false };
+    return { ok: true, data: migrated };
+  }
+  // Retained alias — existing callers went through the shape-only gate.
+  // Every production caller of the old name has been switched to the
+  // Full validator; keep the name as an alias for backward reference.
+  function isValidSnapshotWrapper(parsed) { return isValidSnapshotWrapperShape(parsed); }
   function restoreFromSnapshot() {
     try {
       const snaps = JSON.parse(localStorage.getItem(SNAPSHOTS_KEY) || '[]');
       for (const s of snaps) {
         try {
           const parsed = JSON.parse(s.payload);
-          if (!isValidSnapshotWrapper(parsed)) continue; // skip malformed
-          return migrateUp(parsed.data, parsed.version);
+          // Skip snapshots whose wrapper OR data would not be accepted by
+          // the live Store. Data-invalid snapshots continue the loop; the
+          // next recoverable one wins.
+          const v = validateSnapshotWrapperFull(parsed);
+          if (!v.ok) continue;
+          return v.data;
         } catch (e) { continue; }
       }
     } catch (e) { }
@@ -1777,15 +1798,13 @@
       if (!snap) return { ok: false, error: 'SNAPSHOT_NOT_FOUND' };
       let parsed;
       try { parsed = JSON.parse(snap.payload); } catch (e) { return { ok: false, error: 'SNAPSHOT_SOURCE_WRAPPER_INVALID' }; }
-      // Schema-13 snapshots must carry a valid integer revision; malformed
-      // sources are rejected outright — no Store state mutation, no new
-      // live wrapper minted from bad source data. Schema ≤12 remain
-      // migratable.
-      if (!isValidSnapshotWrapper(parsed)) return { ok: false, error: 'SNAPSHOT_SOURCE_WRAPPER_INVALID' };
-      const data = (parsed.version === SCHEMA_VERSION && parsed.data)
-        ? parsed.data
-        : migrateUp(parsed.data || {}, parsed.version || 0);
-      normalizeLogbookDomain(data);
+      // Full validation: wrapper structure AND data must pass the same
+      // gate the live Store applies. Rejection here means no state
+      // mutation, no full-state transaction opened, no new wrapper
+      // minted from bad source.
+      const v = validateSnapshotWrapperFull(parsed);
+      if (!v.ok) return { ok: false, error: 'SNAPSHOT_SOURCE_WRAPPER_INVALID' };
+      const data = v.data;
       const gate = beginFullStateTransaction({ force: !!opts.force, reason: 'snapshot' });
       if (!gate.ok) return { ok: false, error: gate.error };
       commitFullStateWrapper(gate.token, data, 'snapshot').then(res => {
@@ -1837,6 +1856,10 @@
     // Deep-clone + freeze so external mutation cannot alter queued CAS intent.
     getConflict: () => (conflict ? deepFreezePersistable(clonePersistable(conflict)) : null),
     resolveConflict,
+    // Test-only helper exposure (not part of the public API surface). Used
+    // by store-durability regressions to prove canonical-index classification
+    // at the 2^32 boundary without allocating a 4.29-billion-slot array.
+    _test_isCanonicalArrayIndexKey: isCanonicalArrayIndexKey,
     // For post-commit listener firing.
     _internal_fireSaveListeners: function (frozenSnap, meta) {
       for (const fn of saveListeners) { try { fn(frozenSnap, meta); } catch (e) {} }
