@@ -2713,19 +2713,30 @@ function renderApartments(){
     grid.appendChild(empty);
   } else {
     filtered.forEach(function(a){
+      // B1 R7: an Apartment card exposes operative winner / delete
+      // controls (and a dataset.aptId that the DOM delegate reads)
+      // ONLY when the row is actionable. `dataset.aptId` is always a
+      // string, so a numeric-id or ambiguous-id row that renders it
+      // could collide with a legitimate string-id row and target it
+      // instead. Non-actionable rows render read-only: status, address,
+      // meta, numbers, reg badge, notes, and the map link — but no
+      // toggleWinner button, no delete button, and no dataset.aptId.
+      const actionable = _isActionableApartment(a);
       const card=document.createElement('div');
-      card.className='apt-card'+(a.winner?' apt-card-winner':'')+(a.registration==='no'?' apt-card-noreg':'');
-      card.dataset.aptId=_b1SafeText(a.id);
+      card.className='apt-card'+(a.winner?' apt-card-winner':'')+(a.registration==='no'?' apt-card-noreg':'')+(actionable?'':' apt-card-readonly');
+      if (actionable) card.dataset.aptId=_b1SafeText(a.id);
       const head=document.createElement('div');
       head.className='apt-card-head';
       head.appendChild(makeStatusPill(a.status));
-      const star=document.createElement('button');
-      star.type='button';
-      star.className='apt-star'+(a.winner?' apt-star-on':'');
-      star.dataset.aptAction='toggleWinner';
-      star.title='Mark as top choice';
-      star.textContent='⭐';
-      head.appendChild(star);
+      if (actionable) {
+        const star=document.createElement('button');
+        star.type='button';
+        star.className='apt-star'+(a.winner?' apt-star-on':'');
+        star.dataset.aptAction='toggleWinner';
+        star.title='Mark as top choice';
+        star.textContent='⭐';
+        head.appendChild(star);
+      }
       card.appendChild(head);
       const addr=document.createElement('div');
       addr.className='apt-address';
@@ -2791,12 +2802,14 @@ function renderApartments(){
       mapsLink.className='icl-small-btn';
       mapsLink.textContent='🗺 Maps';
       actions.appendChild(mapsLink);
-      const del=document.createElement('button');
-      del.type='button';
-      del.className='icl-small-btn icl-del-btn';
-      del.dataset.aptAction='delete';
-      del.textContent='✕ Delete';
-      actions.appendChild(del);
+      if (actionable) {
+        const del=document.createElement('button');
+        del.type='button';
+        del.className='icl-small-btn icl-del-btn';
+        del.dataset.aptAction='delete';
+        del.textContent='✕ Delete';
+        actions.appendChild(del);
+      }
       card.appendChild(actions);
       grid.appendChild(card);
     });

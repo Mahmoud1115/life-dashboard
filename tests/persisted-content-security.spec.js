@@ -1028,7 +1028,91 @@ test('B1 apartments — numeric-id row is non-actionable; global actions do not 
   expect(errors).toEqual([]);
 });
 
-test('B1 apartments — numeric 42 and string "42" coexist; string-id delegated action targets only the string row', async ({ page }) => {
+test('B1 apartments — numeric-id row renders read-only, exposes no operative controls, cannot dispatch an action', async ({ page }) => {
+  await seed(page, {});
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  await page.goto('/');
+  await waitReady(page);
+
+  const APTS_BEFORE = [
+    { id: 42,   address: 'Numeric', winner: false },
+    { id: '42', address: 'String',  winner: false },
+  ];
+  const ok = await runProcessImport(page, envelope({ dune_apartments_v1: APTS_BEFORE }));
+  expect(ok).toBe(true);
+  const numericBefore = { id: 42, address: 'Numeric', winner: false };
+  const stringBefore  = { id: '42', address: 'String', winner: false };
+
+  await activate(page, 'passport');
+  await page.evaluate(() => window.renderApartments && window.renderApartments());
+  await page.waitForSelector('#apartments-root .apt-card', { state: 'attached' });
+
+  // Both rows render (locate by visible address text, never by
+  // dataset — dataset values are ambiguous between the two).
+  const cardShape = await page.evaluate(() => {
+    const cards = Array.from(document.querySelectorAll('#apartments-root .apt-card'));
+    return cards.map((c) => ({
+      address: c.querySelector('.apt-address') && c.querySelector('.apt-address').textContent,
+      isReadonly: c.classList.contains('apt-card-readonly'),
+      hasDataAptId: c.hasAttribute('data-apt-id'),
+      dataAptId: c.dataset.aptId,
+      toggleControls: c.querySelectorAll('[data-apt-action="toggleWinner"]').length,
+      deleteControls: c.querySelectorAll('[data-apt-action="delete"]').length,
+    }));
+  });
+  expect(cardShape.length).toBe(2);
+
+  const numericCard = cardShape.find((c) => c.address === 'Numeric');
+  const stringCard  = cardShape.find((c) => c.address === 'String');
+
+  // Numeric card: read-only, no dataset.aptId, no operative controls.
+  expect(numericCard.isReadonly).toBe(true);
+  expect(numericCard.hasDataAptId).toBe(false);
+  expect(numericCard.dataAptId).toBeUndefined();
+  expect(numericCard.toggleControls).toBe(0);
+  expect(numericCard.deleteControls).toBe(0);
+
+  // String card: normal, dataset.aptId "42", both operative controls present.
+  expect(stringCard.isReadonly).toBe(false);
+  expect(stringCard.hasDataAptId).toBe(true);
+  expect(stringCard.dataAptId).toBe('42');
+  expect(stringCard.toggleControls).toBe(1);
+  expect(stringCard.deleteControls).toBe(1);
+
+  // Attempt any harmless "clicks" inside the numeric card — a non-
+  // action button (Maps link) is the only interactive child. Clicking
+  // it must not mutate storage. There is no toggleWinner/delete on
+  // this card at all.
+  page.on('dialog', (d) => d.accept());
+  const mapsClickSurvivedStorage = await page.evaluate(() => {
+    const before = localStorage.getItem('dune_apartments_v1');
+    const cards = Array.from(document.querySelectorAll('#apartments-root .apt-card'));
+    const numeric = cards.find((c) => c.querySelector('.apt-address').textContent === 'Numeric');
+    // The Maps link is an <a target="_blank"> — Playwright's dialog
+    // handler won't intervene, and no click on it dispatches an
+    // Apartment action. Prevent default so the test browser does not
+    // navigate.
+    const link = numeric && numeric.querySelector('a.icl-small-btn');
+    if (link) {
+      link.addEventListener('click', (e) => e.preventDefault(), { once: true });
+      link.click();
+    }
+    const after = localStorage.getItem('dune_apartments_v1');
+    return before === after;
+  });
+  expect(mapsClickSurvivedStorage).toBe(true);
+
+  // Storage still holds both rows byte-identical.
+  const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('dune_apartments_v1')));
+  expect(stored.length).toBe(2);
+  expect(stored[0]).toEqual(numericBefore);
+  expect(stored[1]).toEqual(stringBefore);
+
+  expect(errors).toEqual([]);
+});
+
+test('B1 apartments — string-id row DOM controls target only the string record; numeric-id row remains deep-equal', async ({ page }) => {
   await seed(page, {});
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
@@ -1043,48 +1127,92 @@ test('B1 apartments — numeric 42 and string "42" coexist; string-id delegated 
   expect(ok).toBe(true);
   const numericBefore = { id: 42, address: 'Numeric', winner: false };
 
-  // Render Apartments so the delegated DOM channel exists. Note that
-  // `renderApartments` renders every stored row for parity with the
-  // previous behaviour; both numeric and string rows produce cards
-  // whose `dataset.aptId === "42"` (because `_b1SafeText(42) === "42"`
-  // and dataset values are always strings). The point of this
-  // regression is not who owns the DOM node, but that the action
-  // handlers dispatched with id "42" mutate ONLY the actionable
-  // string-id row and leave the numeric-id row byte-identical.
   await activate(page, 'passport');
   await page.evaluate(() => window.renderApartments && window.renderApartments());
   await page.waitForSelector('#apartments-root .apt-card', { state: 'attached' });
 
-  // Both rows render; both cards carry data-apt-id="42".
-  const cardIds = await page.evaluate(() =>
-    Array.from(document.querySelectorAll('#apartments-root .apt-card')).map((c) => c.dataset.aptId));
-  expect(cardIds).toEqual(['42', '42']);
-
   page.on('dialog', (d) => d.accept());
 
-  // Fire the delegated toggle click. Any of the two data-apt-id="42"
-  // cards is fine — the delegate delivers the same id "42" to
-  // aptToggleWinner regardless, and the action semantics is what
-  // this test proves.
-  await page.evaluate(() =>
-    document.querySelector('#apartments-root .apt-card[data-apt-id="42"] button[data-apt-action="toggleWinner"]').click());
+  // Locate the string row by its visible address text (unambiguous),
+  // then click its winner control.
+  await page.evaluate(() => {
+    const cards = Array.from(document.querySelectorAll('#apartments-root .apt-card'));
+    const target = cards.find((c) => c.querySelector('.apt-address').textContent === 'String');
+    target.querySelector('button[data-apt-action="toggleWinner"]').click();
+  });
 
   const afterToggle = await page.evaluate(() => JSON.parse(localStorage.getItem('dune_apartments_v1')));
   expect(afterToggle.length).toBe(2);
-  // Numeric row unchanged deep-equal, same position.
-  expect(afterToggle[0]).toEqual(numericBefore);
-  // String row toggled.
+  expect(afterToggle[0]).toEqual(numericBefore);          // numeric row untouched
   const stringRowAfter = afterToggle.find((a) => a && a.id === '42');
-  expect(stringRowAfter.winner).toBe(true);
+  expect(stringRowAfter.winner).toBe(true);               // string row toggled
+  expect(stringRowAfter.address).toBe('String');
 
-  // Delete the string-id row via the DOM delegate.
-  await page.evaluate(() =>
-    document.querySelector('#apartments-root .apt-card[data-apt-id="42"] button[data-apt-action="delete"]').click());
+  // Re-render after the toggle (aptToggleWinner already does this)
+  // and delete the string row from its own card.
+  await page.evaluate(() => {
+    const cards = Array.from(document.querySelectorAll('#apartments-root .apt-card'));
+    const target = cards.find((c) => c.querySelector('.apt-address').textContent === 'String');
+    target.querySelector('button[data-apt-action="delete"]').click();
+  });
 
   const afterDelete = await page.evaluate(() => JSON.parse(localStorage.getItem('dune_apartments_v1')));
   expect(afterDelete.length).toBe(1);
-  // Numeric row is the sole survivor and is byte-identical to its pre-import shape.
-  expect(afterDelete[0]).toEqual(numericBefore);
+  expect(afterDelete[0]).toEqual(numericBefore);           // numeric row is the sole survivor, deep-equal
+
+  expect(errors).toEqual([]);
+});
+
+test('B1 apartments — malformed shapes ({}, [], {id:{}}, {id:42}) render no operative record controls', async ({ page }) => {
+  await seed(page, {});
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  await page.goto('/');
+  await waitReady(page);
+
+  // Include an actionable row so we can prove the DOM DOES render
+  // controls when appropriate — the negative assertions on the
+  // malformed rows must not be trivially satisfied by "no cards
+  // rendered anything".
+  const APTS_BEFORE = [
+    {},
+    [],
+    { id: { object: 'as id' }, address: 'Object-id' },
+    { id: 42, address: 'Numeric' },
+    { id: 'apt_valid', address: 'Valid actionable' },
+  ];
+  const ok = await runProcessImport(page, envelope({ dune_apartments_v1: APTS_BEFORE }));
+  expect(ok).toBe(true);
+
+  await activate(page, 'passport');
+  await page.evaluate(() => window.renderApartments && window.renderApartments());
+  await page.waitForSelector('#apartments-root .apt-card', { state: 'attached' });
+
+  const summary = await page.evaluate(() => {
+    return Array.from(document.querySelectorAll('#apartments-root .apt-card')).map((c) => ({
+      readonly: c.classList.contains('apt-card-readonly'),
+      hasDataAptId: c.hasAttribute('data-apt-id'),
+      toggle: c.querySelectorAll('[data-apt-action="toggleWinner"]').length,
+      del: c.querySelectorAll('[data-apt-action="delete"]').length,
+    }));
+  });
+  // Every non-actionable card is read-only with no operative controls
+  // and no data-apt-id; the actionable card has both controls.
+  const readonlyCount = summary.filter((s) => s.readonly).length;
+  const actionableCount = summary.filter((s) => !s.readonly).length;
+  expect(actionableCount).toBe(1);
+  expect(readonlyCount).toBe(summary.length - 1);
+  summary.forEach((s) => {
+    if (s.readonly) {
+      expect(s.hasDataAptId).toBe(false);
+      expect(s.toggle).toBe(0);
+      expect(s.del).toBe(0);
+    } else {
+      expect(s.hasDataAptId).toBe(true);
+      expect(s.toggle).toBe(1);
+      expect(s.del).toBe(1);
+    }
+  });
 
   expect(errors).toEqual([]);
 });
