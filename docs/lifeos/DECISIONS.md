@@ -235,3 +235,92 @@ Codex's final remaining finding on `d3ba2c4` was that the committed coordinator 
 Wording carried forward from earlier ADR-010 addenda that referred to weaker coordinator coverage as if it proved the same invariants should now be read alongside this addendum: only `T-coordinator-recovers-real-lock-rejection-exact-once` proves the "one lock rejection → one subsequent callback → one revision bump" contract at the real coordinator boundary.
 
 Tests: 135/135 passing (85 baseline + 48 store-durability + 2 store-two-page).
+
+## ADR-011 — Persisted-content rendering safety (B1)
+
+**Status:** Accepted (2026-08-25).
+**Applies to:** Any DOM sink or CSV/export sink that renders persisted
+(user-controlled or restore-imported) content. Logbook Tracker, Logbook
+Builder, Logbook CSV, global Search, Apartments, and Life Timeline are
+the initial in-scope surfaces. ADR-011 governs contextual output safety,
+not input cleansing.
+
+**Context.** Life OS 2.0 persists user-authored records in localStorage
+and accepts them back through `processImport`. Import cannot certify the
+contents. Before Phase B2 flips Logbook authority to the Gen-2 canonical
+mirror, every path that renders or exports persisted data must be safe
+against stored XSS, executable ID interpolation, and CSV formula
+injection — regardless of whether the payload was typed by the user, sat
+in an old backup, or arrived via restore.
+
+### Rules (R1–R8)
+
+- **R1.** No user-controlled Logbook field enters `innerHTML`,
+  `outerHTML`, or `insertAdjacentHTML`.
+
+- **R2.** Dynamic persisted-content rendering uses contextual DOM APIs:
+  `document.createElement`, `textContent`, `classList`, `dataset`,
+  `DocumentFragment`, `replaceChildren`, `addEventListener`. ADR-011 does
+  not claim every renderer in the app has been migrated — R2 applies to
+  the surfaces enumerated above and to every new persisted-content
+  renderer added after this ADR.
+
+- **R3.** Dynamic persisted-content actions do not interpolate
+  user-controlled values into inline JavaScript (`onclick=`, `onchange=`,
+  `oninput=`, `href="javascript:…"`). Static author-controlled inline
+  handlers on markup that does not interpolate persisted content may
+  remain.
+
+- **R4.** Record IDs are opaque data. They may be assigned via
+  `element.dataset.*`, but never interpolated into JavaScript source
+  strings, HTML source strings, or raw CSS selector source. DOM lookup
+  of a record uses `closest('[data-…]')` and reads the raw id from
+  `dataset`; a `Map` keyed by raw ID or a direct element reference is
+  also acceptable.
+
+- **R5.** CSV export policy:
+  - Text cells are quote-and-escape (`"…"`, embedded `"` doubled) and
+    are apostrophe-prefixed when the first character is `=`, `+`, `-`,
+    `@`, TAB, CR, LF, or the full-width forms `＝`, `＋`, `－`, `＠`.
+  - Numeric cells are written unquoted only when the value satisfies
+    `typeof v === 'number' && Number.isFinite(v)`. Numeric-looking
+    strings (`"12"`, `"-5"`, `"1e3"`) go through the text path.
+  - Date cells are written unquoted only when the value is a strictly
+    valid `YYYY-MM-DD` calendar date (both format and calendar
+    validity — `2026-02-31` and `2026-13-10` are rejected). Malformed
+    dates go through the text path.
+  - Output uses CRLF line endings and a UTF-8 BOM.
+  - Neutralization modifies export output only; stored values are never
+    rewritten.
+  - **Cross-spreadsheet limitation.** The apostrophe-prefix defence is
+    the widely-recommended mitigation for spreadsheet formula
+    injection, but behaviour differs across Microsoft Excel,
+    LibreOffice Calc, Google Sheets, and raw CSV consumers. ADR-011
+    treats R5 as risk reduction, not a universal guarantee of
+    non-execution across every consumer.
+
+- **R6.** Import and restore do not cleanse content for rendering
+  safety. Persisted data remains round-trip faithful. Safety is
+  enforced contextually at each render/export sink.
+
+- **R7.** Malformed-but-import-accepted records (`null` members, `{}`,
+  missing fields, wrong-typed fields, arrays or objects in text fields,
+  numeric or quote-heavy IDs) render and export safely without mutating
+  stored values. Safe coercion at the sink (`String(v ?? '')` or
+  equivalent) is used before any string method (`slice`, `trim`,
+  `toLowerCase`, `replace`) touches the value.
+
+- **R8.** Delegated action handlers use a fixed action allowlist,
+  validated indices where indices are used, opaque `dataset` IDs, and
+  exactly-once handler binding (a `dataset.b1Bound === '1'` guard, or
+  equivalent, on the delegate container).
+
+### Non-goals
+
+ADR-011 does not attempt to sanitize stored data, does not extend
+persisted-content safety to non-persisted surfaces (author-controlled
+static markup, computed numeric aggregates, in-file constants), and
+does not certify every future spreadsheet client's behaviour. Extending
+R1–R8 to other persisted-content sinks (Ideas, BHT, Reviews, Decisions,
+Deadlines beyond the confirmed P0 set) is a separate scope decision, not
+a B1 deliverable.

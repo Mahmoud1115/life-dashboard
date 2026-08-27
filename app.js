@@ -429,18 +429,46 @@ function show(id,e){
     }
   };
   window.doSearch=function(e){
-    const q=e.target.value.trim();
+    const q=e && e.target ? String(e.target.value==null?'':e.target.value).trim() : '';
     const res=document.getElementById('search-results');
     if(!res)return;
-    if(!q||q.length<2){res.innerHTML='';return;}
+    while(res.firstChild) res.removeChild(res.firstChild);
+    if(!q||q.length<2) return;
     const results=search(q);
-    if(!results.length){res.innerHTML='<div class="sr-empty">No results for "'+q+'"</div>';return;}
-    res.innerHTML=results.map(r=>
-      '<div class="sr-item" onclick="show(\''+r.id+'\');toggleSearch()">'
-      +'<div class="sr-section">'+r.label+'</div>'
-      +'<div class="sr-text">'+r.text+'</div>'
-      +'</div>'
-    ).join('');
+    if(!results.length){
+      const empty=document.createElement('div');
+      empty.className='sr-empty';
+      empty.textContent='No results for "'+q+'"';
+      res.appendChild(empty);
+      return;
+    }
+    const frag=document.createDocumentFragment();
+    results.forEach(function(r){
+      if(!r||typeof r!=='object') return;
+      const item=document.createElement('div');
+      item.className='sr-item';
+      item.dataset.sid=String(r.id==null?'':r.id);
+      const section=document.createElement('div');
+      section.className='sr-section';
+      section.textContent=String(r.label==null?'':r.label);
+      const text=document.createElement('div');
+      text.className='sr-text';
+      text.textContent=String(r.text==null?'':r.text);
+      item.appendChild(section);
+      item.appendChild(text);
+      frag.appendChild(item);
+    });
+    res.appendChild(frag);
+    if(res.dataset.b1Bound!=='1'){
+      res.dataset.b1Bound='1';
+      res.addEventListener('click',function(ev){
+        const it=ev.target && ev.target.closest && ev.target.closest('.sr-item');
+        if(!it||!res.contains(it)) return;
+        const sid=it.dataset.sid;
+        if(sid && typeof window.show==='function') window.show(sid);
+        if(typeof window.toggleSearch==='function') window.toggleSearch();
+      });
+    }
   };
 })();
 
@@ -1096,23 +1124,97 @@ function renderATACoverage(entries){
       '<div class="lb-stat"><div class="lb-stat-val">'+stamped+'</div><div class="lb-stat-label">Stamped</div></div>'+
       '<div class="lb-stat"><div class="lb-stat-val">'+ata71_80+'</div><div class="lb-stat-label">Engine Tasks (71-80)</div></div>';
   }
+  function ensureTrackerDelegate(tbody){
+    if(tbody.dataset.b1Bound==='1') return;
+    tbody.dataset.b1Bound='1';
+    tbody.addEventListener('click',function(ev){
+      const btn=ev.target && ev.target.closest && ev.target.closest('.lb-row-del');
+      if(!btn||!tbody.contains(btn)) return;
+      const raw=btn.dataset.idx;
+      if(typeof raw!=='string'||!/^\d+$/.test(raw)) return;
+      const idx=parseInt(raw,10);
+      const entries=getEntries();
+      if(!Array.isArray(entries)) return;
+      if(idx<0||idx>=entries.length) return;
+      if(typeof window.deleteLogEntry==='function') window.deleteLogEntry(idx);
+    });
+  }
   function renderTable(entries){
     const tbody=document.getElementById('lb-tbody');
     if(!tbody) return;
-    if(!entries.length){tbody.innerHTML='<tr><td colspan="8" style="text-align:center;padding:32px;color:var(--tx3);font-family:var(--mono);font-size:11px">No entries yet. Add your first logbook entry.</td></tr>';return;}
-    tbody.innerHTML=[...entries].reverse().map((e,ri)=>{
+    ensureTrackerDelegate(tbody);
+    while(tbody.firstChild) tbody.removeChild(tbody.firstChild);
+    if(!Array.isArray(entries)||!entries.length){
+      const tr=document.createElement('tr');
+      const td=document.createElement('td');
+      td.colSpan=8;
+      td.style.textAlign='center';
+      td.style.padding='32px';
+      td.style.color='var(--tx3)';
+      td.style.fontFamily='var(--mono)';
+      td.style.fontSize='11px';
+      td.textContent='No entries yet. Add your first logbook entry.';
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+      return;
+    }
+    const frag=document.createDocumentFragment();
+    const rev=entries.slice().reverse();
+    rev.forEach(function(e,ri){
       const i=entries.length-1-ri;
-      return '<tr>'+
-        '<td>'+e.date+'</td>'+
-        '<td>'+e.company+'</td>'+
-        '<td>'+e.aircraft_type+' '+e.registration+'</td>'+
-        '<td><span style="font-family:var(--mono);font-size:10px">ATA '+e.ata_chapter+'</span></td>'+
-        '<td style="max-width:200px">'+e.task_description.slice(0,60)+(e.task_description.length>60?'…':'')+'</td>'+
-        '<td style="font-family:var(--mono)">'+e.hours+'h</td>'+
-        '<td><span style="font-family:var(--mono);font-size:9px;padding:2px 9px;border-radius:100px;background:'+(e.stamp_status==='stamped'?'var(--green2)':'var(--amber2)')+';color:'+(e.stamp_status==='stamped'?'var(--green)':'var(--amber)')+'">'+e.stamp_status+'</span></td>'+
-        '<td><div class="lb-row-actions"><button class="lb-row-del" onclick="deleteLogEntry('+i+')">×</button></div></td>'+
-      '</tr>';
-    }).join('');
+      if(!e||typeof e!=='object') return;
+      const tr=document.createElement('tr');
+      function td(text,cls){
+        const c=document.createElement('td');
+        if(cls) c.className=cls;
+        c.textContent=String(text==null?'':text);
+        return c;
+      }
+      tr.appendChild(td(e.date));
+      tr.appendChild(td(e.company));
+      tr.appendChild(td(String(e.aircraft_type==null?'':e.aircraft_type)+' '+String(e.registration==null?'':e.registration)));
+      const ataTd=document.createElement('td');
+      const ataSp=document.createElement('span');
+      ataSp.style.fontFamily='var(--mono)';
+      ataSp.style.fontSize='10px';
+      ataSp.textContent='ATA '+String(e.ata_chapter==null?'':e.ata_chapter);
+      ataTd.appendChild(ataSp);
+      tr.appendChild(ataTd);
+      const taskTd=document.createElement('td');
+      taskTd.style.maxWidth='200px';
+      const desc=String(e.task_description==null?'':e.task_description);
+      taskTd.textContent=desc.length>60?desc.slice(0,60)+'…':desc;
+      tr.appendChild(taskTd);
+      const hoursTd=document.createElement('td');
+      hoursTd.style.fontFamily='var(--mono)';
+      hoursTd.textContent=String(e.hours==null?'':e.hours)+'h';
+      tr.appendChild(hoursTd);
+      const stampTd=document.createElement('td');
+      const stampSp=document.createElement('span');
+      stampSp.style.fontFamily='var(--mono)';
+      stampSp.style.fontSize='9px';
+      stampSp.style.padding='2px 9px';
+      stampSp.style.borderRadius='100px';
+      const isStamped=e.stamp_status==='stamped';
+      stampSp.style.background=isStamped?'var(--green2)':'var(--amber2)';
+      stampSp.style.color=isStamped?'var(--green)':'var(--amber)';
+      stampSp.textContent=String(e.stamp_status==null?'':e.stamp_status);
+      stampTd.appendChild(stampSp);
+      tr.appendChild(stampTd);
+      const actionsTd=document.createElement('td');
+      const wrap=document.createElement('div');
+      wrap.className='lb-row-actions';
+      const del=document.createElement('button');
+      del.type='button';
+      del.className='lb-row-del';
+      del.textContent='×';
+      del.dataset.idx=String(i);
+      wrap.appendChild(del);
+      actionsTd.appendChild(wrap);
+      tr.appendChild(actionsTd);
+      frag.appendChild(tr);
+    });
+    tbody.appendChild(frag);
   }
   function renderLogbook(){
     const entries=getEntries();
@@ -2101,18 +2203,21 @@ function renderLogbookBuilder(){
   const root=document.getElementById('lb-builder-root');
   if(!root||root.dataset.rendered==='1') return;
   root.dataset.rendered='1';
-  const entries=LS.get('dune_logbook_entries_v1',[]);
+  const raw=LS.get('dune_logbook_entries_v1',[]);
+  // B1 R7: malformed-but-import-accepted rows must not throw the
+  // aggregation. Filter to safe objects before deref.
+  const entries=Array.isArray(raw)?raw.filter(function(e){return e&&typeof e==='object';}):[];
   const today=new Date().toISOString().slice(0,10);
   const ataOpts=LB_ATA.map(a=>`<option value="${a.val}">${a.label}</option>`).join('');
 
   // stats
   const totalHrs=entries.reduce((s,e)=>s+(parseFloat(e.hours)||0),0);
   const now=new Date();
-  const monthHrs=entries.filter(e=>{
+  const monthHrs=entries.filter(function(e){
     const d=new Date(e.date);
     return d.getFullYear()===now.getFullYear()&&d.getMonth()===now.getMonth();
   }).reduce((s,e)=>s+(parseFloat(e.hours)||0),0);
-  const ataSet=new Set(entries.map(e=>e.ata).filter(Boolean));
+  const ataSet=new Set(entries.map(function(e){return e.ata;}).filter(Boolean));
 
   root.innerHTML=`
   <div class="lbb-stats">
@@ -2224,36 +2329,147 @@ window.lbbCopyEntry=async function(id){
 function lbbRenderEntries(entries){
   const container=document.getElementById('lbb-entries');
   if(!container) return;
-  if(!entries.length){container.innerHTML='<div class="lb-empty">No entries yet. Add your first logbook entry above.</div>';return;}
-  container.innerHTML=entries.map(e=>`
-    <div class="lbb-entry">
-      <div class="lbb-entry-meta">
-        <span class="lbb-entry-date">${e.date}</span>
-        <span class="lbb-entry-aircraft">${e.aircraft}${e.reg?' · '+e.reg:''}</span>
-        <span class="iqa-tag" style="font-size:8px">ATA ${e.ata}</span>
-        <span class="lbb-entry-hrs">${e.hours} hrs</span>
-      </div>
-      <div class="lbb-entry-desc">${e.desc}</div>
-      ${e.supervisor?`<div class="lbb-entry-sup">Supervised by: ${e.supervisor}${e.ref?' · '+e.ref:''}</div>`:''}
-      <div class="lbb-entry-actions">
-        <button class="icl-small-btn" onclick="lbbCopyEntry('${e.id}')">📋 Copy</button>
-        <button class="icl-small-btn" onclick="lbbReuseEntry('${e.id}')">♻ Reuse</button>
-        <button class="icl-small-btn icl-del-btn" onclick="lbbDeleteEntry('${e.id}')">✕ Delete</button>
-      </div>
-    </div>`).join('');
+  while(container.firstChild) container.removeChild(container.firstChild);
+  const list=Array.isArray(entries)?entries:[];
+  if(!list.length){
+    const empty=document.createElement('div');
+    empty.className='lb-empty';
+    empty.textContent='No entries yet. Add your first logbook entry above.';
+    container.appendChild(empty);
+  } else {
+    const frag=document.createDocumentFragment();
+    list.forEach(function(e){
+      if(!e||typeof e!=='object') return;
+      const row=document.createElement('div');
+      row.className='lbb-entry';
+      row.dataset.id=String(e.id==null?'':e.id);
+      const meta=document.createElement('div');
+      meta.className='lbb-entry-meta';
+      const dateSp=document.createElement('span');
+      dateSp.className='lbb-entry-date';
+      dateSp.textContent=String(e.date==null?'':e.date);
+      const acSp=document.createElement('span');
+      acSp.className='lbb-entry-aircraft';
+      acSp.textContent=String(e.aircraft==null?'':e.aircraft)+(e.reg?' · '+String(e.reg):'');
+      const ataSp=document.createElement('span');
+      ataSp.className='iqa-tag';
+      ataSp.style.fontSize='8px';
+      ataSp.textContent='ATA '+String(e.ata==null?'':e.ata);
+      const hrsSp=document.createElement('span');
+      hrsSp.className='lbb-entry-hrs';
+      hrsSp.textContent=String(e.hours==null?'':e.hours)+' hrs';
+      meta.appendChild(dateSp);
+      meta.appendChild(acSp);
+      meta.appendChild(ataSp);
+      meta.appendChild(hrsSp);
+      row.appendChild(meta);
+      const desc=document.createElement('div');
+      desc.className='lbb-entry-desc';
+      desc.textContent=String(e.desc==null?'':e.desc);
+      row.appendChild(desc);
+      if(e.supervisor){
+        const sup=document.createElement('div');
+        sup.className='lbb-entry-sup';
+        sup.textContent='Supervised by: '+String(e.supervisor)+(e.ref?' · '+String(e.ref):'');
+        row.appendChild(sup);
+      }
+      const actions=document.createElement('div');
+      actions.className='lbb-entry-actions';
+      [
+        {a:'copy',t:'📋 Copy',c:'icl-small-btn'},
+        {a:'reuse',t:'♻ Reuse',c:'icl-small-btn'},
+        {a:'delete',t:'✕ Delete',c:'icl-small-btn icl-del-btn'},
+      ].forEach(function(spec){
+        const b=document.createElement('button');
+        b.type='button';
+        b.className=spec.c;
+        b.dataset.lbbAction=spec.a;
+        b.textContent=spec.t;
+        actions.appendChild(b);
+      });
+      row.appendChild(actions);
+      frag.appendChild(row);
+    });
+    container.appendChild(frag);
+  }
+  if(container.dataset.b1Bound!=='1'){
+    container.dataset.b1Bound='1';
+    container.addEventListener('click',function(ev){
+      const btn=ev.target && ev.target.closest && ev.target.closest('[data-lbb-action]');
+      if(!btn||!container.contains(btn)) return;
+      const row=btn.closest('[data-id]');
+      if(!row) return;
+      const id=row.dataset.id;
+      if(id==null) return;
+      const action=btn.dataset.lbbAction;
+      if(action==='copy' && typeof window.lbbCopyEntry==='function') window.lbbCopyEntry(id);
+      else if(action==='reuse' && typeof window.lbbReuseEntry==='function') window.lbbReuseEntry(id);
+      else if(action==='delete' && typeof window.lbbDeleteEntry==='function') window.lbbDeleteEntry(id);
+    });
+  }
 }
 window.lbbSearch=function(q){
   const entries=LS.get('dune_logbook_entries_v1',[]);
   const filtered=q.trim()?entries.filter(e=>[e.aircraft,e.reg,e.ata,e.desc,e.supervisor].join(' ').toLowerCase().includes(q.toLowerCase())):entries;
   lbbRenderEntries(filtered);
 };
+// B1: CSV formula/structure neutralization. Local to Logbook export.
+// Policy (ADR-011 R5):
+//   - Text cells: quote-and-escape; if the first character is one of
+//     = + - @ TAB CR LF, or the full-width forms of = + - @, prepend
+//     an apostrophe so spreadsheets do not evaluate the cell as a
+//     formula. Neutralization is output-only; stored data is unchanged.
+//   - Numeric cells: only actual finite JS numbers use the numeric path.
+//     Numeric-looking strings fall through to the text path.
+//   - Date cells: only strictly valid YYYY-MM-DD calendar dates use the
+//     date path. Malformed values fall through to the text path.
+//   - Output uses CRLF line endings and a UTF-8 BOM.
+function _csvText(v){
+  var s=String(v==null?'':v);
+  if(s.length){
+    var c=s.charAt(0);
+    // ASCII: = + - @ TAB CR LF ; full-width: ＝ ＋ － ＠
+    if('=+-@\t\r\n＝＋－＠'.indexOf(c)>=0) s="'"+s;
+  }
+  return '"'+s.replace(/"/g,'""')+'"';
+}
+function _csvNumber(v){
+  return (typeof v==='number' && Number.isFinite(v)) ? String(v) : _csvText(v);
+}
+function _csvDate(v){
+  if(typeof v!=='string') return _csvText(v);
+  var m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(v);
+  if(!m) return _csvText(v);
+  var y=+m[1], mo=+m[2], d=+m[3];
+  if(mo<1||mo>12||d<1||d>31) return _csvText(v);
+  var dt=new Date(Date.UTC(y,mo-1,d));
+  if(dt.getUTCFullYear()!==y||dt.getUTCMonth()!==mo-1||dt.getUTCDate()!==d) return _csvText(v);
+  return v;
+}
+window._csvText=_csvText;
+window._csvNumber=_csvNumber;
+window._csvDate=_csvDate;
 window.lbbExportCSV=function(){
   const entries=LS.get('dune_logbook_entries_v1',[]);
-  if(!entries.length){alert('No entries to export.');return;}
+  if(!Array.isArray(entries)||!entries.length){alert('No entries to export.');return;}
   const BOM='﻿';
-  const header='Date,Aircraft Type,Registration,ATA Chapter,Task Description,Hours,Supervisor,Task Reference\n';
-  const rows=entries.map(e=>[e.date,e.aircraft,e.reg||'',e.ataLabel||e.ata,'"'+( e.desc||'').replace(/"/g,'""')+'"',e.hours,e.supervisor||'',e.ref||''].join(',')).join('\n');
-  const blob=new Blob([BOM+header+rows],{type:'text/csv;charset=utf-8'});
+  const CRLF='\r\n';
+  const headers=['Date','Aircraft Type','Registration','ATA Chapter','Task Description','Hours','Supervisor','Task Reference'];
+  const headerLine=headers.map(_csvText).join(',');
+  const rows=entries.map(function(e){
+    if(!e||typeof e!=='object') e={};
+    return [
+      _csvDate(e.date),
+      _csvText(e.aircraft),
+      _csvText(e.reg),
+      _csvText(e.ataLabel!=null?e.ataLabel:e.ata),
+      _csvText(e.desc),
+      _csvNumber(e.hours),
+      _csvText(e.supervisor),
+      _csvText(e.ref),
+    ].join(',');
+  }).join(CRLF);
+  const blob=new Blob([BOM+headerLine+CRLF+rows+CRLF],{type:'text/csv;charset=utf-8'});
   const url=URL.createObjectURL(blob);
   const a=document.createElement('a');a.href=url;a.download='logbook-'+new Date().toISOString().slice(0,10)+'.csv';a.click();URL.revokeObjectURL(url);
 };
@@ -2264,89 +2480,261 @@ window.lbbExportCSV=function(){
 function renderApartments(){
   const root=document.getElementById('apartments-root');
   if(!root) return;
-  const apts=LS.get('dune_apartments_v1',[]);
+  const rawApts=LS.get('dune_apartments_v1',[]);
+  const apts=Array.isArray(rawApts)?rawApts.filter(function(a){return a && typeof a==='object';}):[];
   const filter=root.dataset.filter||'all';
   const sort=root.dataset.sort||'rent_asc';
-  const winner=apts.find(a=>a.winner);
+  const winner=apts.find(function(a){return a.winner;});
+
+  const STATUS_CLASS={viewing:'apt-s-viewing',applied:'apt-s-applied',rejected:'apt-s-rejected',signed:'apt-s-signed'};
 
   function commuteClass(m){return m<40?'apt-commute-green':m<=60?'apt-commute-amber':'apt-commute-red';}
-  function regBadge(r){return r==='yes'?'<span class="apt-reg apt-reg-yes">✓ Reg OK</span>':r==='no'?'<span class="apt-reg apt-reg-no">✗ No Reg</span>':'<span class="apt-reg apt-reg-uk">? Reg Unknown</span>';}
-  function statusPill(s){const map={viewing:'apt-s-viewing',applied:'apt-s-applied',rejected:'apt-s-rejected',signed:'apt-s-signed'};return `<span class="apt-status ${map[s]||''}">${s}</span>`;}
+  function makeRegBadge(r){
+    const s=document.createElement('span');
+    s.className='apt-reg '+(r==='yes'?'apt-reg-yes':r==='no'?'apt-reg-no':'apt-reg-uk');
+    s.textContent=r==='yes'?'✓ Reg OK':r==='no'?'✗ No Reg':'? Reg Unknown';
+    return s;
+  }
+  function makeStatusPill(s){
+    const cls=(typeof s==='string' && Object.prototype.hasOwnProperty.call(STATUS_CLASS,s))?STATUS_CLASS[s]:'';
+    const el=document.createElement('span');
+    el.className='apt-status'+(cls?' '+cls:'');
+    el.textContent=String(s==null?'':s);
+    return el;
+  }
 
-  let filtered=apts.filter(a=>{
+  let filtered=apts.filter(function(a){
     if(filter==='all'||filter===a.status) return true;
     if(filter==='reg-yes') return a.registration==='yes';
     if(filter==='reg-no') return a.registration==='no';
     return false;
   });
-  filtered=[...filtered].sort((a,b)=>{
+  filtered=filtered.slice().sort(function(a,b){
     if(sort==='rent_asc') return (a.rent||0)-(b.rent||0);
     if(sort==='commute_asc') return (a.commute_min||0)-(b.commute_min||0);
     return new Date(b.added||0)-new Date(a.added||0);
   });
 
   const counts={all:apts.length,viewing:0,applied:0,signed:0,rejected:0,'reg-yes':0,'reg-no':0};
-  apts.forEach(a=>{if(counts[a.status]!==undefined)counts[a.status]++;if(a.registration==='yes')counts['reg-yes']++;if(a.registration==='no')counts['reg-no']++;});
+  apts.forEach(function(a){
+    if(counts[a.status]!==undefined) counts[a.status]++;
+    if(a.registration==='yes') counts['reg-yes']++;
+    if(a.registration==='no') counts['reg-no']++;
+  });
 
-  root.innerHTML=`
-  <div class="ctitle" style="margin-bottom:16px">🏠 Apartment Hunt — Moscow</div>
-  ${winner?`<div class="apt-winner-bar">⭐ Top choice: <strong>${winner.address}</strong> · ${winner.rent?winner.rent.toLocaleString()+' ₽':'?'} · ${winner.commute_min?winner.commute_min+' min':'?'} · ${regBadge(winner.registration)}</div>`:''}
-  <div class="apt-toolbar">
-    <div class="apt-filters">
-      ${['all','viewing','applied','signed','reg-yes','reg-no'].map(f=>`<button class="apt-filter-btn ${filter===f?'active':''}" onclick="aptFilter('${f}',this)">${f==='all'?'All':f==='reg-yes'?'✓ Reg OK':f==='reg-no'?'✗ No Reg':f.charAt(0).toUpperCase()+f.slice(1)} <span class="iqa-filter-count">${counts[f]||0}</span></button>`).join('')}
-    </div>
-    <select class="apt-sort-sel" onchange="aptSort(this.value)">
-      <option value="rent_asc" ${sort==='rent_asc'?'selected':''}>Cheapest first</option>
-      <option value="commute_asc" ${sort==='commute_asc'?'selected':''}>Shortest commute</option>
-      <option value="added_desc" ${sort==='added_desc'?'selected':''}>Newest added</option>
-    </select>
-  </div>
-  <button class="lb-btn lb-btn-add" onclick="aptOpenForm()" style="margin-bottom:16px">+ Add Apartment</button>
-  <div id="apt-form-wrap" hidden>
-    <div class="card apt-form">
-      <div class="ctitle">New Apartment</div>
-      <div class="lbb-form-grid">
-        <div class="lb-field" style="grid-column:1/-1"><label>Address</label><input id="apt-address" type="text" placeholder="Химки, ул. Панфилова 12, кв. 34"></div>
-        <div class="lb-field"><label>Area</label><select id="apt-area"><option value="lobnya">Лобня</option><option value="khimki">Химки</option><option value="mytishchi">Мытищи</option><option value="other">Other</option></select></div>
-        <div class="lb-field"><label>Rent (₽/month)</label><input id="apt-rent" type="number" placeholder="26000"></div>
-        <div class="lb-field"><label>Rooms</label><select id="apt-rooms"><option value="studio">Studio</option><option value="1">1-room</option><option value="2">2-room</option></select></div>
-        <div class="lb-field"><label>Commute to Шереметьево (min)</label><input id="apt-commute" type="number" placeholder="45"></div>
-        <div class="lb-field"><label>Migration Registration</label><select id="apt-reg"><option value="unknown">Unknown</option><option value="yes">YES — landlord agrees</option><option value="no">NO — refuses</option></select></div>
-        <div class="lb-field"><label>Status</label><select id="apt-status"><option value="viewing">Viewing</option><option value="applied">Applied</option><option value="signed">Signed</option><option value="rejected">Rejected</option></select></div>
-        <div class="lb-field" style="grid-column:1/-1"><label>Notes</label><textarea id="apt-notes" rows="2" placeholder="Landlord contact, flexibility on lease, anything important…"></textarea></div>
-      </div>
-      <div style="display:flex;gap:10px;margin-top:8px">
-        <button class="lb-btn lb-btn-add" onclick="aptSave()">Save</button>
-        <button class="lb-btn lb-btn-view" onclick="aptCloseForm()">Cancel</button>
-      </div>
-    </div>
-  </div>
-  <div class="apt-grid">${filtered.length?filtered.map(a=>{
-    const rentColor=a.rent>37000?'color:var(--red);font-weight:700':a.rent>28000?'color:var(--red)':'color:var(--tx)';
-    const rentWarn=a.rent>37000?' <span style="color:var(--red)">⚠ Savings collapse</span>':a.rent>28000?' <span style="color:var(--amber)">⚠ Over budget</span>':'';
-    const mapsUrl='https://www.google.com/maps/search/?api=1&query='+encodeURIComponent(a.address+' Moscow');
-    return `<div class="apt-card ${a.winner?'apt-card-winner':''} ${a.registration==='no'?'apt-card-noreg':''}">
-      <div class="apt-card-head">
-        ${statusPill(a.status)}
-        <button class="apt-star ${a.winner?'apt-star-on':''}" onclick="aptToggleWinner('${a.id}')" title="Mark as top choice">⭐</button>
-      </div>
-      <div class="apt-address">${a.address}</div>
-      <div class="apt-meta">
-        <span class="apt-area-tag">${a.area}</span>
-        <span class="apt-rooms">${a.rooms}-room</span>
-      </div>
-      <div class="apt-numbers">
-        <span class="apt-rent" style="${rentColor}">${a.rent?a.rent.toLocaleString()+' ₽':'-'}${rentWarn}</span>
-        <span class="apt-commute ${commuteClass(a.commute_min||99)}">${a.commute_min?a.commute_min+' min':'? min'} to SVO</span>
-      </div>
-      ${regBadge(a.registration)}
-      ${a.notes?`<div class="apt-notes">${a.notes}</div>`:''}
-      <div class="apt-actions">
-        <a href="${mapsUrl}" target="_blank" class="icl-small-btn">🗺 Maps</a>
-        <button class="icl-small-btn icl-del-btn" onclick="aptDelete('${a.id}')">✕ Delete</button>
-      </div>
-    </div>`;
-  }).join(''):'<div class="lb-empty">No apartments yet. Add your first listing above.</div>'}</div>`;
+  while(root.firstChild) root.removeChild(root.firstChild);
+
+  const title=document.createElement('div');
+  title.className='ctitle';
+  title.style.marginBottom='16px';
+  title.textContent='🏠 Apartment Hunt — Moscow';
+  root.appendChild(title);
+
+  if(winner){
+    const bar=document.createElement('div');
+    bar.className='apt-winner-bar';
+    bar.appendChild(document.createTextNode('⭐ Top choice: '));
+    const strong=document.createElement('strong');
+    strong.textContent=String(winner.address==null?'':winner.address);
+    bar.appendChild(strong);
+    const winRent=(typeof winner.rent==='number' && Number.isFinite(winner.rent))?winner.rent.toLocaleString()+' ₽':'?';
+    const winCommute=(typeof winner.commute_min==='number' && Number.isFinite(winner.commute_min))?winner.commute_min+' min':'?';
+    bar.appendChild(document.createTextNode(' · '+winRent+' · '+winCommute+' · '));
+    bar.appendChild(makeRegBadge(winner.registration));
+    root.appendChild(bar);
+  }
+
+  const toolbar=document.createElement('div');
+  toolbar.className='apt-toolbar';
+  const filters=document.createElement('div');
+  filters.className='apt-filters';
+  ['all','viewing','applied','signed','reg-yes','reg-no'].forEach(function(f){
+    const b=document.createElement('button');
+    b.type='button';
+    b.className='apt-filter-btn'+(filter===f?' active':'');
+    b.dataset.aptAction='filter';
+    b.dataset.aptFilter=f;
+    const label=f==='all'?'All':f==='reg-yes'?'✓ Reg OK':f==='reg-no'?'✗ No Reg':f.charAt(0).toUpperCase()+f.slice(1);
+    b.appendChild(document.createTextNode(label+' '));
+    const cnt=document.createElement('span');
+    cnt.className='iqa-filter-count';
+    cnt.textContent=String(counts[f]||0);
+    b.appendChild(cnt);
+    filters.appendChild(b);
+  });
+  toolbar.appendChild(filters);
+  const sortSel=document.createElement('select');
+  sortSel.className='apt-sort-sel';
+  sortSel.dataset.aptAction='sort';
+  [['rent_asc','Cheapest first'],['commute_asc','Shortest commute'],['added_desc','Newest added']].forEach(function(pair){
+    const opt=document.createElement('option');
+    opt.value=pair[0];
+    opt.textContent=pair[1];
+    if(sort===pair[0]) opt.selected=true;
+    sortSel.appendChild(opt);
+  });
+  toolbar.appendChild(sortSel);
+  root.appendChild(toolbar);
+
+  const addBtn=document.createElement('button');
+  addBtn.type='button';
+  addBtn.className='lb-btn lb-btn-add';
+  addBtn.style.marginBottom='16px';
+  addBtn.dataset.aptAction='openForm';
+  addBtn.textContent='+ Add Apartment';
+  root.appendChild(addBtn);
+
+  // Author-controlled static form scaffold — no persisted-content interpolation.
+  const formWrap=document.createElement('div');
+  formWrap.id='apt-form-wrap';
+  formWrap.hidden=true;
+  formWrap.innerHTML=
+    '<div class="card apt-form">'+
+      '<div class="ctitle">New Apartment</div>'+
+      '<div class="lbb-form-grid">'+
+        '<div class="lb-field" style="grid-column:1/-1"><label>Address</label><input id="apt-address" type="text" placeholder="Химки, ул. Панфилова 12, кв. 34"></div>'+
+        '<div class="lb-field"><label>Area</label><select id="apt-area"><option value="lobnya">Лобня</option><option value="khimki">Химки</option><option value="mytishchi">Мытищи</option><option value="other">Other</option></select></div>'+
+        '<div class="lb-field"><label>Rent (₽/month)</label><input id="apt-rent" type="number" placeholder="26000"></div>'+
+        '<div class="lb-field"><label>Rooms</label><select id="apt-rooms"><option value="studio">Studio</option><option value="1">1-room</option><option value="2">2-room</option></select></div>'+
+        '<div class="lb-field"><label>Commute to Шереметьево (min)</label><input id="apt-commute" type="number" placeholder="45"></div>'+
+        '<div class="lb-field"><label>Migration Registration</label><select id="apt-reg"><option value="unknown">Unknown</option><option value="yes">YES — landlord agrees</option><option value="no">NO — refuses</option></select></div>'+
+        '<div class="lb-field"><label>Status</label><select id="apt-status"><option value="viewing">Viewing</option><option value="applied">Applied</option><option value="signed">Signed</option><option value="rejected">Rejected</option></select></div>'+
+        '<div class="lb-field" style="grid-column:1/-1"><label>Notes</label><textarea id="apt-notes" rows="2" placeholder="Landlord contact, flexibility on lease, anything important…"></textarea></div>'+
+      '</div>'+
+      '<div style="display:flex;gap:10px;margin-top:8px">'+
+        '<button type="button" class="lb-btn lb-btn-add" data-apt-action="save">Save</button>'+
+        '<button type="button" class="lb-btn lb-btn-view" data-apt-action="closeForm">Cancel</button>'+
+      '</div>'+
+    '</div>';
+  root.appendChild(formWrap);
+
+  const grid=document.createElement('div');
+  grid.className='apt-grid';
+  if(!filtered.length){
+    const empty=document.createElement('div');
+    empty.className='lb-empty';
+    empty.textContent='No apartments yet. Add your first listing above.';
+    grid.appendChild(empty);
+  } else {
+    filtered.forEach(function(a){
+      const card=document.createElement('div');
+      card.className='apt-card'+(a.winner?' apt-card-winner':'')+(a.registration==='no'?' apt-card-noreg':'');
+      card.dataset.aptId=String(a.id==null?'':a.id);
+      const head=document.createElement('div');
+      head.className='apt-card-head';
+      head.appendChild(makeStatusPill(a.status));
+      const star=document.createElement('button');
+      star.type='button';
+      star.className='apt-star'+(a.winner?' apt-star-on':'');
+      star.dataset.aptAction='toggleWinner';
+      star.title='Mark as top choice';
+      star.textContent='⭐';
+      head.appendChild(star);
+      card.appendChild(head);
+      const addr=document.createElement('div');
+      addr.className='apt-address';
+      addr.textContent=String(a.address==null?'':a.address);
+      card.appendChild(addr);
+      const meta=document.createElement('div');
+      meta.className='apt-meta';
+      const areaTag=document.createElement('span');
+      areaTag.className='apt-area-tag';
+      areaTag.textContent=String(a.area==null?'':a.area);
+      const rooms=document.createElement('span');
+      rooms.className='apt-rooms';
+      rooms.textContent=String(a.rooms==null?'':a.rooms)+'-room';
+      meta.appendChild(areaTag);
+      meta.appendChild(rooms);
+      card.appendChild(meta);
+      const numbers=document.createElement('div');
+      numbers.className='apt-numbers';
+      const rentSp=document.createElement('span');
+      rentSp.className='apt-rent';
+      const rentNum=(typeof a.rent==='number' && Number.isFinite(a.rent))?a.rent:null;
+      if(rentNum!==null){
+        if(rentNum>37000){rentSp.style.color='var(--red)';rentSp.style.fontWeight='700';}
+        else if(rentNum>28000){rentSp.style.color='var(--red)';}
+        else{rentSp.style.color='var(--tx)';}
+        rentSp.textContent=rentNum.toLocaleString()+' ₽';
+      } else {
+        rentSp.textContent='-';
+      }
+      if(rentNum!==null && rentNum>37000){
+        const warn=document.createElement('span');
+        warn.style.color='var(--red)';
+        warn.textContent=' ⚠ Savings collapse';
+        rentSp.appendChild(warn);
+      } else if(rentNum!==null && rentNum>28000){
+        const warn=document.createElement('span');
+        warn.style.color='var(--amber)';
+        warn.textContent=' ⚠ Over budget';
+        rentSp.appendChild(warn);
+      }
+      numbers.appendChild(rentSp);
+      const commuteSp=document.createElement('span');
+      const cm=(typeof a.commute_min==='number' && Number.isFinite(a.commute_min))?a.commute_min:99;
+      commuteSp.className='apt-commute '+commuteClass(cm);
+      commuteSp.textContent=((typeof a.commute_min==='number' && Number.isFinite(a.commute_min))?a.commute_min+' min':'? min')+' to SVO';
+      numbers.appendChild(commuteSp);
+      card.appendChild(numbers);
+      card.appendChild(makeRegBadge(a.registration));
+      if(a.notes){
+        const notes=document.createElement('div');
+        notes.className='apt-notes';
+        notes.textContent=String(a.notes);
+        card.appendChild(notes);
+      }
+      const actions=document.createElement('div');
+      actions.className='apt-actions';
+      const mapsUrl='https://www.google.com/maps/search/?api=1&query='+encodeURIComponent(String(a.address==null?'':a.address)+' Moscow');
+      const mapsLink=document.createElement('a');
+      mapsLink.href=mapsUrl;
+      mapsLink.target='_blank';
+      mapsLink.rel='noopener noreferrer';
+      mapsLink.className='icl-small-btn';
+      mapsLink.textContent='🗺 Maps';
+      actions.appendChild(mapsLink);
+      const del=document.createElement('button');
+      del.type='button';
+      del.className='icl-small-btn icl-del-btn';
+      del.dataset.aptAction='delete';
+      del.textContent='✕ Delete';
+      actions.appendChild(del);
+      card.appendChild(actions);
+      grid.appendChild(card);
+    });
+  }
+  root.appendChild(grid);
+
+  if(root.dataset.b1Bound!=='1'){
+    root.dataset.b1Bound='1';
+    root.addEventListener('click',function(ev){
+      const el=ev.target && ev.target.closest && ev.target.closest('[data-apt-action]');
+      if(!el||!root.contains(el)) return;
+      const action=el.dataset.aptAction;
+      if(action==='openForm'){ if(typeof window.aptOpenForm==='function') window.aptOpenForm(); return; }
+      if(action==='closeForm'){ if(typeof window.aptCloseForm==='function') window.aptCloseForm(); return; }
+      if(action==='save'){ if(typeof window.aptSave==='function') window.aptSave(); return; }
+      if(action==='filter'){
+        const f=el.dataset.aptFilter;
+        if(typeof f==='string' && typeof window.aptFilter==='function') window.aptFilter(f,el);
+        return;
+      }
+      if(action==='toggleWinner'||action==='delete'){
+        const card=el.closest('[data-apt-id]');
+        if(!card) return;
+        const id=card.dataset.aptId;
+        if(!id) return;
+        if(action==='toggleWinner' && typeof window.aptToggleWinner==='function') window.aptToggleWinner(id);
+        else if(action==='delete' && typeof window.aptDelete==='function') window.aptDelete(id);
+      }
+    });
+    root.addEventListener('change',function(ev){
+      const el=ev.target && ev.target.closest && ev.target.closest('[data-apt-action="sort"]');
+      if(!el) return;
+      if(typeof window.aptSort==='function') window.aptSort(el.value);
+    });
+  }
 }
 
 window.aptFilter=function(f,btn){
@@ -2656,19 +3044,60 @@ window.aptToggleWinner=function(id){
 
   // ─── LIFE TIMELINE ─────────────────────────────────────────
   function wireTimeline() {
+    const TL_KIND_ALLOW = ['past','current','future'];
+    function safeKind(k){ return TL_KIND_ALLOW.indexOf(k) >= 0 ? k : 'past'; }
     function render(s) {
-      const list = (s.timeline || []).slice().sort((a, b) => new Date(a.at) - new Date(b.at));
+      const raw = (s && Array.isArray(s.timeline)) ? s.timeline : [];
+      const list = raw.filter(function(t){ return t && typeof t === 'object'; })
+                      .slice()
+                      .sort(function(a,b){ return new Date(a.at) - new Date(b.at); });
       const el = document.getElementById('timeline-list');
       if (!el) return;
-      if (list.length === 0) { el.innerHTML = '<div class="lb-empty">Empty timeline.</div>'; return; }
-      el.innerHTML = list.map(t => {
-        return '<div class="tl-row tl-' + (t.kind || 'past') + '">' +
-          '<div class="tl-dot tl-' + (t.kind || 'past') + '-dot"></div>' +
-          '<div class="tl-when">' + formatDate(t.at) + '</div>' +
-          '<div class="tl-what">' + escapeHTML(t.text) + '</div>' +
-          '<button class="chip-x" onclick="deleteTimeline(\'' + t.id + '\')">✕</button>' +
-        '</div>';
-      }).join('');
+      while(el.firstChild) el.removeChild(el.firstChild);
+      if (list.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'lb-empty';
+        empty.textContent = 'Empty timeline.';
+        el.appendChild(empty);
+      } else {
+        const frag = document.createDocumentFragment();
+        list.forEach(function(t){
+          const k = safeKind(t.kind);
+          const row = document.createElement('div');
+          row.className = 'tl-row tl-' + k;
+          row.dataset.tlId = String(t.id == null ? '' : t.id);
+          const dot = document.createElement('div');
+          dot.className = 'tl-dot tl-' + k + '-dot';
+          row.appendChild(dot);
+          const when = document.createElement('div');
+          when.className = 'tl-when';
+          when.textContent = formatDate(t.at);
+          row.appendChild(when);
+          const what = document.createElement('div');
+          what.className = 'tl-what';
+          what.textContent = String(t.text == null ? '' : t.text);
+          row.appendChild(what);
+          const x = document.createElement('button');
+          x.type = 'button';
+          x.className = 'chip-x';
+          x.dataset.tlAction = 'delete';
+          x.textContent = '✕';
+          row.appendChild(x);
+          frag.appendChild(row);
+        });
+        el.appendChild(frag);
+      }
+      if (el.dataset.b1Bound !== '1') {
+        el.dataset.b1Bound = '1';
+        el.addEventListener('click', function(ev){
+          const btn = ev.target && ev.target.closest && ev.target.closest('[data-tl-action="delete"]');
+          if (!btn || !el.contains(btn)) return;
+          const row = btn.closest('[data-tl-id]');
+          if (!row) return;
+          const id = row.dataset.tlId;
+          if (id && typeof window.deleteTimeline === 'function') window.deleteTimeline(id);
+        });
+      }
     }
     Store.subscribe('timeline', render);
   }
