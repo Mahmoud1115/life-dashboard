@@ -303,12 +303,24 @@ in an old backup, or arrived via restore.
   safety. Persisted data remains round-trip faithful. Safety is
   enforced contextually at each render/export sink.
 
-- **R7.** Malformed-but-import-accepted records (`null` members, `{}`,
-  missing fields, wrong-typed fields, arrays or objects in text fields,
-  numeric or quote-heavy IDs) render and export safely without mutating
-  stored values. Safe coercion at the sink (`String(v ?? '')` or
-  equivalent) is used before any string method (`slice`, `trim`,
-  `toLowerCase`, `replace`) touches the value.
+- **R7.** Malformed-but-import-accepted persisted members — `null`,
+  primitives, `{}`, `[]`, missing fields, wrong-typed fields, IDs of
+  arbitrary shape, and objects whose own `toString` / `valueOf` are
+  shadowed with non-callable values (hostile coercion) — do not crash
+  the enumerated B1 render / export / action surfaces, and are not
+  silently rewritten merely by viewing or exporting them. Safe coercion
+  at the sink uses a local helper that catches `String(v)` throws
+  (`_b1SafeText`, `_b1SafeNumber`, `_b1SafeDateValue` in `app.js`);
+  bare `String(v ?? '')` is not sufficient as an R7 boundary because
+  ToPrimitive on a hostile object throws `TypeError`. Enumerated
+  surfaces: Home Logbook metric card, Tracker (`renderStats`,
+  `renderATACoverage`, `renderTable`, delegated delete), Builder
+  (`renderLogbookBuilder` aggregation, `lbbRenderEntries`, `lbbSearch`,
+  `lbbCopyEntry`, `lbbReuseEntry`, `lbbDeleteEntry`), Logbook CSV
+  (`lbbExportCSV`), global Search (`doSearch`), Apartments
+  (`renderApartments`, sort, `aptDelete`, `aptToggleWinner`), Life
+  Timeline (`wireTimeline` render, sort, `deleteTimeline`). R7 makes no
+  claim about non-enumerated surfaces.
 
 - **R8.** Delegated action handlers use a fixed action allowlist,
   validated indices where indices are used, opaque `dataset` IDs, and

@@ -275,38 +275,254 @@ test('B1 builder — save malicious desc → reload → still literal and safe',
   await assertSentinelClean(page);
 });
 
-// ─── Import boundary ──────────────────────────────────────────────────
+// ─── Real processImport boundary ─────────────────────────────────────
 
-test('B1 import boundary — malformed and malicious entries do not throw and render safely', async ({ page }) => {
-  const malformed = [
-    null,
-    {},
-    { id: 'x1', desc: '<img src=x onerror="window.__B1_SENTINEL__=\'executed\'">' },
-    { id: 42, desc: { nested: 'object' }, aircraft: ['a','b'] },
-    { id: 'a"b\'c', desc: 'ok', hours: 'not-a-number' },
-  ];
-  await seed(page, {
-    dune_logbook_v1: [],
-    dune_logbook_entries_v1: malformed,
-    dune_logbook_tab_v1: 'builder',
-  });
+// Runs a JSON payload through the real production processImport(). The
+// helper stubs confirm() and suppresses the post-restore setTimeout that
+// reloads the page, so the test can observe the settled state.
+async function runProcessImport(page, backupObj) {
+  return page.evaluate(async (backup) => {
+    window.confirm = () => true;
+    const _st = window.setTimeout;
+    window.setTimeout = (fn, delay) =>
+      (delay && delay >= 1000) ? 0 : _st(fn, delay);
+    try {
+      return await window.processImport(JSON.stringify(backup));
+    } finally {
+      window.setTimeout = _st;
+    }
+  }, backupObj);
+}
+
+// Malformed payloads — deliberately diverse, R7-adversarial. Hostile
+// coercion is JSON-encodable by shadowing toString/valueOf with
+// non-callable properties; ES ToPrimitive will throw TypeError on
+// bare String(v) / arithmetic when these are shadowed like this.
+const HOSTILE_TOSTRING = { toString: 'not-a-function', valueOf: 'not-a-function' };
+const MALFORMED_TRACKER = [
+  null,
+  42,
+  'primitive',
+  {},
+  [],
+  { id: 'lb_ok', date: '2026-08-25', company: 'АэроТраст', aircraft_type: 'A320', registration: 'VP-BQP', ata_chapter: '72', task_description: 'ok', hours: '2', stamp_status: 'pending' },
+  { id: 'lb_hostile', hours: HOSTILE_TOSTRING, aircraft_type: HOSTILE_TOSTRING, ata_chapter: HOSTILE_TOSTRING, task_description: HOSTILE_TOSTRING, stamp_status: HOSTILE_TOSTRING },
+  { id: 'lb_wrongtype', hours: {}, aircraft_type: ['a','b'], ata_chapter: { nested: 1 } },
+];
+const MALFORMED_BUILDER = [
+  null,
+  42,
+  {},
+  { id: 'lbe_ok', date: '2026-08-25', aircraft: 'A320', reg: 'VP-BQP', ata: '72', hours: 2.5, desc: 'ok', supervisor: 'Ivan', ref: 'AMM' },
+  { id: 'lbe_hostile', aircraft: HOSTILE_TOSTRING, desc: HOSTILE_TOSTRING, hours: HOSTILE_TOSTRING, supervisor: HOSTILE_TOSTRING, ref: HOSTILE_TOSTRING, ata: HOSTILE_TOSTRING, ataLabel: HOSTILE_TOSTRING, date: HOSTILE_TOSTRING },
+  { id: 'lbe_wrongtype', aircraft: [], desc: {}, hours: {} },
+  { id: { object: 'as id' }, desc: 'weird-id' },
+];
+const MALFORMED_APARTMENTS = [
+  null,
+  'primitive',
+  {},
+  { id: 'apt_ok', address: 'ok', area: 'khimki', rent: 25000, rooms: '1', commute_min: 40, registration: 'yes', status: 'viewing', winner: false, notes: '', added: '2026-01-01' },
+  { id: 'apt_hostile', address: HOSTILE_TOSTRING, rent: HOSTILE_TOSTRING, commute_min: HOSTILE_TOSTRING, added: HOSTILE_TOSTRING, area: HOSTILE_TOSTRING, rooms: HOSTILE_TOSTRING, status: HOSTILE_TOSTRING, registration: HOSTILE_TOSTRING, notes: HOSTILE_TOSTRING },
+];
+
+function envelope(data) {
+  return { version: '2026.1', exported_at: '2026-08-25T00:00:00Z', data };
+}
+
+test('B1 real processImport — malformed Logbook + Apartments arrays survive, render without pageerror', async ({ page }) => {
+  await seed(page, {});
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
   await page.goto('/');
   await waitReady(page);
+
+  // Sanity: production processImport is present.
+  const hasImport = await page.evaluate(() => typeof window.processImport === 'function');
+  expect(hasImport).toBe(true);
+
+  const ok = await runProcessImport(page, envelope({
+    dune_logbook_v1: MALFORMED_TRACKER,
+    dune_logbook_entries_v1: MALFORMED_BUILDER,
+    dune_apartments_v1: MALFORMED_APARTMENTS,
+  }));
+  expect(ok).toBe(true);
+
+  // Storage was NOT silently repaired. Round-trip faithful.
+  const stored = await page.evaluate(() => ({
+    t: JSON.parse(localStorage.getItem('dune_logbook_v1')),
+    b: JSON.parse(localStorage.getItem('dune_logbook_entries_v1')),
+    a: JSON.parse(localStorage.getItem('dune_apartments_v1')),
+  }));
+  expect(stored.t.length).toBe(MALFORMED_TRACKER.length);
+  expect(stored.b.length).toBe(MALFORMED_BUILDER.length);
+  expect(stored.a.length).toBe(MALFORMED_APARTMENTS.length);
+
+  // Tracker: home render + section render + coverage grid all safe.
+  // processImport doesn't re-run the DOMContentLoaded init; trigger a
+  // Tracker re-render via the public toggleLogForm() (flips twice so
+  // the form-visibility state stays where it was).
+  await activate(page, 'logbook');
+  await page.evaluate(() => { window.toggleLogForm(); window.toggleLogForm(); });
+  await page.waitForSelector('#lb-tbody .lb-row-del', { state: 'attached' });
+  const trackerInjected = await page.evaluate(() =>
+    document.querySelectorAll('#lb-tbody img, #lb-tbody script, #lb-tbody svg').length);
+  expect(trackerInjected).toBe(0);
+  const coverageOk = await page.evaluate(() => !!document.getElementById('lb-ata-coverage'));
+  expect(coverageOk).toBe(true);
+
+  // Tracker delete on a valid neighbour still targets exact source index.
+  page.on('dialog', (d) => d.accept());
+  // Row index of 'lb_ok' — production computes source index at render.
+  const targetIdx = await page.evaluate(() => {
+    const arr = JSON.parse(localStorage.getItem('dune_logbook_v1'));
+    return arr.findIndex((e) => e && e.id === 'lb_ok');
+  });
+  expect(targetIdx).toBeGreaterThanOrEqual(0);
+  await page.evaluate((i) => {
+    const btn = document.querySelector('#lb-tbody .lb-row-del[data-idx="' + i + '"]');
+    if (btn) btn.click();
+  }, targetIdx);
+  const trackerAfter = await page.evaluate(() => JSON.parse(localStorage.getItem('dune_logbook_v1')));
+  expect(trackerAfter.length).toBe(MALFORMED_TRACKER.length - 1);
+  // Malformed rows preserved after delete.
+  expect(trackerAfter[0]).toBe(null);
+  expect(trackerAfter.some((e) => e && e.id === 'lb_ok')).toBe(false);
+
+  // Builder: render + search + copy/reuse/delete on valid row are safe.
   await activateLogbookBuilder(page);
+  await page.evaluate(() => {
+    const r = document.getElementById('lb-builder-root');
+    if (r) r.dataset.rendered = '0';
+    if (typeof window.showLbTab === 'function') window.showLbTab('builder');
+  });
   await page.waitForSelector('#lbb-entries', { state: 'attached' });
-  // Malformed members are filtered (typeof !== 'object' or null are
-  // skipped by lbbRenderEntries); the well-formed rows render safely.
-  const rowCount = await page.locator('#lbb-entries .lbb-entry').count();
-  expect(rowCount).toBeGreaterThanOrEqual(3);
-  const injected = await page.evaluate(() =>
+  const builderInjected = await page.evaluate(() =>
     document.querySelectorAll('#lbb-entries img, #lbb-entries script, #lbb-entries svg').length);
-  expect(injected).toBe(0);
+  expect(builderInjected).toBe(0);
+
+  // Search over malformed content must not throw.
+  const searchOk = await page.evaluate(() => {
+    try { window.lbbSearch('ok'); return true; } catch (e) { return false; }
+  });
+  expect(searchOk).toBe(true);
+
+  // Copy/reuse/delete on the ok row.
+  const copyOk = await page.evaluate(() => {
+    try { window.lbbCopyEntry('lbe_ok'); return true; } catch (e) { return String(e && e.message || e); }
+  });
+  expect(copyOk).toBe(true);
+  const reuseOk = await page.evaluate(() => {
+    try { window.lbbReuseEntry('lbe_ok'); return true; } catch (e) { return String(e && e.message || e); }
+  });
+  expect(reuseOk).toBe(true);
+  const delOk = await page.evaluate(() => {
+    try { window.lbbDeleteEntry('lbe_ok'); return true; } catch (e) { return String(e && e.message || e); }
+  });
+  expect(delOk).toBe(true);
+  const builderAfter = await page.evaluate(() => JSON.parse(localStorage.getItem('dune_logbook_entries_v1')));
+  // The valid row removed; malformed rows preserved.
+  expect(builderAfter.some((e) => e && e.id === 'lbe_ok')).toBe(false);
+  expect(builderAfter.length).toBe(MALFORMED_BUILDER.length - 1);
+  // Nulls at index 0 preserved.
+  expect(builderAfter[0]).toBe(null);
+
+  // Apartments: render + sort + toggleWinner + delete valid card.
+  await activate(page, 'passport');
+  await page.evaluate(() => window.renderApartments && window.renderApartments());
+  await page.waitForSelector('#apartments-root .apt-card', { state: 'attached' });
+  const aptInjected = await page.evaluate(() =>
+    document.querySelectorAll('#apartments-root img, #apartments-root script, #apartments-root svg').length);
+  expect(aptInjected).toBe(0);
+
+  // Cycle sorts to prove the hostile-object rent/commute/added cannot throw.
+  const sortsOk = await page.evaluate(() => {
+    try {
+      window.aptSort('rent_asc');
+      window.aptSort('commute_asc');
+      window.aptSort('added_desc');
+      return true;
+    } catch (e) { return String(e && e.message || e); }
+  });
+  expect(sortsOk).toBe(true);
+
+  const toggleOk = await page.evaluate(() => {
+    try { window.aptToggleWinner('apt_ok'); return true; } catch (e) { return String(e && e.message || e); }
+  });
+  expect(toggleOk).toBe(true);
+  const aptDelOk = await page.evaluate(() => {
+    try { window.aptDelete('apt_ok'); return true; } catch (e) { return String(e && e.message || e); }
+  });
+  expect(aptDelOk).toBe(true);
+  const aptAfter = await page.evaluate(() => JSON.parse(localStorage.getItem('dune_apartments_v1')));
+  expect(aptAfter.some((a) => a && a.id === 'apt_ok')).toBe(false);
+  expect(aptAfter.length).toBe(MALFORMED_APARTMENTS.length - 1);
+  expect(aptAfter[0]).toBe(null);
+
+  // CSV export must not throw with malformed rows + hostile values.
+  const csvOk = await page.evaluate(() => {
+    const chunks = [];
+    const OrigBlob = window.Blob;
+    window.Blob = function(parts, opts) { chunks.push(parts.join('')); return new OrigBlob(parts, opts); };
+    window.Blob.prototype = OrigBlob.prototype;
+    try {
+      window.lbbExportCSV();
+      return { ok: true, len: chunks.length && chunks[0].length };
+    } catch (e) {
+      return { ok: false, err: String(e && e.message || e) };
+    } finally {
+      window.Blob = OrigBlob;
+    }
+  });
+  expect(csvOk.ok).toBe(true);
+  expect(csvOk.len).toBeGreaterThan(0);
+
+  // No uncaught pageerror across the whole flow.
   expect(errors).toEqual([]);
-  // R6/R7: storage byte-preserved (still the same object shape).
-  const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('dune_logbook_entries_v1')));
-  expect(stored.length).toBe(malformed.length);
+  await assertSentinelClean(page);
+});
+
+test('B1 Timeline malformed — hostile coercion cannot crash render / sort / delete', async ({ page }) => {
+  // Timeline lives inside dune_state_v4 (Store slice). The production
+  // write path for it is Store.set('timeline', …); the import contract
+  // for the whole state blob is exercised elsewhere (import-restore).
+  // This test uses the actual live write path.
+  await seed(page, {});
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  await page.goto('/');
+  await waitReady(page);
+  await activate(page, 'timeline');
+
+  await page.evaluate((HT) => {
+    const items = [
+      null,
+      42,
+      { id: 'tl_ok', at: '2026-08-25', kind: 'past', text: 'ok' },
+      { id: 'tl_hostile', at: HT, kind: HT, text: HT },
+      { id: 'tl_wrong', at: {}, kind: [], text: { nested: 1 } },
+    ];
+    window.Store.set('timeline', items);
+  }, HOSTILE_TOSTRING);
+
+  await page.waitForSelector('#timeline-list .tl-row', { state: 'attached' });
+  // Hostile kind falls back to 'past' — never a hostile class token.
+  const cls = await page.evaluate(() =>
+    Array.from(document.querySelectorAll('#timeline-list .tl-row')).map((r) => r.className));
+  expect(cls.every((c) => !/onmouseover|onerror|not-a-function/i.test(c))).toBe(true);
+  const tlInjected = await page.evaluate(() =>
+    document.querySelectorAll('#timeline-list img, #timeline-list script, #timeline-list svg').length);
+  expect(tlInjected).toBe(0);
+
+  // Delete the valid row via the delegated handler.
+  page.on('dialog', (d) => d.accept());
+  await page.evaluate(() => window.deleteTimeline('tl_ok'));
+  const after = await page.evaluate(() => window.Store.get('timeline'));
+  expect(after.some((t) => t && t.id === 'tl_ok')).toBe(false);
+  // Malformed rows preserved.
+  expect(after[0]).toBe(null);
+
+  expect(errors).toEqual([]);
   await assertSentinelClean(page);
 });
 

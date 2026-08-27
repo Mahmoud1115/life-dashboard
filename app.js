@@ -160,6 +160,43 @@ const LS = {
 })(window);
 
 /* ═══════════════════════════════════════════
+   B1 R7 — malformed-record coercion primitives (local, non-generic).
+   ADR-011 R7: import-accepted persisted rows may be null, primitive,
+   {}, array, or an object whose own `toString`/`valueOf` are shadowed
+   with non-callable values. Bare `String(v)` and any arithmetic that
+   triggers ToPrimitive throw on those. The helpers below give the
+   B1 render/export/action surfaces a non-throwing coercion boundary
+   without mutating stored data.
+   ═══════════════════════════════════════════ */
+function _b1SafeObject(v){ return (v && typeof v === 'object') ? v : null; }
+function _b1SafeText(v){
+  if (v == null) return '';
+  if (typeof v === 'string') return v;
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+  try { return String(v); }
+  catch (e) { return ''; }
+}
+function _b1SafeNumber(v){
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  try {
+    const s = _b1SafeText(v);
+    if (!s) return 0;
+    const n = parseFloat(s);
+    return Number.isFinite(n) ? n : 0;
+  } catch (e) { return 0; }
+}
+function _b1SafeDateValue(v){
+  // Returns a numeric epoch-ms suitable for sort/subtract, without
+  // triggering ToPrimitive on a hostile object. Malformed → 0.
+  try {
+    const s = _b1SafeText(v);
+    if (!s) return 0;
+    const t = Date.parse(s);
+    return Number.isFinite(t) ? t : 0;
+  } catch (e) { return 0; }
+}
+
+/* ═══════════════════════════════════════════
    LIVE "LAST UPDATED" — reads the repo's latest commit
    ═══════════════════════════════════════════ */
 (function(){
@@ -799,9 +836,12 @@ function renderMetricCards(){
   const easaSt=LS.get('dune_easa_v1',{});
   const easaDone=D.easa.filter(m=>{const s=easaSt[m.id]||{};return (s.status||m.status)==='done';}).length;
 
-  // Logbook
-  const lb=LS.get('dune_logbook_v1',[]);
-  const lbHours=lb.reduce((a,e)=>a+(parseFloat(e.hours)||0),0);
+  // Logbook — R7-safe: filter to real object rows so a malformed
+  // imported member (null / primitive / hostile toString) cannot
+  // throw parseFloat during aggregation and blank the Home page.
+  const lbRaw=LS.get('dune_logbook_v1',[]);
+  const lb=Array.isArray(lbRaw)?lbRaw.filter(function(e){return _b1SafeObject(e)!==null;}):[];
+  const lbHours=lb.reduce(function(a,e){return a+_b1SafeNumber(e.hours);},0);
 
   // Finance monthly savings
   const fin=LS.get('dune_finance_v1',D.finance);
@@ -1076,8 +1116,10 @@ function renderATACoverage(entries){
     {n:'79',l:'Oil'},{n:'80',l:'Starting'},
   ];
   const counts={};
-  (entries||[]).forEach(e=>{
-    const ch=(e.ata_chapter||'').toString().split('.')[0].trim();
+  const list=Array.isArray(entries)?entries:[];
+  list.forEach(function(e){
+    if(!_b1SafeObject(e)) return;
+    const ch=_b1SafeText(e.ata_chapter).split('.')[0].trim();
     if(ch) counts[ch]=(counts[ch]||0)+1;
   });
   const covered=chapters.filter(c=>counts[c.n]>0).length;
@@ -1113,10 +1155,21 @@ function renderATACoverage(entries){
   function renderStats(entries){
     const statsEl=document.getElementById('lb-stats');
     if(!statsEl) return;
-    const totalHours=entries.reduce((a,e)=>a+(parseFloat(e.hours)||0),0).toFixed(1);
-    const types=[...new Set(entries.map(e=>e.aircraft_type).filter(Boolean))].length;
-    const stamped=entries.filter(e=>e.stamp_status==='stamped').length;
-    const ata71_80=entries.filter(e=>{const c=parseInt(e.ata_chapter);return c>=71&&c<=80;}).length;
+    // R7: aggregate only safe object rows. Hostile toString/valueOf
+    // must not throw through parseFloat / parseInt / Set membership.
+    const list=Array.isArray(entries)?entries.filter(function(e){return _b1SafeObject(e)!==null;}):[];
+    const totalHours=list.reduce(function(a,e){return a+_b1SafeNumber(e.hours);},0).toFixed(1);
+    const acSet=new Set();
+    list.forEach(function(e){
+      const t=_b1SafeText(e.aircraft_type);
+      if(t) acSet.add(t);
+    });
+    const types=acSet.size;
+    const stamped=list.filter(function(e){return _b1SafeText(e.stamp_status)==='stamped';}).length;
+    const ata71_80=list.filter(function(e){
+      const c=_b1SafeNumber(e.ata_chapter);
+      return c>=71&&c<=80;
+    }).length;
     statsEl.innerHTML=
       '<div class="lb-stat"><div class="lb-stat-val">'+entries.length+'</div><div class="lb-stat-label">Total Entries</div></div>'+
       '<div class="lb-stat"><div class="lb-stat-val">'+totalHours+'</div><div class="lb-stat-label">Total Hours</div></div>'+
@@ -1167,27 +1220,27 @@ function renderATACoverage(entries){
       function td(text,cls){
         const c=document.createElement('td');
         if(cls) c.className=cls;
-        c.textContent=String(text==null?'':text);
+        c.textContent=_b1SafeText(text);
         return c;
       }
       tr.appendChild(td(e.date));
       tr.appendChild(td(e.company));
-      tr.appendChild(td(String(e.aircraft_type==null?'':e.aircraft_type)+' '+String(e.registration==null?'':e.registration)));
+      tr.appendChild(td(_b1SafeText(e.aircraft_type)+' '+_b1SafeText(e.registration)));
       const ataTd=document.createElement('td');
       const ataSp=document.createElement('span');
       ataSp.style.fontFamily='var(--mono)';
       ataSp.style.fontSize='10px';
-      ataSp.textContent='ATA '+String(e.ata_chapter==null?'':e.ata_chapter);
+      ataSp.textContent='ATA '+_b1SafeText(e.ata_chapter);
       ataTd.appendChild(ataSp);
       tr.appendChild(ataTd);
       const taskTd=document.createElement('td');
       taskTd.style.maxWidth='200px';
-      const desc=String(e.task_description==null?'':e.task_description);
+      const desc=_b1SafeText(e.task_description);
       taskTd.textContent=desc.length>60?desc.slice(0,60)+'…':desc;
       tr.appendChild(taskTd);
       const hoursTd=document.createElement('td');
       hoursTd.style.fontFamily='var(--mono)';
-      hoursTd.textContent=String(e.hours==null?'':e.hours)+'h';
+      hoursTd.textContent=_b1SafeText(e.hours)+'h';
       tr.appendChild(hoursTd);
       const stampTd=document.createElement('td');
       const stampSp=document.createElement('span');
@@ -1195,10 +1248,11 @@ function renderATACoverage(entries){
       stampSp.style.fontSize='9px';
       stampSp.style.padding='2px 9px';
       stampSp.style.borderRadius='100px';
-      const isStamped=e.stamp_status==='stamped';
+      const stampText=_b1SafeText(e.stamp_status);
+      const isStamped=stampText==='stamped';
       stampSp.style.background=isStamped?'var(--green2)':'var(--amber2)';
       stampSp.style.color=isStamped?'var(--green)':'var(--amber)';
-      stampSp.textContent=String(e.stamp_status==null?'':e.stamp_status);
+      stampSp.textContent=stampText;
       stampTd.appendChild(stampSp);
       tr.appendChild(stampTd);
       const actionsTd=document.createElement('td');
@@ -2206,18 +2260,24 @@ function renderLogbookBuilder(){
   const raw=LS.get('dune_logbook_entries_v1',[]);
   // B1 R7: malformed-but-import-accepted rows must not throw the
   // aggregation. Filter to safe objects before deref.
-  const entries=Array.isArray(raw)?raw.filter(function(e){return e&&typeof e==='object';}):[];
+  const entries=Array.isArray(raw)?raw.filter(function(e){return _b1SafeObject(e)!==null;}):[];
   const today=new Date().toISOString().slice(0,10);
   const ataOpts=LB_ATA.map(a=>`<option value="${a.val}">${a.label}</option>`).join('');
 
-  // stats
-  const totalHrs=entries.reduce((s,e)=>s+(parseFloat(e.hours)||0),0);
+  // stats — hostile toString/valueOf are neutralised via _b1Safe*.
+  const totalHrs=entries.reduce(function(s,e){return s+_b1SafeNumber(e.hours);},0);
   const now=new Date();
   const monthHrs=entries.filter(function(e){
-    const d=new Date(e.date);
+    const t=_b1SafeDateValue(e.date);
+    if(!t) return false;
+    const d=new Date(t);
     return d.getFullYear()===now.getFullYear()&&d.getMonth()===now.getMonth();
-  }).reduce((s,e)=>s+(parseFloat(e.hours)||0),0);
-  const ataSet=new Set(entries.map(function(e){return e.ata;}).filter(Boolean));
+  }).reduce(function(s,e){return s+_b1SafeNumber(e.hours);},0);
+  const ataSet=new Set();
+  entries.forEach(function(e){
+    const a=_b1SafeText(e.ata);
+    if(a) ataSet.add(a);
+  });
 
   root.innerHTML=`
   <div class="lbb-stats">
@@ -2293,7 +2353,14 @@ window.lbbSaveEntry=function(){
 };
 window.lbbDeleteEntry=function(id){
   if(!confirm('Delete this logbook entry? Cannot undo.')) return;
-  const entries=LS.get('dune_logbook_entries_v1',[]).filter(e=>e.id!==id);
+  const raw=LS.get('dune_logbook_entries_v1',[]);
+  // R7: keep malformed rows in storage (round-trip faithful) but
+  // guard the .id read on each candidate.
+  const arr=Array.isArray(raw)?raw:[];
+  const entries=arr.filter(function(e){
+    if(!_b1SafeObject(e)) return true; // preserve malformed rows
+    return e.id!==id;
+  });
   LS.set('dune_logbook_entries_v1',entries);
   if (window.LOGBOOK && typeof window.LOGBOOK.reconcile === 'function') {
     try { window.LOGBOOK.reconcile(); } catch (e) { /* mirror is best-effort */ }
@@ -2302,27 +2369,45 @@ window.lbbDeleteEntry=function(id){
   renderLogbookBuilder();
 };
 window.lbbReuseEntry=function(id){
-  const e=LS.get('dune_logbook_entries_v1',[]).find(x=>x.id===id);
+  const raw=LS.get('dune_logbook_entries_v1',[]);
+  const arr=Array.isArray(raw)?raw:[];
+  const e=arr.find(function(x){ return _b1SafeObject(x) && x.id===id; });
   if(!e) return;
-  document.getElementById('lbb-aircraft').value=e.aircraft||'';
-  document.getElementById('lbb-reg').value=e.reg||'';
+  const set=function(id,val){const el=document.getElementById(id); if(el) el.value=_b1SafeText(val);};
+  set('lbb-aircraft', e.aircraft);
+  set('lbb-reg', e.reg);
   const ataEl=document.getElementById('lbb-ata');
   if(ataEl){
-    const found=LB_ATA.find(a=>a.val===e.ata);
-    ataEl.value=found?e.ata:'other';
+    const ataText=_b1SafeText(e.ata);
+    const found=LB_ATA.find(function(a){return a.val===ataText;});
+    ataEl.value=found?ataText:'other';
     lbbAtaChange(ataEl);
-    if(!found){const ow=document.getElementById('lbb-ata-other');if(ow)ow.value=e.ataLabel||e.ata||'';}
+    if(!found){const ow=document.getElementById('lbb-ata-other'); if(ow) ow.value=_b1SafeText(e.ataLabel)||ataText;}
   }
-  document.getElementById('lbb-hours').value=e.hours||'';
-  document.getElementById('lbb-supervisor').value=e.supervisor||'';
-  document.getElementById('lbb-ref').value=e.ref||'';
-  document.getElementById('lbb-desc').value=e.desc||'';
+  set('lbb-hours', e.hours);
+  set('lbb-supervisor', e.supervisor);
+  set('lbb-ref', e.ref);
+  set('lbb-desc', e.desc);
   window.scrollTo({top:document.getElementById('lb-builder-root').offsetTop-100,behavior:'smooth'});
 };
 window.lbbCopyEntry=async function(id){
-  const e=LS.get('dune_logbook_entries_v1',[]).find(x=>x.id===id);
+  const raw=LS.get('dune_logbook_entries_v1',[]);
+  const arr=Array.isArray(raw)?raw:[];
+  const e=arr.find(function(x){ return _b1SafeObject(x) && x.id===id; });
   if(!e) return;
-  const text=`${e.date} | ${e.aircraft}${e.reg?' | REG: '+e.reg:''}\nATA ${e.ata} — ${e.ataLabel}\nTask: ${e.desc}\nRef: ${e.ref||'—'} | Hours: ${e.hours} hrs | Supervised by: ${e.supervisor||'—'}`;
+  const date=_b1SafeText(e.date);
+  const aircraft=_b1SafeText(e.aircraft);
+  const reg=_b1SafeText(e.reg);
+  const ata=_b1SafeText(e.ata);
+  const ataLabel=_b1SafeText(e.ataLabel);
+  const desc=_b1SafeText(e.desc);
+  const ref=_b1SafeText(e.ref);
+  const hours=_b1SafeText(e.hours);
+  const supervisor=_b1SafeText(e.supervisor);
+  const text=date+' | '+aircraft+(reg?' | REG: '+reg:'')+'\n'+
+             'ATA '+ata+' — '+ataLabel+'\n'+
+             'Task: '+desc+'\n'+
+             'Ref: '+(ref||'—')+' | Hours: '+hours+' hrs | Supervised by: '+(supervisor||'—');
   try{await navigator.clipboard.writeText(text);showBackupToast('✓ Entry copied to clipboard');}
   catch(err){alert(text);}
 };
@@ -2339,25 +2424,27 @@ function lbbRenderEntries(entries){
   } else {
     const frag=document.createDocumentFragment();
     list.forEach(function(e){
-      if(!e||typeof e!=='object') return;
+      if(!_b1SafeObject(e)) return;
       const row=document.createElement('div');
       row.className='lbb-entry';
-      row.dataset.id=String(e.id==null?'':e.id);
+      row.dataset.id=_b1SafeText(e.id);
       const meta=document.createElement('div');
       meta.className='lbb-entry-meta';
       const dateSp=document.createElement('span');
       dateSp.className='lbb-entry-date';
-      dateSp.textContent=String(e.date==null?'':e.date);
+      dateSp.textContent=_b1SafeText(e.date);
       const acSp=document.createElement('span');
       acSp.className='lbb-entry-aircraft';
-      acSp.textContent=String(e.aircraft==null?'':e.aircraft)+(e.reg?' · '+String(e.reg):'');
+      const acText=_b1SafeText(e.aircraft);
+      const regText=_b1SafeText(e.reg);
+      acSp.textContent=acText+(regText?' · '+regText:'');
       const ataSp=document.createElement('span');
       ataSp.className='iqa-tag';
       ataSp.style.fontSize='8px';
-      ataSp.textContent='ATA '+String(e.ata==null?'':e.ata);
+      ataSp.textContent='ATA '+_b1SafeText(e.ata);
       const hrsSp=document.createElement('span');
       hrsSp.className='lbb-entry-hrs';
-      hrsSp.textContent=String(e.hours==null?'':e.hours)+' hrs';
+      hrsSp.textContent=_b1SafeText(e.hours)+' hrs';
       meta.appendChild(dateSp);
       meta.appendChild(acSp);
       meta.appendChild(ataSp);
@@ -2365,12 +2452,14 @@ function lbbRenderEntries(entries){
       row.appendChild(meta);
       const desc=document.createElement('div');
       desc.className='lbb-entry-desc';
-      desc.textContent=String(e.desc==null?'':e.desc);
+      desc.textContent=_b1SafeText(e.desc);
       row.appendChild(desc);
-      if(e.supervisor){
+      const supText=_b1SafeText(e.supervisor);
+      if(supText){
         const sup=document.createElement('div');
         sup.className='lbb-entry-sup';
-        sup.textContent='Supervised by: '+String(e.supervisor)+(e.ref?' · '+String(e.ref):'');
+        const refText=_b1SafeText(e.ref);
+        sup.textContent='Supervised by: '+supText+(refText?' · '+refText:'');
         row.appendChild(sup);
       }
       const actions=document.createElement('div');
@@ -2409,8 +2498,14 @@ function lbbRenderEntries(entries){
   }
 }
 window.lbbSearch=function(q){
-  const entries=LS.get('dune_logbook_entries_v1',[]);
-  const filtered=q.trim()?entries.filter(e=>[e.aircraft,e.reg,e.ata,e.desc,e.supervisor].join(' ').toLowerCase().includes(q.toLowerCase())):entries;
+  const raw=LS.get('dune_logbook_entries_v1',[]);
+  const list=Array.isArray(raw)?raw:[];
+  const query=_b1SafeText(q).trim().toLowerCase();
+  const filtered=query?list.filter(function(e){
+    if(!_b1SafeObject(e)) return false;
+    const hay=[e.aircraft,e.reg,e.ata,e.desc,e.supervisor].map(_b1SafeText).join(' ').toLowerCase();
+    return hay.indexOf(query)>=0;
+  }):list;
   lbbRenderEntries(filtered);
 };
 // B1: CSV formula/structure neutralization. Local to Logbook export.
@@ -2425,7 +2520,8 @@ window.lbbSearch=function(q){
 //     date path. Malformed values fall through to the text path.
 //   - Output uses CRLF line endings and a UTF-8 BOM.
 function _csvText(v){
-  var s=String(v==null?'':v);
+  // R7: v may be a hostile-coercion object. _b1SafeText catches the throw.
+  var s=_b1SafeText(v);
   if(s.length){
     var c=s.charAt(0);
     // ASCII: = + - @ TAB CR LF ; full-width: ＝ ＋ － ＠
@@ -2446,12 +2542,10 @@ function _csvDate(v){
   if(dt.getUTCFullYear()!==y||dt.getUTCMonth()!==mo-1||dt.getUTCDate()!==d) return _csvText(v);
   return v;
 }
-window._csvText=_csvText;
-window._csvNumber=_csvNumber;
-window._csvDate=_csvDate;
 window.lbbExportCSV=function(){
-  const entries=LS.get('dune_logbook_entries_v1',[]);
-  if(!Array.isArray(entries)||!entries.length){alert('No entries to export.');return;}
+  const raw=LS.get('dune_logbook_entries_v1',[]);
+  const entries=Array.isArray(raw)?raw:[];
+  if(!entries.length){alert('No entries to export.');return;}
   const BOM='﻿';
   const CRLF='\r\n';
   const headers=['Date','Aircraft Type','Registration','ATA Chapter','Task Description','Hours','Supervisor','Task Reference'];
@@ -2499,7 +2593,7 @@ function renderApartments(){
     const cls=(typeof s==='string' && Object.prototype.hasOwnProperty.call(STATUS_CLASS,s))?STATUS_CLASS[s]:'';
     const el=document.createElement('span');
     el.className='apt-status'+(cls?' '+cls:'');
-    el.textContent=String(s==null?'':s);
+    el.textContent=_b1SafeText(s);
     return el;
   }
 
@@ -2510,16 +2604,18 @@ function renderApartments(){
     return false;
   });
   filtered=filtered.slice().sort(function(a,b){
-    if(sort==='rent_asc') return (a.rent||0)-(b.rent||0);
-    if(sort==='commute_asc') return (a.commute_min||0)-(b.commute_min||0);
-    return new Date(b.added||0)-new Date(a.added||0);
+    if(sort==='rent_asc')    return _b1SafeNumber(a.rent)        - _b1SafeNumber(b.rent);
+    if(sort==='commute_asc') return _b1SafeNumber(a.commute_min) - _b1SafeNumber(b.commute_min);
+    return _b1SafeDateValue(b.added) - _b1SafeDateValue(a.added);
   });
 
   const counts={all:apts.length,viewing:0,applied:0,signed:0,rejected:0,'reg-yes':0,'reg-no':0};
   apts.forEach(function(a){
-    if(counts[a.status]!==undefined) counts[a.status]++;
-    if(a.registration==='yes') counts['reg-yes']++;
-    if(a.registration==='no') counts['reg-no']++;
+    const status=_b1SafeText(a.status);
+    if(counts[status]!==undefined) counts[status]++;
+    const reg=_b1SafeText(a.registration);
+    if(reg==='yes') counts['reg-yes']++;
+    else if(reg==='no') counts['reg-no']++;
   });
 
   while(root.firstChild) root.removeChild(root.firstChild);
@@ -2535,7 +2631,7 @@ function renderApartments(){
     bar.className='apt-winner-bar';
     bar.appendChild(document.createTextNode('⭐ Top choice: '));
     const strong=document.createElement('strong');
-    strong.textContent=String(winner.address==null?'':winner.address);
+    strong.textContent=_b1SafeText(winner.address);
     bar.appendChild(strong);
     const winRent=(typeof winner.rent==='number' && Number.isFinite(winner.rent))?winner.rent.toLocaleString()+' ₽':'?';
     const winCommute=(typeof winner.commute_min==='number' && Number.isFinite(winner.commute_min))?winner.commute_min+' min':'?';
@@ -2619,7 +2715,7 @@ function renderApartments(){
     filtered.forEach(function(a){
       const card=document.createElement('div');
       card.className='apt-card'+(a.winner?' apt-card-winner':'')+(a.registration==='no'?' apt-card-noreg':'');
-      card.dataset.aptId=String(a.id==null?'':a.id);
+      card.dataset.aptId=_b1SafeText(a.id);
       const head=document.createElement('div');
       head.className='apt-card-head';
       head.appendChild(makeStatusPill(a.status));
@@ -2633,16 +2729,16 @@ function renderApartments(){
       card.appendChild(head);
       const addr=document.createElement('div');
       addr.className='apt-address';
-      addr.textContent=String(a.address==null?'':a.address);
+      addr.textContent=_b1SafeText(a.address);
       card.appendChild(addr);
       const meta=document.createElement('div');
       meta.className='apt-meta';
       const areaTag=document.createElement('span');
       areaTag.className='apt-area-tag';
-      areaTag.textContent=String(a.area==null?'':a.area);
+      areaTag.textContent=_b1SafeText(a.area);
       const rooms=document.createElement('span');
       rooms.className='apt-rooms';
-      rooms.textContent=String(a.rooms==null?'':a.rooms)+'-room';
+      rooms.textContent=_b1SafeText(a.rooms)+'-room';
       meta.appendChild(areaTag);
       meta.appendChild(rooms);
       card.appendChild(meta);
@@ -2678,15 +2774,16 @@ function renderApartments(){
       numbers.appendChild(commuteSp);
       card.appendChild(numbers);
       card.appendChild(makeRegBadge(a.registration));
-      if(a.notes){
+      const notesText=_b1SafeText(a.notes);
+      if(notesText){
         const notes=document.createElement('div');
         notes.className='apt-notes';
-        notes.textContent=String(a.notes);
+        notes.textContent=notesText;
         card.appendChild(notes);
       }
       const actions=document.createElement('div');
       actions.className='apt-actions';
-      const mapsUrl='https://www.google.com/maps/search/?api=1&query='+encodeURIComponent(String(a.address==null?'':a.address)+' Moscow');
+      const mapsUrl='https://www.google.com/maps/search/?api=1&query='+encodeURIComponent(_b1SafeText(a.address)+' Moscow');
       const mapsLink=document.createElement('a');
       mapsLink.href=mapsUrl;
       mapsLink.target='_blank';
@@ -2771,12 +2868,23 @@ window.aptSave=function(){
 };
 window.aptDelete=function(id){
   if(!confirm('Delete this apartment listing?')) return;
-  const apts=LS.get('dune_apartments_v1',[]).filter(a=>a.id!==id);
+  const raw=LS.get('dune_apartments_v1',[]);
+  const arr=Array.isArray(raw)?raw:[];
+  // Preserve malformed rows in storage; only remove the matching valid row.
+  const apts=arr.filter(function(a){
+    if(!_b1SafeObject(a)) return true;
+    return a.id!==id;
+  });
   LS.set('dune_apartments_v1',apts);
   renderApartments();
 };
 window.aptToggleWinner=function(id){
-  const apts=LS.get('dune_apartments_v1',[]).map(a=>({...a,winner:a.id===id?!a.winner:false}));
+  const raw=LS.get('dune_apartments_v1',[]);
+  const arr=Array.isArray(raw)?raw:[];
+  const apts=arr.map(function(a){
+    if(!_b1SafeObject(a)) return a; // never spread a hostile shape
+    return Object.assign({}, a, { winner: a.id===id ? !a.winner : false });
+  });
   LS.set('dune_apartments_v1',apts);
   renderApartments();
 };
@@ -3048,9 +3156,9 @@ window.aptToggleWinner=function(id){
     function safeKind(k){ return TL_KIND_ALLOW.indexOf(k) >= 0 ? k : 'past'; }
     function render(s) {
       const raw = (s && Array.isArray(s.timeline)) ? s.timeline : [];
-      const list = raw.filter(function(t){ return t && typeof t === 'object'; })
+      const list = raw.filter(function(t){ return _b1SafeObject(t) !== null; })
                       .slice()
-                      .sort(function(a,b){ return new Date(a.at) - new Date(b.at); });
+                      .sort(function(a,b){ return _b1SafeDateValue(a.at) - _b1SafeDateValue(b.at); });
       const el = document.getElementById('timeline-list');
       if (!el) return;
       while(el.firstChild) el.removeChild(el.firstChild);
@@ -3065,17 +3173,17 @@ window.aptToggleWinner=function(id){
           const k = safeKind(t.kind);
           const row = document.createElement('div');
           row.className = 'tl-row tl-' + k;
-          row.dataset.tlId = String(t.id == null ? '' : t.id);
+          row.dataset.tlId = _b1SafeText(t.id);
           const dot = document.createElement('div');
           dot.className = 'tl-dot tl-' + k + '-dot';
           row.appendChild(dot);
           const when = document.createElement('div');
           when.className = 'tl-when';
-          when.textContent = formatDate(t.at);
+          when.textContent = formatDate(_b1SafeText(t.at));
           row.appendChild(when);
           const what = document.createElement('div');
           what.className = 'tl-what';
-          what.textContent = String(t.text == null ? '' : t.text);
+          what.textContent = _b1SafeText(t.text);
           row.appendChild(what);
           const x = document.createElement('button');
           x.type = 'button';
@@ -3113,7 +3221,12 @@ window.aptToggleWinner=function(id){
   window.deleteTimeline = function (id) {
     if (!confirm('Delete?')) return;
     const cur = Store.get('timeline') || [];
-    Store.set('timeline', cur.filter(t => t.id !== id));
+    const arr = Array.isArray(cur) ? cur : [];
+    // Preserve malformed rows in storage; only remove the matching valid row.
+    Store.set('timeline', arr.filter(function(t){
+      if (!_b1SafeObject(t)) return true;
+      return t.id !== id;
+    }));
   };
 
   // ─── TODAY — REACTIVE COMMAND CENTER ───────────────────────
