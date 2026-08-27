@@ -976,3 +976,115 @@ test('B1 apartments — aptDelete preserves every malformed non-actionable membe
 
   expect(errors).toEqual([]);
 });
+
+// ─── Apartment numeric-id targeting regression ────────────────────────
+//
+// Codex proved on bcd02a1 that the previous `_isActionableApartment`
+// predicate accepted numeric ids as actionable, but the DOM action
+// channel dispatches through `element.dataset.aptId` — always a string
+// — so a `{id: 42}` row could neither be targeted correctly nor be
+// safely coexistent with a real string-id row. The production id
+// contract is a non-empty string (`aptSave` writes 'apt_' +
+// Date.now()); numeric ids therefore stay non-actionable.
+
+test('B1 apartments — numeric-id row is non-actionable; global actions do not mutate or delete it', async ({ page }) => {
+  await seed(page, {});
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  await page.goto('/');
+  await waitReady(page);
+
+  const APTS_BEFORE = [
+    { id: 42, address: 'Numeric row', winner: false },
+    { id: 'apt_ok', address: 'Valid row', winner: false },
+  ];
+  const ok = await runProcessImport(page, envelope({ dune_apartments_v1: APTS_BEFORE }));
+  expect(ok).toBe(true);
+
+  const before = await page.evaluate(() => JSON.parse(localStorage.getItem('dune_apartments_v1')));
+
+  page.on('dialog', (d) => d.accept());
+  // aptToggleWinner("42") must not touch the numeric row.
+  await page.evaluate(() => window.aptToggleWinner('42'));
+  const afterToggle = await page.evaluate(() => JSON.parse(localStorage.getItem('dune_apartments_v1')));
+  expect(afterToggle.length).toBe(2);
+  expect(afterToggle[0]).toEqual(before[0]);      // numeric row deep-equal preserved
+  expect(afterToggle[1].id).toBe('apt_ok');       // valid row still present
+  expect(afterToggle[1].winner).toBe(false);      // valid row untouched — no id "42" match
+
+  // A real toggle of the valid row must also leave the numeric row alone.
+  await page.evaluate(() => window.aptToggleWinner('apt_ok'));
+  const afterValidToggle = await page.evaluate(() => JSON.parse(localStorage.getItem('dune_apartments_v1')));
+  expect(afterValidToggle[0]).toEqual(before[0]); // numeric row unchanged
+  expect(afterValidToggle[1].winner).toBe(true);  // valid row toggled
+
+  // aptDelete("42") must not remove or mutate the numeric row.
+  await page.evaluate(() => window.aptDelete('42'));
+  const afterDel = await page.evaluate(() => JSON.parse(localStorage.getItem('dune_apartments_v1')));
+  expect(afterDel.length).toBe(2);
+  expect(afterDel[0]).toEqual(before[0]);
+  expect(afterDel[1].id).toBe('apt_ok');
+
+  expect(errors).toEqual([]);
+});
+
+test('B1 apartments — numeric 42 and string "42" coexist; string-id delegated action targets only the string row', async ({ page }) => {
+  await seed(page, {});
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  await page.goto('/');
+  await waitReady(page);
+
+  const APTS_BEFORE = [
+    { id: 42,   address: 'Numeric', winner: false },
+    { id: '42', address: 'String',  winner: false },
+  ];
+  const ok = await runProcessImport(page, envelope({ dune_apartments_v1: APTS_BEFORE }));
+  expect(ok).toBe(true);
+  const numericBefore = { id: 42, address: 'Numeric', winner: false };
+
+  // Render Apartments so the delegated DOM channel exists. Note that
+  // `renderApartments` renders every stored row for parity with the
+  // previous behaviour; both numeric and string rows produce cards
+  // whose `dataset.aptId === "42"` (because `_b1SafeText(42) === "42"`
+  // and dataset values are always strings). The point of this
+  // regression is not who owns the DOM node, but that the action
+  // handlers dispatched with id "42" mutate ONLY the actionable
+  // string-id row and leave the numeric-id row byte-identical.
+  await activate(page, 'passport');
+  await page.evaluate(() => window.renderApartments && window.renderApartments());
+  await page.waitForSelector('#apartments-root .apt-card', { state: 'attached' });
+
+  // Both rows render; both cards carry data-apt-id="42".
+  const cardIds = await page.evaluate(() =>
+    Array.from(document.querySelectorAll('#apartments-root .apt-card')).map((c) => c.dataset.aptId));
+  expect(cardIds).toEqual(['42', '42']);
+
+  page.on('dialog', (d) => d.accept());
+
+  // Fire the delegated toggle click. Any of the two data-apt-id="42"
+  // cards is fine — the delegate delivers the same id "42" to
+  // aptToggleWinner regardless, and the action semantics is what
+  // this test proves.
+  await page.evaluate(() =>
+    document.querySelector('#apartments-root .apt-card[data-apt-id="42"] button[data-apt-action="toggleWinner"]').click());
+
+  const afterToggle = await page.evaluate(() => JSON.parse(localStorage.getItem('dune_apartments_v1')));
+  expect(afterToggle.length).toBe(2);
+  // Numeric row unchanged deep-equal, same position.
+  expect(afterToggle[0]).toEqual(numericBefore);
+  // String row toggled.
+  const stringRowAfter = afterToggle.find((a) => a && a.id === '42');
+  expect(stringRowAfter.winner).toBe(true);
+
+  // Delete the string-id row via the DOM delegate.
+  await page.evaluate(() =>
+    document.querySelector('#apartments-root .apt-card[data-apt-id="42"] button[data-apt-action="delete"]').click());
+
+  const afterDelete = await page.evaluate(() => JSON.parse(localStorage.getItem('dune_apartments_v1')));
+  expect(afterDelete.length).toBe(1);
+  // Numeric row is the sole survivor and is byte-identical to its pre-import shape.
+  expect(afterDelete[0]).toEqual(numericBefore);
+
+  expect(errors).toEqual([]);
+});

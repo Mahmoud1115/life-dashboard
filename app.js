@@ -2869,14 +2869,16 @@ window.aptSave=function(){
 // B1 R7 — apartment action predicate. `_b1SafeObject` was too loose
 // for actions: {} and [] pass typeof-object and would be cloned with
 // winner:false, silently rewriting import-preserved malformed rows.
-// An actionable Apartment must be a real non-array object carrying its
-// own primitive `id` — matching how `aptSave` writes them ('apt_' +
-// Date.now()). Everything else stays exactly as imported.
+// The production Apartment ID contract is a non-empty string (`aptSave`
+// writes 'apt_' + Date.now() at [app.js:2857]), and delegated DOM
+// actions dispatch through `element.dataset.aptId` which is always a
+// string. Numeric or otherwise-typed ids therefore cannot round-trip
+// through the DOM action channel safely, and are treated as
+// non-actionable so they are left exactly as imported.
 function _isActionableApartment(a){
   if (!a || typeof a !== 'object' || Array.isArray(a)) return false;
   if (!Object.prototype.hasOwnProperty.call(a, 'id')) return false;
-  const t = typeof a.id;
-  return t === 'string' || t === 'number';
+  return typeof a.id === 'string' && a.id.length > 0;
 }
 // Copy an Apartment while preserving all own property descriptors —
 // including an own `__proto__` data property that a JSON import may
