@@ -2866,13 +2866,39 @@ window.aptSave=function(){
   aptCloseForm();
   renderApartments();
 };
+// B1 R7 — apartment action predicate. `_b1SafeObject` was too loose
+// for actions: {} and [] pass typeof-object and would be cloned with
+// winner:false, silently rewriting import-preserved malformed rows.
+// An actionable Apartment must be a real non-array object carrying its
+// own primitive `id` — matching how `aptSave` writes them ('apt_' +
+// Date.now()). Everything else stays exactly as imported.
+function _isActionableApartment(a){
+  if (!a || typeof a !== 'object' || Array.isArray(a)) return false;
+  if (!Object.prototype.hasOwnProperty.call(a, 'id')) return false;
+  const t = typeof a.id;
+  return t === 'string' || t === 'number';
+}
+// Copy an Apartment while preserving all own property descriptors —
+// including an own `__proto__` data property that a JSON import may
+// legitimately create. Object.assign / spread use [[Set]] and would
+// route `__proto__` through the setter, dropping the own key.
+function _cloneApartmentWithWinner(a, winnerVal){
+  const copy = Object.defineProperties(
+    Object.create(Object.getPrototypeOf(a)),
+    Object.getOwnPropertyDescriptors(a)
+  );
+  Object.defineProperty(copy, 'winner', {
+    value: winnerVal, writable: true, enumerable: true, configurable: true
+  });
+  return copy;
+}
 window.aptDelete=function(id){
   if(!confirm('Delete this apartment listing?')) return;
   const raw=LS.get('dune_apartments_v1',[]);
   const arr=Array.isArray(raw)?raw:[];
-  // Preserve malformed rows in storage; only remove the matching valid row.
+  // Preserve malformed rows exactly; only remove the matching valid row.
   const apts=arr.filter(function(a){
-    if(!_b1SafeObject(a)) return true;
+    if(!_isActionableApartment(a)) return true;
     return a.id!==id;
   });
   LS.set('dune_apartments_v1',apts);
@@ -2882,8 +2908,12 @@ window.aptToggleWinner=function(id){
   const raw=LS.get('dune_apartments_v1',[]);
   const arr=Array.isArray(raw)?raw:[];
   const apts=arr.map(function(a){
-    if(!_b1SafeObject(a)) return a; // never spread a hostile shape
-    return Object.assign({}, a, { winner: a.id===id ? !a.winner : false });
+    // Non-actionable members (null, primitives, {}, [], objects
+    // without a primitive id) are returned by reference — never cloned,
+    // never rewritten. Only real Apartments participate in the toggle.
+    if(!_isActionableApartment(a)) return a;
+    const winnerVal = a.id===id ? !a.winner : false;
+    return _cloneApartmentWithWinner(a, winnerVal);
   });
   LS.set('dune_apartments_v1',apts);
   renderApartments();

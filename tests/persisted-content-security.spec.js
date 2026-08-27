@@ -790,3 +790,189 @@ test('B1 timeline — hostile kind falls back to allowlisted class; hostile id p
   const captured = await page.evaluate(() => window.__B1_TL_DEL__);
   expect(captured).toEqual(['tl"1']);
 });
+
+// ─── Apartment R7 preservation regressions ────────────────────────────
+//
+// Codex proved on 3b03886 that `aptToggleWinner` rewrote {} and [] to
+// {winner:false} because the previous `_b1SafeObject` predicate accepted
+// them. The tests below assert exact deep-equal preservation of every
+// non-actionable member across BOTH toggle and delete, plus a
+// __proto__-own-key case (JSON.parse creates it as an ordinary own data
+// property; Object.assign / spread would drop it via the __proto__
+// setter — the fix uses Object.defineProperties + getOwnPropertyDescriptors).
+
+test('B1 apartments — aptToggleWinner preserves every malformed non-actionable member deep-equal', async ({ page }) => {
+  await seed(page, {});
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  await page.goto('/');
+  await waitReady(page);
+
+  const APTS_BEFORE = [
+    null,
+    'primitive',
+    42,
+    {},
+    [],
+    { notAnApt: true, foo: 'bar' },        // object without an id — non-actionable
+    { id: 'apt_A', address: 'Real A', rent: 25000, winner: false },  // valid
+    { id: 'apt_B', address: 'Real B', rent: 30000, winner: false },  // valid — will become winner
+    { id: { object: 'as id' }, address: 'Object-id row' },            // non-primitive id — non-actionable
+    { id: 'apt_hostile', address: HOSTILE_TOSTRING, rent: HOSTILE_TOSTRING }, // hostile fields but valid id
+  ];
+
+  // Real production import path.
+  const ok = await runProcessImport(page, envelope({ dune_apartments_v1: APTS_BEFORE }));
+  expect(ok).toBe(true);
+
+  // Deep snapshot of stored bytes BEFORE the action — round-tripped
+  // through JSON so we compare exactly the persisted representation.
+  const before = await page.evaluate(() => localStorage.getItem('dune_apartments_v1'));
+  const beforeParsed = JSON.parse(before);
+
+  // Confirm the pre-action storage matches the intended input shape.
+  expect(beforeParsed.length).toBe(APTS_BEFORE.length);
+  expect(beforeParsed[0]).toBe(null);
+  expect(beforeParsed[1]).toBe('primitive');
+  expect(beforeParsed[2]).toBe(42);
+  expect(beforeParsed[3]).toEqual({});
+  expect(beforeParsed[4]).toEqual([]);
+  expect(beforeParsed[5]).toEqual({ notAnApt: true, foo: 'bar' });
+
+  // Perform the toggle on a real valid apartment.
+  page.on('dialog', (d) => d.accept());
+  await page.evaluate(() => window.aptToggleWinner('apt_B'));
+
+  const after = await page.evaluate(() => localStorage.getItem('dune_apartments_v1'));
+  const afterParsed = JSON.parse(after);
+
+  // 1. Array shape / order preserved.
+  expect(afterParsed.length).toBe(APTS_BEFORE.length);
+
+  // 2. Every non-actionable index is deep-equal to its pre-action value.
+  //    This is the exact prior-failure detector: {} must NOT become {winner:false}.
+  const NON_ACTIONABLE_INDICES = [0, 1, 2, 3, 4, 5, 8];
+  for (const i of NON_ACTIONABLE_INDICES) {
+    expect(afterParsed[i]).toEqual(beforeParsed[i]);
+  }
+
+  // 3. Explicit shape checks: malformed did not gain a winner property.
+  expect(Object.prototype.hasOwnProperty.call(afterParsed[3] || {}, 'winner')).toBe(false); // {} unchanged
+  expect(Array.isArray(afterParsed[4])).toBe(true);                                          // [] unchanged
+  expect(afterParsed[4].length).toBe(0);
+  expect(Object.prototype.hasOwnProperty.call(afterParsed[5], 'winner')).toBe(false);        // {notAnApt} unchanged
+  expect(Object.prototype.hasOwnProperty.call(afterParsed[8], 'winner')).toBe(false);        // object-id row unchanged
+
+  // 4. Valid target and other valid apartments follow toggle semantics.
+  const aptA = afterParsed[6];
+  const aptB = afterParsed[7];
+  const aptHostile = afterParsed[9];
+  expect(aptB.winner).toBe(true);
+  expect(aptA.winner).toBe(false);
+  expect(aptHostile.winner).toBe(false);
+  // Their non-winner fields preserved.
+  expect(aptA.address).toBe('Real A');
+  expect(aptA.rent).toBe(25000);
+  expect(aptB.address).toBe('Real B');
+  expect(aptB.rent).toBe(30000);
+
+  expect(errors).toEqual([]);
+});
+
+test('B1 apartments — aptToggleWinner preserves an own __proto__ JSON key on a valid apartment', async ({ page }) => {
+  await seed(page, {});
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  await page.goto('/');
+  await waitReady(page);
+
+  // JS object literals treat `__proto__:` as the prototype setter, so
+  // authoring the payload as an object would drop the key before the
+  // test even runs. Build the JSON string by hand so processImport sees
+  // `__proto__` as a JSON data key; JSON.parse then creates it as an
+  // ordinary own data property on the parsed row.
+  const payloadJson =
+    '{"version":"2026.1","exported_at":"2026-08-25T00:00:00Z","data":{' +
+      '"dune_apartments_v1":[' +
+        '{"id":"apt_X","address":"X","winner":false,"__proto__":"sentinel-x"},' +
+        '{"id":"apt_Y","address":"Y","winner":false,"__proto__":"sentinel-y"}' +
+      ']' +
+    '}}';
+  const ok = await page.evaluate(async (json) => {
+    window.confirm = () => true;
+    const _st = window.setTimeout;
+    window.setTimeout = (fn, delay) => (delay && delay >= 1000) ? 0 : _st(fn, delay);
+    try { return await window.processImport(json); }
+    finally { window.setTimeout = _st; }
+  }, payloadJson);
+  expect(ok).toBe(true);
+
+  // Confirm storage recorded __proto__ as an own key on both rows.
+  const beforeOwn = await page.evaluate(() => {
+    const parsed = JSON.parse(localStorage.getItem('dune_apartments_v1'));
+    return parsed.map((r) => Object.prototype.hasOwnProperty.call(r, '__proto__') ? r.__proto__ : '<missing>');
+  });
+  expect(beforeOwn).toEqual(['sentinel-x', 'sentinel-y']);
+
+  page.on('dialog', (d) => d.accept());
+  await page.evaluate(() => window.aptToggleWinner('apt_X'));
+
+  const afterOwn = await page.evaluate(() => {
+    const parsed = JSON.parse(localStorage.getItem('dune_apartments_v1'));
+    return parsed.map((r) => ({
+      id: r && r.id,
+      winner: r && r.winner,
+      hasProto: Object.prototype.hasOwnProperty.call(r || {}, '__proto__'),
+      proto: r && r.__proto__,
+    }));
+  });
+  expect(afterOwn.length).toBe(2);
+  expect(afterOwn[0]).toEqual({ id: 'apt_X', winner: true,  hasProto: true, proto: 'sentinel-x' });
+  expect(afterOwn[1]).toEqual({ id: 'apt_Y', winner: false, hasProto: true, proto: 'sentinel-y' });
+
+  expect(errors).toEqual([]);
+});
+
+test('B1 apartments — aptDelete preserves every malformed non-actionable member deep-equal', async ({ page }) => {
+  await seed(page, {});
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  await page.goto('/');
+  await waitReady(page);
+
+  const APTS_BEFORE = [
+    null,
+    'primitive',
+    {},
+    [],
+    { notAnApt: true },
+    { id: 'apt_keep', address: 'Keep', winner: false },
+    { id: 'apt_del',  address: 'Drop', winner: false },
+    { id: 'apt_hostile', address: HOSTILE_TOSTRING, rent: HOSTILE_TOSTRING, winner: false },
+    { id: { object: 'as id' }, address: 'Object-id row' },
+  ];
+  const ok = await runProcessImport(page, envelope({ dune_apartments_v1: APTS_BEFORE }));
+  expect(ok).toBe(true);
+
+  const before = await page.evaluate(() => JSON.parse(localStorage.getItem('dune_apartments_v1')));
+  expect(before.length).toBe(APTS_BEFORE.length);
+
+  page.on('dialog', (d) => d.accept());
+  await page.evaluate(() => window.aptDelete('apt_del'));
+
+  const after = await page.evaluate(() => JSON.parse(localStorage.getItem('dune_apartments_v1')));
+  expect(after.length).toBe(APTS_BEFORE.length - 1);
+  expect(after.some((a) => a && a.id === 'apt_del')).toBe(false);
+  // Non-actionable members preserved deep-equal, order preserved.
+  expect(after[0]).toBe(null);
+  expect(after[1]).toBe('primitive');
+  expect(after[2]).toEqual({});
+  expect(after[3]).toEqual([]);
+  expect(after[4]).toEqual({ notAnApt: true });
+  // apt_keep still present with its fields unchanged.
+  const kept = after.find((a) => a && a.id === 'apt_keep');
+  expect(kept.address).toBe('Keep');
+  expect(kept.winner).toBe(false);
+
+  expect(errors).toEqual([]);
+});
