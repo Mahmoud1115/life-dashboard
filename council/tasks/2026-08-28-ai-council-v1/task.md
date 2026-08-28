@@ -1,6 +1,6 @@
 ---
 task: 2026-08-28-ai-council-v1
-status: accepted
+status: pending-independent-review
 risk: HIGH
 base_commit: 92f77510c940f8da44429537d5551d8af2e06c9e
 branch: claude/ai-council-v1-foundation
@@ -76,7 +76,7 @@ task.
 ## Inputs consumed
 
 - The AI Council Platform Architecture Review (independent evaluation,
-  Claude, 2026-08-28) — CLAUDE.md report in this task folder.
+  Claude, 2026-08-28) — `reports/claude.md` in this task folder.
 - The three-way synthesis draft from ChatGPT (2026-08-28), preserved
   in the user's local review workflow.
 - Layer 1 canonical documents at the frozen base commit above.

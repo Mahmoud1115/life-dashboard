@@ -18,31 +18,78 @@ The Council exists to:
 - Canonical project truth lives in `docs/lifeos/*`.
 - Deterministic CI evidence outranks model consensus.
 
-## Task folder lifecycle
+## Task folder shape
 
-Every non-trivial cross-model task lives in its own folder:
+Every non-trivial cross-model task lives in its own folder with a
+dedicated `reports/` subdirectory for model outputs:
 
 ```
 council/tasks/<YYYY-MM-DD>-<short-slug>/
+├── task.md
+├── reports/
+│   ├── claude.md
+│   ├── codex.md
+│   └── chatgpt.md
+└── SYNTHESIS.md
 ```
 
-Lifecycle states:
+Optional per-model report files (added only when that model
+actually participated in the task):
 
 ```
-OPEN                  task.md created; base commit frozen
-  ↓
-ROUND 1               each assigned reviewer writes their own <MODEL>.md
-                      independently (see §Round 1 independence below)
-  ↓
-SYNTHESIS             ChatGPT (or the user) writes SYNTHESIS.md
-  ↓
-OPTIONAL              up to 2 bounded targeted revisit rounds
-BOUNDED
-CHALLENGE
-  ↓
-ACCEPTED              SYNTHESIS.md marked accepted; if it changes canonical
-or                    architecture, promote to docs/lifeos/DECISIONS.md
-SUPERSEDED            (as an ADR) and/or docs/lifeos/ROADMAP.md
+reports/qwen.md
+reports/gemini.md
+```
+
+**Filename convention rationale.** Report files live under
+`reports/` with **lowercase** filenames so they cannot be
+interpreted by Claude Code as agent-instruction memory. The root
+`CLAUDE.md` and `AGENTS.md` files are the only files reserved for
+actual agent instructions; nested `reports/*.md` files are
+historical evidence, never instructions.
+
+## Task lifecycle states
+
+Distinguish four review stages — do not conflate them:
+
+```
+1. AUTHOR HANDOFF          the implementer or task author drafts
+                           task.md + (optionally) an initial reports/claude.md
+                           that names the intent and self-audit.
+                           Not yet reviewed. Not final.
+
+2. BLIND PEER REVIEW       applies ONLY when two or more peer reviewers
+                           are actually assigned. Reviewers receive the
+                           same frozen commit / same inputs / same
+                           evidence; each writes its own reports/<model>.md
+                           without reading the others' reports first.
+
+3. IMPLEMENTATION REVIEW   an independent HIGH-risk reviewer (typically
+                           Codex CLI, outside the authoring Claude Code
+                           session) reviews the exact implementation head
+                           and writes reports/codex.md. This stage is
+                           distinct from stage 2: it targets a specific
+                           implementation SHA, not just an architecture
+                           proposal.
+
+4. FINAL SYNTHESIS         ChatGPT (or the user) reads all reports/
+                           and writes SYNTHESIS.md. A synthesis MUST NOT
+                           precede the independent implementation
+                           report(s) it claims to synthesize.
+```
+
+Lifecycle values recorded in `task.md`'s `status:` field:
+
+```
+open                       just created; base commit frozen
+review                     stage 2 or 3 in progress; reports incomplete
+pending-independent-review specific state: waiting on stage 3 reviewer
+synthesis                  stage 4 in progress; reports complete
+accepted                   SYNTHESIS.md accepted by the user; if canonical
+                           architecture changed, promote to
+                           docs/lifeos/DECISIONS.md as an ADR and/or
+                           update docs/lifeos/ROADMAP.md
+superseded                 a later task supersedes the accepted synthesis
 ```
 
 This lifecycle is a written convention. **V1 does not automate it.** Do not build software to enforce lifecycle transitions unless manual ceremony becomes a measured, repeated bottleneck.
@@ -128,19 +175,36 @@ write_authority: <worker name | none>
 
 ### Model report frontmatter
 
+Common fields (all reports):
+
 ```yaml
 ---
 task: <task slug>
-base_commit: <full commit reviewed>
+base_commit: <full 40-char commit that the task was opened against>
 model: <worker or model name — claude-code, codex-cli, chatgpt, qwen, gemini>
 role: implementer | reviewer | scout | synthesizer
 created_at: <ISO-8601 timestamp>
 inputs:
   - <exact files or context files the model consumed>
 evidence:
-  - <exact deterministic evidence consumed, e.g. Playwright report path>
+  - <exact deterministic evidence consumed, e.g. github-actions run/check refs>
 ---
 ```
+
+**Implementation-review reports MUST additionally include:**
+
+```yaml
+review_commit: <full 40-char SHA of the exact implementation head reviewed>
+working_tree: clean | dirty
+evidence:
+  - github-actions:<run-id>/<job-or-check-name>
+  - (any other deterministic evidence identifier)
+```
+
+Rationale: `base_commit` alone identifies which commit the task was
+opened against, not which commit the implementation was reviewed at.
+An implementation review MUST bind to a specific implementation SHA
+so approval cannot silently drift to a later commit.
 
 Optional (include only when reliably available):
 
@@ -149,17 +213,44 @@ model_version: <e.g. claude-opus-4-7>
 tool_version: <e.g. claude-code-cli-1.x.y>
 ```
 
-**Do not invent model version strings.** If unknown, omit.
+**Do not invent** model version strings, timestamps, or GitHub
+Actions run IDs. If unknown, omit the optional field or state
+`unknown` explicitly.
+
+### External-input handling
+
+For external inputs (a document the reviewer read but which is not
+tracked in the repository) that materially affect the review
+decision, choose one:
+
+- commit a sanitized copy to the task folder and list the committed
+  path in `inputs:`; OR
+- record a SHA-256 digest + a source description in `inputs:` so a
+  future reader can verify the exact bytes the reviewer consumed.
+
+Do not require per-file blob hashes for committed files. The commit
+already binds repository content.
 
 ### Stale-context rule
 
-A model report is stale and must be revalidated if any of the following is true:
+Implementation-review approvals bind to a specific `review_commit`.
+Any implementation change **after** that SHA on the same branch
+invalidates the approval until a targeted re-review lands against
+the new head. Deterministic — do not litigate whether the change
+was "material."
 
-- its `base_commit` no longer matches the code under decision AND the change since is materially relevant to the task;
-- a listed canonical input has materially changed after the report was written;
-- deterministic evidence referenced by the report (test counts, CI artifact) no longer applies.
+Other reports (author handoff, architecture review, scout,
+synthesis) are stale and must be revalidated only if:
 
-A report is **not** invalidated merely because an unrelated file changed.
+- their `base_commit` no longer matches the code under decision
+  AND the change since is materially relevant to the task; OR
+- a listed canonical input has materially changed after the report
+  was written; OR
+- deterministic evidence referenced by the report (test counts, CI
+  artifact) no longer applies.
+
+A non-implementation-review report is **not** invalidated merely
+because an unrelated file changed.
 
 ## Files that do NOT exist in this Council V1
 
@@ -169,7 +260,7 @@ To avoid ceremony:
 - `council/CURRENT_CONTEXT.md` — same reason.
 - `council/history/` — git is the history.
 - Global model mailboxes.
-- Placeholder `HERMES.md` / `QWEN.md` / `GEMINI.md` model report files in every task folder. Create model report files only for models that actually participated in that specific task.
+- Placeholder `reports/hermes.md` / `reports/qwen.md` / `reports/gemini.md` model report files in every task folder. Create a `reports/<model>.md` file only for models that actually participated in that specific task.
 
 ## Files that do NOT exist as agent instructions in V1
 

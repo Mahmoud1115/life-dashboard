@@ -6,7 +6,8 @@ role: synthesizer
 created_at: 2026-08-28T00:00:00Z
 inputs:
   - council/tasks/2026-08-28-ai-council-v1/task.md
-  - council/tasks/2026-08-28-ai-council-v1/CLAUDE.md
+  - council/tasks/2026-08-28-ai-council-v1/reports/claude.md
+  - council/tasks/2026-08-28-ai-council-v1/reports/codex.md
   - three-way synthesis draft (ChatGPT, 2026-08-28) — preserved in
     user's local review workflow
 evidence:
@@ -15,10 +16,23 @@ evidence:
 
 # Synthesis — AI Council V1 accepted decision
 
-**Status:** ACCEPTED for Step 1 (local repository foundation).
-Codex final audit pending — the user will send this task folder to
-Codex when its rate limits reset, and Codex's Round 1 report will
-land as `CODEX.md` in this same folder.
+**Status:** REMEDIATION IN PROGRESS — awaits targeted Codex re-review
+against the P1 remediation head.
+
+Codex Round 1 audit landed as
+`reports/codex.md` and returned:
+
+```text
+Overall verdict:  APPROVE WITH CHANGES
+Merge recommendation:  FIX THEN MERGE
+P0:  0
+P1:  8
+```
+
+The V1 architecture itself is approved. Merge is BLOCKED until the
+accepted P1 remediation is complete AND independently re-reviewed
+against the new head. Do not mark the task `accepted` until the
+targeted Codex re-review clears.
 
 ## Accepted V1 architecture
 
@@ -75,7 +89,8 @@ GitHub Actions CI      = objective deterministic evidence
 
 - `council/README.md` — protocol documentation.
 - `council/tasks/2026-08-28-ai-council-v1/` — this task folder
-  (task.md + CLAUDE.md + SYNTHESIS.md).
+  (`task.md` + `reports/claude.md` + `reports/codex.md` +
+  `SYNTHESIS.md`; reports live under `reports/` per the P1-2 remediation).
 - `docs/lifeos/ROADMAP.md` — Layer 1 canonical roadmap (new).
 - `docs/lifeos/DECISIONS.md` — appended ADR-012 (risk-tier policy)
   and ADR-013 (never-autonomous operations).
@@ -89,10 +104,10 @@ GitHub Actions CI      = objective deterministic evidence
 No application code changed. No production storage behavior changed.
 No push, no merge, no remote GitHub configuration.
 
-## Pending Codex audit
+## Codex Round 1 audit — landed as `reports/codex.md`
 
-Codex has not yet reviewed this synthesis. When Codex's Round 1
-report lands in `CODEX.md` (this same folder), Codex should flag:
+Codex's Round 1 report is committed as `reports/codex.md` in this
+task folder. It flags the following:
 
 - P0/P1 architecture flaws;
 - unsafe assumptions;
@@ -157,6 +172,70 @@ approval.
 - Dependabot security updates: ENABLED
 - B1 tag: `v0.B1` pushed to origin, pointing at
   `92f77510c940f8da44429537d5551d8af2e06c9e`
-- Codex audit: PENDING
-- Merge: NOT PERFORMED (deferred until Codex audit lands per
-  Step 2 §11)
+- Codex audit: LANDED (APPROVE WITH CHANGES; 0 P0; 8 P1 — see `reports/codex.md`)
+- Merge: BLOCKED until accepted P1 remediation completes AND is
+  independently re-reviewed against the new head.
+
+## P1 remediation status
+
+Remediation applied on top of Step 2 head `c8a1179`:
+
+- **P1-1** CI required-check ambiguity: FIXED. Push trigger narrowed
+  to `main`; `git diff --check` on `main` push compares the pushed
+  commit range with an all-zero-SHA guard for branch-creation
+  events. `.github/workflows/ci.yml`.
+- **P1-2** Nested `CLAUDE.md` report collision: FIXED. Report files
+  moved under `reports/` with lowercase filenames; convention
+  documented in `council/README.md` §Task folder shape.
+- **P1-3** Reviewed-implementation provenance: FIXED. `council/README.md`
+  requires `review_commit` + `working_tree` + `evidence` for
+  implementation-review reports; lifecycle distinguishes author
+  handoff, blind peer review, implementation review, and final
+  synthesis; task-status `pending-independent-review` recorded on
+  the current task.
+- **P1-4** Stale `.claude/agents/project-reviewer.md`: FIXED. Stale
+  architecture facts replaced with pointers to canonical Layer 1
+  docs; the file retains only reviewer-specific role / scope /
+  output contract material.
+- **P1-5** Risk-tier precedence: FIXED. ADR-012 addendum #1 adds
+  an explicit HIGH-precedence rule and reclassifies `B2a.1` as
+  HIGH in the roadmap.
+- **P1-6** ROADMAP vs ADR-001 / ADR-006 contradiction: FIXED. New
+  ADR-014 supersedes ADR-001's inevitable-Supabase framing and
+  narrows ADR-006's mandatory Gen-1 → Gen-2 consolidation to
+  active / retained / migration-relevant domains. ROADMAP.md
+  updated to reference ADR-014.
+- **P1-7** Personal-data egress canonical policy: FIXED. ADR-013
+  addendum #1 pins the egress rule at Layer 1 and clarifies the
+  GitHub Pages auto-deploy approval semantics.
+- **P1-8** Strict required-status-checks policy: REMOTE — enabled
+  on the `main-protection` ruleset (id `21733377`) after CI green
+  on the new head.
+
+**Re-review contract.** The new remediation HEAD SHA (recorded in
+the git log at push time and to be captured in `reports/codex.md`'s
+next `review_commit` field after Codex re-reviews) is the exact
+implementation head Codex must re-review. Do not reuse the earlier
+`c8a1179c5160ddf5333b7301ceb2a3c58d6932d5` as the final approved
+implementation.
+
+## Non-blocking items (recorded, not implemented)
+
+Per handoff §11, Codex's P2 and P3 findings are recorded here and
+deliberately NOT implemented in this remediation:
+
+- **P2** worktree launch hardening.
+- **P2** A0 persistence serialization details.
+- **P2** known-good backup terminology refinement.
+- **P2** residual-risk override record for the risk-tier precedence
+  ADR (fold-in only if a HIGH-invariant-touching change materially
+  affects the current PR — none does).
+- **P2** merge-method / provenance refinement beyond what P1-3
+  requires.
+- **P2** deployment wording beyond the P1-7 clarification.
+- **P2** CodeQL as required merge gate (advisory per current
+  security stack).
+- **P3** timestamp / header cleanup.
+- **P3** task-ID collision scheme.
+
+Revisited only if a future task strictly requires them.
