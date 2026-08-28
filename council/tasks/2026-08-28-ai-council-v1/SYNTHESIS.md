@@ -208,16 +208,39 @@ Remediation applied on top of Step 2 head `c8a1179`:
 - **P1-7** Personal-data egress canonical policy: FIXED. ADR-013
   addendum #1 pins the egress rule at Layer 1 and clarifies the
   GitHub Pages auto-deploy approval semantics.
-- **P1-8** Strict required-status-checks policy: REMOTE — enabled
+- **P1-8** Strict required-status-checks policy: LANDED — enabled
   on the `main-protection` ruleset (id `21733377`) after CI green
-  on the new head.
+  on the new head. `strict_required_status_checks_policy: true`;
+  every other rule preserved (deletion blocked, non-fast-forward
+  blocked, pull_request required, `deterministic evidence` required
+  status check, allowed merge methods `merge` / `squash` / `rebase`,
+  0 required approving reviews, no bypass actors).
 
-**Re-review contract.** The new remediation HEAD SHA (recorded in
-the git log at push time and to be captured in `reports/codex.md`'s
-next `review_commit` field after Codex re-reviews) is the exact
-implementation head Codex must re-review. Do not reuse the earlier
-`c8a1179c5160ddf5333b7301ceb2a3c58d6932d5` as the final approved
-implementation.
+**Remediation HEAD SHA.** `b21cd8d91ed0f607bac9ce05db2905586cffbc8a`
+(pushed to `origin/claude/ai-council-v1-foundation` at
+`c8a1179..b21cd8d`). Three focused commits landed on top of `c8a1179`:
+
+- `87ff7ce` — ci: harden required deterministic evidence gate (P1-1)
+- `ace2e6d` — docs(council): fix report isolation and review provenance (P1-2, P1-3, P1-4)
+- `b21cd8d` — docs(policy): resolve risk privacy and roadmap authority (P1-5, P1-6, P1-7)
+
+Remote enforcement change (P1-8) is a GitHub ruleset mutation and
+lives outside git history.
+
+**Re-review contract.** `b21cd8d` is the exact implementation head
+Codex must re-review. Codex's re-review report lands as
+`reports/codex-re-review.md` with `review_commit: b21cd8d...`. Do
+not reuse the earlier `c8a1179c5160ddf5333b7301ceb2a3c58d6932d5`
+as the final approved implementation.
+
+**Post-remediation CI evidence** (HEAD `b21cd8d`, PR #4):
+
+- `deterministic evidence` — PASS (2m32s, pull_request run
+  `33204334618`)
+- `Analyze (javascript-typescript)` — PASS (CodeQL, 56s, run
+  `33204331980`)
+- No `push`-event CI run appeared for the branch head (P1-1
+  narrowing verified in production).
 
 ## Non-blocking items (recorded, not implemented)
 
