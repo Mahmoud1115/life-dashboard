@@ -140,3 +140,23 @@ Per ADR-013, no action below is authorized by this synthesis:
 
 Each of those actions is a Step 2 human act with per-instance
 approval.
+
+## Remote validation (Step 2 result)
+
+- PR: https://github.com/Mahmoud1115/life-dashboard/pull/4 —
+  "workflow: add AI Council V1 foundation"
+- CI: GREEN (`ci / deterministic evidence` — 157/157 Playwright,
+  0 skipped, syntax PASS, `git diff --check` PASS, ~2m28s)
+- main ruleset: ACTIVE (`main-protection`, id 21733377) —
+  pull_request required, `deterministic evidence` required status
+  check, non-fast-forward blocked, deletion blocked, no bypass actors
+- CodeQL: ENABLED (default setup, JavaScript / TypeScript,
+  `state: configured`, `query_suite: default`, first analysis run
+  triggered)
+- Dependabot alerts: ENABLED
+- Dependabot security updates: ENABLED
+- B1 tag: `v0.B1` pushed to origin, pointing at
+  `92f77510c940f8da44429537d5551d8af2e06c9e`
+- Codex audit: PENDING
+- Merge: NOT PERFORMED (deferred until Codex audit lands per
+  Step 2 §11)
