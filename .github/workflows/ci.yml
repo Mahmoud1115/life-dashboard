@@ -30,7 +30,15 @@ on:
   pull_request:
     branches:
       - main
-  workflow_dispatch:
+# workflow_dispatch removed 2026-08-29 per Codex Round 2 P1-1 remediation.
+# Reason: this workflow's job publishes the required "deterministic
+# evidence" status context on the main-protection ruleset. A manual
+# dispatch on any ref could satisfy that required context with weaker
+# working-tree-only `git diff --check` evidence (no PR-range diff),
+# reintroducing the event-substitution flaw closed in Round 1 P1-1.
+# GitHub Actions' built-in "Re-run failed jobs" / "Re-run all jobs"
+# UI already covers the manual-rerun use case for push and pull_request
+# runs, so removing workflow_dispatch loses no operational capability.
 
 # One CI run at a time per ref. Cancels superseded runs on the same PR.
 concurrency:
@@ -109,8 +117,13 @@ jobs:
               git diff --check "${before_sha}"..."${head_sha}"
             fi
           else
-            # workflow_dispatch or other manual events: check working tree only.
-            git diff --check
+            # No other trigger publishes this required context. The
+            # workflow_dispatch trigger was removed in Round 2 P1-1
+            # remediation; if this branch is reached under a new trigger
+            # in future, fail closed rather than passing with weaker
+            # evidence than a PR run.
+            echo "diff --check: UNEXPECTED trigger '${{ github.event_name }}' — failing closed"
+            exit 1
           fi
           echo "diff --check: PASS"
 

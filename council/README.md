@@ -154,7 +154,7 @@ Every `task.md` and every model report begins with a YAML frontmatter block that
 ```yaml
 ---
 task: <YYYY-MM-DD>-<short-slug>
-status: open | round-1 | synthesis | accepted | superseded
+status: open | review | pending-independent-review | synthesis | accepted | superseded
 risk: LOW | MEDIUM | HIGH
 base_commit: <full git commit hash frozen at task open>
 branch: <branch name or review target>

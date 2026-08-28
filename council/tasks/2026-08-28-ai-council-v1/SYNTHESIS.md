@@ -227,20 +227,87 @@ Remediation applied on top of Step 2 head `c8a1179`:
 Remote enforcement change (P1-8) is a GitHub ruleset mutation and
 lives outside git history.
 
-**Re-review contract.** `b21cd8d` is the exact implementation head
-Codex must re-review. Codex's re-review report lands as
-`reports/codex-re-review.md` with `review_commit: b21cd8d...`. Do
-not reuse the earlier `c8a1179c5160ddf5333b7301ceb2a3c58d6932d5`
-as the final approved implementation.
+**Review history (accurate provenance).**
 
-**Post-remediation CI evidence** (HEAD `b21cd8d`, PR #4):
+- `b21cd8d` closed the P1-1..P1-7 code / doc edits and pushed the
+  branch. A follow-up commit `edf656d` immediately updated this
+  synthesis to record the P1-8 ruleset mutation and the CI
+  evidence — no policy or code changed between `b21cd8d` and
+  `edf656d`, only status-recording prose in this file.
+- The head Codex Round 2 was actually authorized to review is
+  **`edf656d824035a7d8ed64ab0369fe17769a53aab`** (the branch head
+  at re-review-request time). That review returned FAIL — merge
+  blocked — with two P1 items (workflow_dispatch-can-still-satisfy
+  and Ideas-classification-drift) plus P2 items.
+- Do NOT reuse `c8a1179c5160ddf5333b7301ceb2a3c58d6932d5` (Round 1
+  head) or `b21cd8d91ed0f607bac9ce05db2905586cffbc8a` (intermediate
+  head) as the authorized reviewed implementation.
 
-- `deterministic evidence` — PASS (2m32s, pull_request run
-  `33204334618`)
-- `Analyze (javascript-typescript)` — PASS (CodeQL, 56s, run
-  `33204331980`)
-- No `push`-event CI run appeared for the branch head (P1-1
-  narrowing verified in production).
+**Round 2 re-review target.** The Round 2 remediation adds a
+follow-up commit on top of `edf656d` that fixes the two Codex P1
+items and the optional P2 items (see §Round 2 remediation status
+below). The exact new `review_commit` for Codex Round 3 is
+recorded in the git commit message of that follow-up commit — do
+not reference this SHA from prose here, because it changes with
+every re-remediation and this file is not the right place to
+track SHAs; the Round 3 report frontmatter binds the exact head.
+
+**Post-Round-1-remediation CI evidence.**
+
+- HEAD `edf656d` (PR #4 push after the synthesis update):
+  - `deterministic evidence` — PASS (2m40s, pull_request run
+    `33205141122`).
+  - `Analyze (javascript-typescript)` — PASS (CodeQL, 50s, run
+    `33205139192`).
+  - No `push`-event CI run appeared for the branch head (Round 1
+    P1-1 narrowing verified in production; Round 2 tightens this
+    further by removing `workflow_dispatch` from the trigger set).
+- HEAD `b21cd8d` (earlier push in the same Round 1 remediation
+  cycle, retained for the audit trail):
+  - `deterministic evidence` — PASS (2m32s, pull_request run
+    `33204334618`).
+  - `Analyze (javascript-typescript)` — PASS (CodeQL, 56s, run
+    `33204331980`).
+
+## Round 2 remediation status (2026-08-29)
+
+Codex Round 2 (targeted re-review of `edf656d`) returned FAIL — merge
+blocked — with two P1 findings and two optional P2 findings. This
+remediation applies only those items and does not broaden scope.
+
+- **Round 2 P1-1 — `workflow_dispatch` can still satisfy required
+  context with weaker evidence.** FIXED. `.github/workflows/ci.yml`
+  removes the `workflow_dispatch` trigger from this required-check
+  workflow entirely. The `git diff --check` step's fallback branch
+  is repurposed to `exit 1` under any future non-`push` / non-
+  `pull_request` trigger, so the required `deterministic evidence`
+  context can never be satisfied by weaker evidence in future.
+- **Round 2 P1-6 — Ideas misclassified in ADR-014 / ROADMAP.**
+  FIXED via [`docs/lifeos/DECISIONS.md`](../../../docs/lifeos/DECISIONS.md)
+  ADR-014 addendum #1 (2026-08-29) and a matching correction in
+  [`docs/lifeos/ROADMAP.md`](../../../docs/lifeos/ROADMAP.md). Ideas
+  is `active-migrated` (already Gen-2 authoritative per
+  [`STORAGE_MAP.md`](../../../docs/lifeos/STORAGE_MAP.md)); no
+  migration work is scheduled for Ideas. `STORAGE_MAP.md` was
+  correct and is unchanged.
+- **Round 2 P2-A — lifecycle template drift.** FIXED. The task.md
+  frontmatter template in [`council/README.md`](../../../council/README.md)
+  now advertises the same enum as the lifecycle section
+  (`open | review | pending-independent-review | synthesis |
+  accepted | superseded`) instead of the stale `round-1` label.
+- **Round 2 P2-B — synthesis reviewed-head wording.** FIXED. The
+  Review-history block above now names `edf656d` as the Round 2
+  authorized reviewed head (not `b21cd8d`, which was an
+  intermediate push) and preserves the audit trail for every
+  earlier head with its CI evidence. No claim of Codex approval
+  is made against any commit Codex has not actually reviewed.
+- **Round 2 P2 privacy classification** is deliberately NOT
+  addressed here. That work is in progress on a separate
+  branch under the PRV workflow.
+
+**Merge status.** Still BLOCKED. Merge unblocks only after Codex
+targeted Round 3 re-review of the exact new head returns PASS
+AND the user explicitly approves the merge per ADR-013.
 
 ## Non-blocking items (recorded, not implemented)
 

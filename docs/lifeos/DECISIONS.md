@@ -604,8 +604,9 @@ have accumulated evidence:
   uniquely solve.
 - Migrating every legacy domain "for architectural purity" is a
   cost the project cannot amortize — several legacy domains
-  (Deadlines, Ideas, Claims, EASA) are stable and produce no user
-  value from canonicalization.
+  (Deadlines, Claims, EASA) are stable and produce no user value
+  from canonicalization. (Ideas is not in this list — see the
+  Ideas classification correction below.)
 - Money remains high-blast-radius (custom row shapes + one-way
   Russia finance bridge per commit `89728eb`); forcing it through
   a generic per-domain migration is a legitimate "never" decision,
@@ -666,6 +667,40 @@ have accumulated evidence:
   starting point.
 
 **Date:** 2026-08-28 (P1-6 remediation on the AI Council V1 branch).
+
+### ADR-014 addendum #1 (2026-08-29) — Ideas classification correction
+
+Codex Round 2 caught a factual drift: an earlier ADR-014 phrase
+listed Ideas among the stable legacy-domain examples that produce
+no value from canonicalization. That phrasing conflicted with the
+observable production state: Ideas has been Gen-2 authoritative
+since Phase A, its records live in `state.ideas` inside
+`dune_state_v4`, and [`STORAGE_MAP.md`](STORAGE_MAP.md) records it
+as "Fully migrated". The `SEED_IDEAS` array in `ideas.js` is a
+one-shot seed gated on `meta.ideasSeeded`, not an ongoing legacy
+authority.
+
+**Correction.**
+
+- Ideas is NOT a `retained-legacy` domain and is NOT queued for
+  any Gen-1 → Gen-2 consolidation work.
+- Ideas is `active-migrated` today. `state.ideas` is the canonical
+  read/write authority and rides `dune_state_v4` for backup /
+  restore per ADR-010.
+- No migration PR is scheduled for Ideas under M2 or otherwise.
+  Any future work on Ideas is product / UX work against the
+  existing Gen-2 authority, not authority migration.
+- The stable-legacy example list higher in this ADR is corrected
+  in place to remove Ideas.
+- [`docs/lifeos/ROADMAP.md`](ROADMAP.md) is corrected in the same
+  commit as this addendum to move Ideas out of the M2
+  `retained-legacy` line and record it under the already-Gen-2
+  end-state.
+- [`docs/lifeos/STORAGE_MAP.md`](STORAGE_MAP.md) is NOT changed —
+  its Ideas row already reflects the correct production authority.
+
+**Date:** 2026-08-29 (Codex Round 2 P1-6 remediation on the AI
+Council V1 branch).
 
 ## ADR-012 addendum #1 (2026-08-28 risk-tier precedence)
 

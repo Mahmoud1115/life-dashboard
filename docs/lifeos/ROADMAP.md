@@ -192,10 +192,14 @@ is a legitimate long-term outcome, not a deferral.
 - M2.3 Money preflight only (learn the data; no cutover).
 - M2.4 Money cutover decision → may legitimately land on
   `retained-legacy` indefinitely.
-- Deadlines / Ideas / Claims → `retained-legacy` by default unless
-  a real trigger appears.
-- BHT / Reviews / Decisions → already Gen-2 or effectively stable;
-  end-state = `active-migrated` (no migration needed).
+- Deadlines / Claims → `retained-legacy` by default unless a real
+  trigger appears.
+- BHT / Reviews / Decisions / **Ideas** → already Gen-2 authoritative
+  (`state.bht`, `state.reviews`, `state.decisions`, `state.ideas` per
+  [`STORAGE_MAP.md`](STORAGE_MAP.md)); end-state = `active-migrated`
+  (no migration needed). Ideas was previously listed alongside
+  Deadlines / Claims in error — corrected 2026-08-29 per ADR-014
+  addendum #1.
 
 ### Aviation OS growth (parallel with B2)
 
