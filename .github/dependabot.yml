@@ -1,0 +1,33 @@
+# Dependabot for Life OS 2.0.
+#
+# Scope: the repository has a single npm dev dependency
+# (@playwright/test) plus GitHub Actions used by .github/workflows/ci.yml.
+# No runtime application dependencies — the app is vanilla HTML/CSS/JS
+# with no build step (ADR-002).
+#
+# Behavior:
+#   - Monthly grouped updates for npm dev dependencies.
+#   - Monthly grouped updates for GitHub Actions.
+#   - Security updates land on their own separate PRs (Dependabot
+#     default; not affected by grouping).
+#   - No auto-merge configured. Every Dependabot PR follows the
+#     risk-tier review policy in docs/lifeos/DECISIONS.md ADR-012.
+
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    groups:
+      dev-dependencies:
+        dependency-type: "development"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
