@@ -336,3 +336,172 @@ does not certify every future spreadsheet client's behaviour. Extending
 R1–R8 to other persisted-content sinks (Ideas, BHT, Reviews, Decisions,
 Deadlines beyond the confirmed P0 set) is a separate scope decision, not
 a B1 deliverable.
+
+## ADR-012 — Risk-tier review and evidence policy
+
+**Status:** Accepted (2026-08-28).
+**Applies to:** every pull request, review request, and merge into
+`main` in this repository. Applies uniformly whether the author is
+Claude Code, Codex CLI, ChatGPT-assisted, or a human maintainer.
+**Applies to Layer 1** per the Council doc hierarchy: this ADR is
+project-owned truth. Agent-instruction files (`CLAUDE.md`,
+`AGENTS.md`) link to this ADR; they do not restate it.
+
+**Context.** B0 and B1 landed with heavy multi-model review round-trips
+on every commit. The safety of that pattern was appropriate for storage
+durability and security work but is not sustainable if applied
+uniformly to every change. Life OS is a single-user project; a
+one-line CSS fix and a canonical-authority cutover must not attract
+the same review cost. This ADR pins a three-tier risk model that
+right-sizes the review effort.
+
+### The tiers
+
+**LOW.**
+- Examples: docs, copy, isolated CSS, non-persisted UI polish, narrow
+  dev tooling, small tests-only PRs, one-file bug fix in a domain
+  whose invariants are stable.
+- Deterministic evidence: the deterministic CI baseline (Playwright
+  full suite + `node --check` on tracked `.js` files + `git diff
+  --check`).
+- Independent reviewer: not required. Author self-merges once CI is
+  green.
+
+**MEDIUM.**
+- Examples: a bounded feature in one domain, a persisted-content UI
+  change, a bounded refactor, a new low-risk Gen-2 product slice with
+  no authority change, a new test file, adding a key to `BACKUP_KEYS`.
+- Deterministic evidence: the deterministic CI baseline plus targeted
+  domain behavior tests, smoke or compatibility as relevant, and a
+  written rollback note in the PR description.
+- Independent reviewer: one focused reviewer where persistence,
+  cross-domain behavior, or user-facing surface warrants it.
+
+**HIGH.**
+- Examples: storage schema, authority cutover, migration, transaction
+  or coordinator changes, operation journal, import/restore, snapshot
+  or reset lifecycle, backup or recovery mechanisms, secrets or auth
+  or RLS, sync, external transactional actions.
+- Deterministic evidence: architecture approval, the full deterministic
+  suite, per-scenario fault/crash evidence where applicable, recovery
+  and rollback proofs, deployment verification where applicable.
+- Independent reviewer: one — the reviewer must be independent from
+  the authoring session (Codex CLI reviews Claude-authored HIGH work,
+  and vice versa; not another session of the same authoring tool).
+- Human approval: explicit user approval at any irreversible gate
+  (merge to `main`, deploy, authority flip, retirement, restore).
+
+### Firm rules
+
+- **HIGH never becomes MEDIUM** merely because review took a long time.
+  The tier is a property of the change, not the review latency.
+- **CI-green is a required status check on `main`** (enforced via the
+  main-branch ruleset). No reviewer may bypass it.
+- **Bounded review loops:** maximum two revisit rounds per task
+  (defined in `council/README.md`). After that, the user decides.
+- **One implementer per PR** (see the one-implementer rule in the
+  Council doc). Two models never write the same PR simultaneously.
+- **Multiple simultaneous AI reviewers are not required by default.**
+  If a reviewer experiment adds one, it lands as its own ADR with
+  measured material-finding evidence.
+
+### Non-goals
+
+ADR-012 does not:
+
+- specify which reviewer tool must be used (that is per-task);
+- mandate a specific CI provider beyond "the project's canonical CI";
+- require CodeRabbit, GitLeaks, Semgrep, hosted telemetry, or any other
+  third-party check as default;
+- automate risk-tier assignment. The author declares the tier in the
+  PR description; a reviewer may disagree and request escalation.
+
+### Rejected alternatives
+
+- Applying B0-scale independent review to every PR (rejected: unsustainable).
+- Trusting the author's judgment alone for HIGH-risk work (rejected:
+  ADR-005/006/007 exist precisely because unreviewed HIGH-risk work
+  went wrong before).
+- A single flat review policy (rejected: over-invests on LOW,
+  under-invests on HIGH).
+
+**Supersedes:** the implicit CLAUDE.md / AGENTS.md line
+"High-risk changes require independent Codex/ChatGPT review before
+merge" — that line remains true, but this ADR is the primary source
+of the tier definitions. Agent-instruction files link here.
+
+## ADR-013 — Never-autonomous operations policy
+
+**Status:** Accepted (2026-08-28).
+**Applies to:** every AI worker (Claude Code, Codex CLI, ChatGPT,
+future models), every hook, every scheduled job, every automated
+workflow, and every third-party integration.
+
+**Context.** As the workflow grows to accommodate multiple models and
+agent instruction files, there is a real risk that a scheduled job,
+a hook, an MCP tool, or a per-model instruction file will make
+autonomous decisions on operations that are not safely reversible.
+This ADR pins the class of operations that no automation of any kind
+may perform without explicit per-instance human approval.
+
+### The list — operations no automation may perform autonomously
+
+- Merge to `main`.
+- Bypass a required CI status check.
+- Push a tag or release to `origin`.
+- Deploy any change that touches HIGH-risk authority or storage.
+- Restore production user data from any backup source.
+- Reset production user data.
+- Flip storage authority (Logbook or any future canonical domain).
+- Retire a legacy authority key.
+- Delete a backup or recovery generation.
+- Rotate or change credentials (GitHub PAT, any API key, any secret).
+- Perform any financial transfer, purchase, or payment.
+- Make an aviation maintenance decision or claim
+  approved-maintenance-data authority.
+- Upload proprietary, OEM, or company-confidential aviation content
+  to any external AI provider or third-party service.
+- Send an outbound message on behalf of the user (email, chat, DM,
+  calendar invite, form submission) without explicit per-message
+  approval.
+- Change GitHub repository settings (branch protection, ruleset, MCP
+  permission, integration OAuth scope).
+
+### Clarifications
+
+- "Autonomous" means "without an explicit per-instance human approval
+  at the moment of the action." A general standing consent recorded
+  in an ADR is not per-instance approval.
+- "Automation" includes: scheduled GitHub Actions jobs, MCP tools
+  called during an agent session without user prompt, hooks
+  (PreToolUse / SessionStart / etc.), any scripted workflow that runs
+  without a real-time human present.
+- **Some of the operations above may later be performed by an AI
+  worker with explicit per-action human approval.** This ADR
+  prohibits only the *autonomous* case; the approved case is
+  governed by the workflow that requests the approval.
+
+### Rejected alternatives
+
+- Encoding this policy solely in agent-specific files (`CLAUDE.md`,
+  `AGENTS.md`) — rejected: those files are Layer 2 and rot when a
+  Layer 1 rule changes. Rules live in Layer 1.
+- Rely on human vigilance during hook design — rejected: the list
+  is easier to consult than to remember.
+- Prohibit ALL AI writes — rejected: too restrictive for daily
+  implementation work. The policy targets the irreversible class only.
+
+### Enforcement
+
+- Any hook, MCP tool, or scheduled workflow that attempts to perform
+  an operation on this list without per-instance approval must be
+  disabled and reviewed.
+- CI is not on this list; CI is deterministic evidence, not an
+  autonomous actor. A CI-green build does not by itself authorize any
+  operation above; the merge / deploy / restore is a separate human
+  act.
+
+### Supersedes
+
+- No prior ADR. Consolidates warnings scattered across previous
+  strategic reviews and the Council architecture review of 2026-08-28.
