@@ -12,8 +12,9 @@ inputs:
   - CLAUDE.md (pre-task snapshot)
   - AI Council Platform Architecture Review prompt (2026-08-28)
 evidence:
-  - Full Playwright suite (157/157) on main == origin/main == 92f7751
-    at task open (recorded in prior session).
+  - Full Playwright suite (157/157) on main == origin/main ==
+    92f77510c940f8da44429537d5551d8af2e06c9e at task open (recorded
+    in prior session).
 ---
 
 # Claude Round 1 — AI Council V1 architecture review

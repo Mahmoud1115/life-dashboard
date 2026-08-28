@@ -5,8 +5,13 @@ but never supersede it. Update via ADR or via a Council SYNTHESIS.md
 that names the change and gets promoted here.*
 
 **Last updated:** 2026-08-28
-**Repository state at last update:** `main == origin/main == 92f7751`
-(commit `92f77510c940f8da44429537d5551d8af2e06c9e`).
+**Repository state at last update:** `main == origin/main ==
+92f77510c940f8da44429537d5551d8af2e06c9e`.
+
+Phase-table tip commits below are shown as short SHAs for readability;
+the corresponding full hashes are canonical and are recoverable via
+`git rev-parse <shortsha>`. Frontmatter provenance fields in
+`council/tasks/*/` always use the full hash.
 
 ---
 
@@ -31,7 +36,8 @@ The minimum items that must exist before B1.5 merges to `main`:
 - Risk-tier PR contract (ADR-012).
 - Never-autonomous policy (ADR-013).
 - Council V1 folder convention (`council/README.md`).
-- Release tag / anchor for B1 (`v0.B1` pointing at `92f7751`).
+- Release tag / anchor for B1 (`v0.B1` pointing at commit
+  `92f77510c940f8da44429537d5551d8af2e06c9e`).
 - Scoped documentation drift correction.
 
 Items that ripen as later phases need them (see `council/README.md`):
@@ -83,15 +89,21 @@ correct while the real data is not safe to cut over.
 
 ## Queued phases
 
-### B2-pre (or B2a.1) — two-source legacy derivation fix
+### B2a — canonical contract and lifecycle readiness (authority remains `legacy-mirror`)
 
+Per the accepted three-way architecture synthesis, the Builder /
+`deriveStateFromLegacy` correction is **not** a separate `B2-pre`
+phase — it is the first PR inside B2a.
+
+**B2a.1 — Builder-complete / two-source derivation correction.**
 Small MEDIUM-tier PR. Closes the latent bug where
 `deriveStateFromLegacy` at `core.js:510` reads only Tracker legacy
 and `normalizeLogbookDomain` at `core.js:922` normalizes the
-array-fallback branch as Tracker-only. Both must be fixed before
-canonical authority can flip.
+array-fallback branch as Tracker-only. Both must be fixed before any
+schema-v2 / authority work in B2a lands. Tests prove both sources
+survive derivation and recovery.
 
-### B2a — canonical contract and lifecycle readiness (authority remains `legacy-mirror`)
+**B2a scope (post-B2a.1):**
 
 - Envelope schema v1 → v2 (adds `canonicalizableCounts`,
   `nonCanonicalizable` side-channel, `authorityHistory`).

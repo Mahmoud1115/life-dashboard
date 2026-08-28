@@ -112,9 +112,16 @@ Step 2 will:
 - Enable protected `main` ruleset requiring the `ci / deterministic
   evidence` status check.
 - Enable CodeQL default setup and Dependabot alerts in the GitHub UI.
-- Land the `v0.B1` tag on the pre-merge commit `92f7751`.
-- Merge this branch to `main` via a fast-forward PR after Codex
-  audit.
+- Land the `v0.B1` tag on the pre-merge commit
+  `92f77510c940f8da44429537d5551d8af2e06c9e`.
+- Integrate this branch into `main` after Codex audit and CI green.
+  PR review and CI are mandatory. The final integration method must
+  preserve the intended commit history and must be chosen explicitly
+  at merge time according to repository policy. The GitHub PR UI
+  does not provide a generic "fast-forward merge" mode equivalent to
+  a local `git merge --ff-only` workflow, so do not codify one as a
+  required GitHub behavior; select the concrete integration method
+  (rebase, squash, or merge commit) at merge time per policy.
 
 Step 2 requires human approval per ADR-013 (remote GitHub setting
 changes are on the never-autonomous list; the user performs each
