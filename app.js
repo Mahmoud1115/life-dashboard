@@ -10,6 +10,79 @@ const LS = {
 };
 
 /* ═══════════════════════════════════════════
+   PRV-0.5 — Preservation hydration (ADR-015).
+   One-shot copy of pre-sanitization records for deadlines / claims /
+   risks / goals from window.LEGACY_RECORDS into durable Store paths
+   `records.deadlines / .claims / .risks / .goals`. Merges any existing
+   per-id overrides from legacy Gen-1 keys (dune_goals_v1,
+   dune_claims_v1) on the way through so no user progress/status is
+   lost. Gated by the sticky Gen-1 flag `dune_records_hydrated_v1`
+   (outside dune_state_v4) so a subsequent Store.reset() cannot
+   rehydrate old legacy records — Reset produces empty records, which
+   is the required post-Reset invariant.
+   Failure to commit any domain LEAVES the flag unset; retry runs on
+   the next boot. This function must remain idempotent.
+   ═══════════════════════════════════════════ */
+const HYDRATION_FLAG_KEY = 'dune_records_hydrated_v1';
+function hydratePreservationRecordsOnce(){
+  if (!window.Store || typeof window.Store.get !== 'function' || typeof window.Store.set !== 'function') return { ok:false, reason:'no-store' };
+  if (!window.LEGACY_RECORDS) return { ok:false, reason:'no-seed' };
+  let flag = null;
+  try { flag = localStorage.getItem(HYDRATION_FLAG_KEY); } catch(e) { /* SecurityError → treat as absent */ }
+  if (flag === '1') return { ok:true, skipped:'flag-set' };
+  const domains = ['deadlines','claims','risks','goals'];
+  const existing = {};
+  for (const d of domains) existing[d] = window.Store.get('records.' + d);
+  const allPopulated = domains.every(d => Array.isArray(existing[d]) && existing[d].length > 0);
+  if (allPopulated) {
+    try { localStorage.setItem(HYDRATION_FLAG_KEY, '1'); } catch(e) {}
+    return { ok:true, skipped:'already-populated' };
+  }
+  let goalsOv = {}; try { const v = localStorage.getItem('dune_goals_v1'); if (v) goalsOv = JSON.parse(v) || {}; } catch(e){}
+  let claimsOv = {}; try { const v = localStorage.getItem('dune_claims_v1'); if (v) claimsOv = JSON.parse(v) || {}; } catch(e){}
+  const seed = window.LEGACY_RECORDS;
+  const merged = {
+    deadlines: Array.isArray(seed.deadlines) ? seed.deadlines.map(o => Object.assign({}, o)) : [],
+    claims: Array.isArray(seed.claims) ? seed.claims.map(c => {
+      const o = (c && c.id && claimsOv[c.id]) || {};
+      return Object.assign({}, c, {
+        confidence: o.confidence || c.confidence,
+        lastChecked: o.lastChecked || c.lastChecked
+      });
+    }) : [],
+    risks: Array.isArray(seed.risks) ? seed.risks.map(r => Object.assign({}, r, {
+      score: (Number(r && r.prob) || 0) * (Number(r && r.impact) || 0)
+    })) : [],
+    goals: Array.isArray(seed.goals) ? seed.goals.map(g => {
+      const o = (g && g.id && goalsOv[g.id]) || {};
+      const pct = (typeof o.progress === 'number') ? o.progress : g.progress;
+      const status = o.status || g.status;
+      return Object.assign({}, g, { progress: pct, status: status });
+    }) : []
+  };
+  // Commit each unpopulated domain. If any commit fails, DO NOT set the
+  // flag — retry runs on next boot. Populated domains are left alone
+  // (user edits win).
+  for (const d of domains) {
+    const cur = existing[d];
+    if (Array.isArray(cur) && cur.length > 0) continue;
+    const res = window.Store.set('records.' + d, merged[d]);
+    if (!res || res.ok !== true) {
+      try { console.warn('[PRV-0.5 hydrate] commit failed for ' + d, res); } catch(e){}
+      return { ok:false, reason:'commit-failed', domain:d, res:res };
+    }
+  }
+  try { localStorage.setItem(HYDRATION_FLAG_KEY, '1'); } catch(e) {}
+  return { ok:true, hydrated:true };
+}
+window.hydratePreservationRecordsOnce = hydratePreservationRecordsOnce;
+// Run at script parse time so DOMContentLoaded renderers observe
+// populated records. Safe to no-op if Store is not yet available in a
+// test harness — tests call window.hydratePreservationRecordsOnce()
+// explicitly after seeding the Store.
+try { hydratePreservationRecordsOnce(); } catch(e) { try { console.warn('[PRV-0.5 hydrate] init exception', e); } catch(_){} }
+
+/* ═══════════════════════════════════════════
    LOGBOOK — Phase A canonical mirror (see docs/lifeos/ARCHITECTURE.md)
    Legacy Tracker (dune_logbook_v1) + Builder (dune_logbook_entries_v1)
    remain authoritative. This module reconciles both into the versioned
@@ -940,15 +1013,26 @@ if(window.Store){
    PROGRESS TRACKER
    ═══════════════════════════════════════════ */
 (function(){
-  const STORE='dune_goals_v1';
+  // PRV-0.5: goals identity + per-user state now live under Store path
+  // `records.goals` (ADR-015). The legacy per-id override key
+  // `dune_goals_v1` is no longer written — hydration merged any prior
+  // overrides into records.goals exactly once, then the flag is set.
   let curFilter='all';
-  function getStored(){return LS.get(STORE,{});}
   function saveGoal(id,pct,status){
-    const d=getStored();
-    if(!d[id]) d[id]={};
-    if(pct!==undefined) d[id].progress=pct;
-    if(status!==undefined) d[id].status=status;
-    LS.set(STORE,d);
+    if(!window.Store || typeof window.Store.get!=='function' || typeof window.Store.set!=='function') return;
+    const cur = window.Store.get('records.goals');
+    if(!Array.isArray(cur)) return;
+    let mutated = false;
+    const next = cur.map(g => {
+      if(!g || g.id !== id) return g;
+      mutated = true;
+      const patch = {};
+      if(pct !== undefined) patch.progress = pct;
+      if(status !== undefined) patch.status = status;
+      return Object.assign({}, g, patch);
+    });
+    if(!mutated) return;
+    window.Store.set('records.goals', next);
   }
   function statusLabel(s){
     return {active:'Active',planned:'Planned',done:'Done',blocked:'Blocked'}[s]||s;
@@ -979,15 +1063,16 @@ if(window.Store){
   }
   function renderGoals(filter){
     curFilter=filter||curFilter;
-    const stored=getStored();
     const container=document.getElementById('goals-list');
     if(!container) return;
+    // PRV-0.5: goals authority is Store `records.goals`; D.goals is a
+    // read-only accessor that proxies to Store. No per-id override
+    // merge (removed with dune_goals_v1 writer).
     const filtered=D.goals.filter(g=>curFilter==='all'||g.cat===curFilter);
     const liveBlock=(curFilter==='all'||curFilter==='finance')?liveGoalsHTML():'';
     container.innerHTML=liveBlock+filtered.map(g=>{
-      const s=stored[g.id]||{};
-      const pct=s.progress!==undefined?s.progress:g.progress;
-      const status=s.status||g.status;
+      const pct=g.progress;
+      const status=g.status;
       const dotClass={active:'gs-active',planned:'gs-planned',done:'gs-done',blocked:'gs-blocked'}[status]||'gs-planned';
       const deadlineStr=g.deadline?'Due: '+g.deadline:'No fixed deadline';
       const catClass='gt-'+g.cat;
@@ -1589,14 +1674,15 @@ function renderATACoverage(entries){
     clFilter=filter||clFilter;
     const container=document.getElementById('claims-list');
     if(!container) return;
-    const stored=LS.get('dune_claims_v1',{});
+    // PRV-0.5: claims authority is Store `records.claims`; D.claims is
+    // a read-only accessor that proxies to Store. No per-id override
+    // merge (removed with dune_claims_v1 writer).
     let items=D.claims;
     if(clFilter!=='all') items=items.filter(c=>c.cat===clFilter||c.confidence===clFilter);
     container.innerHTML=items.map(c=>{
-      const s=stored[c.id]||{};
-      const conf=s.confidence||c.confidence;
+      const conf=c.confidence;
       const isPrivate=c.private?' data-private="true"':'';
-      const lastCheck=s.lastChecked||c.lastChecked;
+      const lastCheck=c.lastChecked;
       return '<div class="claim-card conf-'+conf+'"'+isPrivate+'>'+
         '<div class="claim-header">'+
           '<span class="claim-conf-badge">'+conf+'</span>'+
@@ -1625,18 +1711,26 @@ function renderATACoverage(entries){
     if(btn) btn.classList.add('active');
     renderClaims(f);
   };
+  // PRV-0.5: claim writers go to Store `records.claims` (ADR-015).
+  function patchClaim(id, patch){
+    if(!window.Store || typeof window.Store.get!=='function' || typeof window.Store.set!=='function') return;
+    const cur = window.Store.get('records.claims');
+    if(!Array.isArray(cur)) return;
+    let mutated = false;
+    const next = cur.map(c => {
+      if(!c || c.id !== id) return c;
+      mutated = true;
+      return Object.assign({}, c, patch);
+    });
+    if(!mutated) return;
+    window.Store.set('records.claims', next);
+  }
   window.updateClaimConf=function(id,conf){
-    const d=LS.get('dune_claims_v1',{});
-    if(!d[id])d[id]={};
-    d[id].confidence=conf;
-    LS.set('dune_claims_v1',d);
+    patchClaim(id, { confidence: conf });
     renderClaims();
   };
   window.markClaimChecked=function(id){
-    const d=LS.get('dune_claims_v1',{});
-    if(!d[id])d[id]={};
-    d[id].lastChecked=new Date().toISOString().split('T')[0];
-    LS.set('dune_claims_v1',d);
+    patchClaim(id, { lastChecked: new Date().toISOString().split('T')[0] });
     renderClaims();
   };
   document.addEventListener('DOMContentLoaded',()=>renderClaims());

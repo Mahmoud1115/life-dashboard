@@ -718,3 +718,152 @@ persistence layer as a whole.
 declares the tier in the PR body. A reviewer may disagree with
 the declaration and request escalation to HIGH; escalation is
 never negotiable when the change touches a listed invariant.
+
+## ADR-015 — PRV-0.5 durable authority for deadlines / claims / risks / goals
+
+**Status:** Accepted (2026-08-28).
+**Supersedes:** the runtime portion of the STORAGE_MAP entries for
+`deadlines`, `claims`, `risks`, `goals` (which previously had no
+canonical user-storage authority; identity lived only in
+`data.js`).
+
+### Context
+
+The PRV-0.5 preservation-proof audit established that four
+domains — deadlines, claims, risks, goals — were previously
+served identity-first from a public tracked file (`data.js`)
+with, at most, per-id override storage in
+`dune_deadlines_ext_v1`, `dune_claims_v1`, `dune_goals_v1`.
+Risks had no storage key at all. Consequently the current backup
+(`BACKUP_KEYS`) could NOT reconstruct real user records for these
+domains under sanitized code — the app never persisted the
+identity to restore. A naive sanitization of `data.js` would
+orphan every per-id override and delete the user's risk register
+outright, with no recovery path.
+
+This ADR establishes durable, restore-independent authority for
+those four domains BEFORE any PRV-1 public-content sanitization
+runs.
+
+### Decision
+
+1. **Durable authority.** For each of the four domains, the
+   canonical read/write authority is now the Store path
+   `state.records.<domain>` (i.e. `records.deadlines`,
+   `records.claims`, `records.risks`, `records.goals`). Because
+   these live inside `dune_state_v4`, they ride the existing
+   `BACKUP_KEYS` set and inherit ADR-010's coordinated import,
+   snapshot, and restore semantics without a schema bump.
+
+2. **Migration-only legacy seed.** The pre-sanitization corpus
+   for the four domains has been moved verbatim into a single
+   internal seed module: `_migration-legacy-records.js`. This
+   file is loaded before `data.js` at
+   [index.html](index.html) and exposes
+   `window.LEGACY_RECORDS = { deadlines, claims, risks, goals }`
+   (frozen). Runtime renderers MUST NOT read from
+   `window.LEGACY_RECORDS` — its sole consumer is the
+   hydration path defined below. The seed remains public during
+   PRV-0.5; PRV-1 continues to own the public-content sanitization
+   of `data.js` and `PRODUCT.md`. A later explicitly-approved
+   cleanup step removes `_migration-legacy-records.js` once
+   restore-independence has been proven in the field.
+
+3. **One-shot hydration.** `hydratePreservationRecordsOnce()` in
+   [app.js](app.js) runs at script parse time and:
+   - Skips if the sticky Gen-1 flag
+     `dune_records_hydrated_v1` is set.
+   - Skips (and sets the flag) if `records.<domain>` is already
+     populated for every domain — a user with populated durable
+     records is done.
+   - Otherwise, for each empty domain, merges any legacy per-id
+     override from `dune_goals_v1` and `dune_claims_v1` into a
+     copy of `LEGACY_RECORDS.<domain>` and commits via
+     `Store.set('records.<domain>', merged)`. Risks are copied
+     verbatim and given a computed `score = prob * impact`.
+   - If ANY commit fails, the flag is NOT set — retry runs on
+     the next boot.
+   - The path is idempotent under concurrent tab boot: Web-Locks
+     serialization inside Store guarantees at-most-one accepted
+     commit per domain per revision; a second tab that observes
+     populated records skips the merge entirely.
+
+4. **Sticky-flag placement.**
+   `dune_records_hydrated_v1` is a Gen-1 key OUTSIDE
+   `dune_state_v4`. This is deliberate: `Store.reset()` commits
+   `defaultState()`, which does NOT include `records.*` and does
+   NOT touch Gen-1 keys. The sticky flag therefore survives Reset.
+   Post-Reset invariant:
+   `records.<domain>` reads as empty AND the flag is still `'1'`,
+   so hydration is a no-op — legacy personal records CANNOT
+   resurrect. This is the required Reset-safety property.
+
+5. **Single-writer authority.** The legacy per-id override keys
+   `dune_goals_v1` and `dune_claims_v1` are no longer written by
+   any code path. Their entries in `BACKUP_KEYS` are preserved
+   for backward compatibility with existing backups (import still
+   accepts them; hydration reads them once for the merge), but
+   they are historical dead weight after the flag is set.
+   `dune_deadlines_ext_v1` was already comment-marked as
+   reader-less; it is unchanged.
+
+6. **Reader accessors.** `data.js` retains read-only
+   `Object.defineProperty` accessors for `D.deadlines`,
+   `D.claims`, `D.risks`, `D.goals` that proxy to
+   `Store.get('records.<domain>')`. This preserves the existing
+   ~15 render call sites verbatim while making the Store the true
+   authority. The accessors return `[]` if Store is not yet
+   available, so first-paint remains defensive.
+
+7. **Backup and restore.** `dune_state_v4` (which is in
+   `BACKUP_KEYS`) now includes the new `records.*` field. Restore
+   into a fresh browser reconstructs the four domains WITHOUT
+   consulting `LEGACY_RECORDS` — the wrapper alone is sufficient.
+   `BACKUP_KEYS` set membership is unchanged; the wrapper's
+   inner shape is additively extended. `validate()` in
+   [core.js](core.js) accepts the additive shape without
+   modification.
+
+### PRV-1 gating
+
+PRV-1 source sanitization remains BLOCKED until:
+
+- ADR-015 is merged.
+- The nine deterministic PRV-preservation specs (`tests/prv-preservation.spec.js`) are green in CI.
+- Independent HIGH-tier Codex review approves this ADR and the
+  implementation against a specific `review_commit`.
+- Explicit user approval per ADR-013 (merge to main).
+
+### Explicit scope-outs
+
+- **EASA** is not migrated by this ADR. The public Part-66 module
+  list in `D.easa` is public-standard content; per-user
+  progress/status overrides in `dune_easa_v1` continue to work
+  as long as the module IDs are preserved through any future
+  PRV-1 sanitization of `D.easa`. That ID stability is a
+  PRV-1 checklist item, not a PRV-0.5 change.
+- **Finance** is not migrated. `dune_finance_v1` already stores
+  the full record; `D.finance` is fallback-only.
+- **Ideas** is not migrated. `state.ideas` is a full Gen-2
+  record; `SEED_IDEAS` runs once behind `meta.ideasSeeded` and
+  can be sanitized in PRV-1 without preservation risk.
+- **Personal-domain content in `defaultState()`** (money /
+  qatarVisit / career / timeline / about seed defaults) is a
+  separate PRV-1-analog problem outside this ADR's scope.
+
+### Related
+
+- [ADR-006](DECISIONS.md#adr-006) — storage migration cadence.
+- [ADR-010](DECISIONS.md#adr-010) — Store durability protocol
+  (coordinated import, snapshot semantics — extended in effect
+  by this ADR without changing the protocol itself).
+- [ADR-012 addendum #1](DECISIONS.md#adr-012-addendum-1-2026-08-28-risk-tier-precedence) — this
+  change touches `BACKUP_KEYS`-adjacent shape (additive inside
+  `dune_state_v4`) and migration paths, therefore HIGH-tier.
+- [ADR-013 addendum #1](DECISIONS.md#adr-013) — personal-data
+  egress; unaffected by this ADR.
+- [ADR-014](DECISIONS.md#adr-014) — three per-domain end-states;
+  the four migrated domains land at `active-migrated`.
+
+**Date:** 2026-08-28 (PRV-0.5 implementation on branch
+`claude/prv-0-5-preservation-migration`).
