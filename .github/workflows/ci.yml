@@ -1,0 +1,132 @@
+# Deterministic CI for Life OS 2.0. See docs/lifeos/DECISIONS.md ADR-012.
+# Ships as WF-GATE part of the AI Council V1 foundation (2026-08-28).
+#
+# What this workflow enforces:
+#   - JavaScript syntax on every tracked .js file (node --check).
+#   - git diff --check (no whitespace debt, no unresolved merge markers).
+#   - Playwright full suite (isolated synthetic contexts only; no real
+#     user data can be touched because the harness has none).
+#
+# Privacy properties:
+#   - Runs against isolated in-page synthetic localStorage per test
+#     (see docs/lifeos/TESTING.md and existing spec files).
+#   - No secrets required for the deterministic path.
+#   - Failure artifacts (Playwright HTML report + traces) are uploaded
+#     ONLY on failure and contain only synthetic seeded data because
+#     the tests never touch a real profile.
+#
+# What this workflow does NOT do:
+#   - No AI review as a required status check.
+#   - No third-party scanners (CodeRabbit / GitLeaks / Semgrep /
+#     Sentry). Those are out of scope for V1 per ADR-012.
+#   - No deployment automation.
+
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+      - 'claude/**'
+      - 'codex/**'
+      - 'chore/**'
+      - 'feature/**'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+# One CI run at a time per ref. Cancels superseded runs on the same PR.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  deterministic:
+    name: deterministic evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history so 'git diff --check' can inspect the diff
+          # against the base branch on pull_request events.
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browser (chromium only)
+        # playwright.config.js pins chromium as the sole project.
+        run: npx playwright install --with-deps chromium
+
+      # ── Deterministic gate 1: JavaScript syntax ────────────────────
+      - name: JavaScript syntax check
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail=0
+          while IFS= read -r f; do
+            if ! node --check "$f"; then
+              echo "SYNTAX FAIL: $f"
+              fail=1
+            fi
+          done < <(git ls-files '*.js')
+          if [ "$fail" -ne 0 ]; then
+            exit 1
+          fi
+          echo "syntax: PASS"
+
+      # ── Deterministic gate 2: git diff --check ─────────────────────
+      - name: git diff --check
+        shell: bash
+        run: |
+          set -euo pipefail
+          # On PRs, check the merge base. On push events, check working
+          # tree cleanliness (a no-op unless a previous step wrote files).
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base_sha='${{ github.event.pull_request.base.sha }}'
+            git diff --check "${base_sha}"...HEAD
+          else
+            git diff --check
+          fi
+          echo "diff --check: PASS"
+
+      # ── Deterministic gate 3: Playwright full suite ────────────────
+      - name: Playwright
+        env:
+          CI: 'true'
+        run: |
+          set -euo pipefail
+          npx playwright test
+          echo "playwright: PASS"
+
+      # ── Failure artifacts (only on failure; synthetic data only) ───
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload Playwright test-results on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-test-results
+          path: test-results
+          if-no-files-found: ignore
+          retention-days: 14
