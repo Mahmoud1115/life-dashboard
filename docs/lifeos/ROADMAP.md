@@ -96,12 +96,14 @@ Per the accepted three-way architecture synthesis, the Builder /
 phase — it is the first PR inside B2a.
 
 **B2a.1 — Builder-complete / two-source derivation correction.**
-Small MEDIUM-tier PR. Closes the latent bug where
+**HIGH-tier PR** (per ADR-012 addendum #1 — touches
+`deriveStateFromLegacy` and `normalizeLogbookDomain`, both
+recovery-derivation surfaces). Closes the latent bug where
 `deriveStateFromLegacy` at `core.js:510` reads only Tracker legacy
 and `normalizeLogbookDomain` at `core.js:922` normalizes the
-array-fallback branch as Tracker-only. Both must be fixed before any
-schema-v2 / authority work in B2a lands. Tests prove both sources
-survive derivation and recovery.
+array-fallback branch as Tracker-only. Both must be fixed before
+any schema-v2 / authority work in B2a lands. Tests prove both
+sources survive derivation and recovery.
 
 **B2a scope (post-B2a.1):**
 
@@ -177,17 +179,23 @@ Definition of Done:
   surfaces).
 - P3 quarterly sweep (Apartments top-choice bar first).
 
-### M2 — active-domain modernization (independent PRs, not a phase)
+### M2 — active-domain modernization (independent PRs, not a phase) — governed by ADR-014
 
-- M2.1 Apartments preflight + cutover (first generic collection canary
-  proves the per-domain pattern).
-- M2.2 Goals reassessment (decide: migrate or leave).
+Per ADR-014, each domain lands in one of three explicit end-states:
+`active-migrated`, `retained-legacy`, or `retired`. `retained-legacy`
+is a legitimate long-term outcome, not a deferral.
+
+- M2.1 Apartments preflight + cutover → `active-migrated` end-state
+  (first generic collection canary; proves the per-domain pattern).
+- M2.2 Goals reassessment → decide between `active-migrated` and
+  `retained-legacy`.
 - M2.3 Money preflight only (learn the data; no cutover).
-- M2.4 Money cutover decision — may legitimately be "never."
-- Deadlines / Ideas / Claims: leave legacy indefinitely unless
-  triggered.
-- BHT / Reviews / Decisions: already Gen-2 or effectively stable;
-  no migration.
+- M2.4 Money cutover decision → may legitimately land on
+  `retained-legacy` indefinitely.
+- Deadlines / Ideas / Claims → `retained-legacy` by default unless
+  a real trigger appears.
+- BHT / Reviews / Decisions → already Gen-2 or effectively stable;
+  end-state = `active-migrated` (no migration needed).
 
 ### Aviation OS growth (parallel with B2)
 
@@ -210,7 +218,7 @@ sharing low-level durability primitives.
 
 | Branch | Trigger conditions |
 |---|---|
-| Supabase pilot (S-pilot → S-adopt → S-scale) | Repeated cross-device conflict / OAuth secret proxy need / server job need / real multi-device concurrent editing / measured localStorage quota limit / real relational query need. |
+| Supabase pilot (S-pilot → S-adopt → S-scale) — governed by ADR-014 | Repeated cross-device conflict / OAuth secret proxy need / server job need / real multi-device concurrent editing / measured localStorage quota limit / real relational query need. Per ADR-014, backend adoption is trigger-driven (not inevitable), Supabase is the first candidate but not the only, `never Gen-1 direct to backend` remains from ADR-006, and mandatory Gen-1 → Gen-2 consolidation is limited to active / retained / migration-relevant domains. |
 | Full PWA (service worker + IndexedDB + offline writes + sync queue + conflict resolution) | Post-B2.5 stability + written cache-busting / update-strategy ADR + measured connectivity gaps. |
 | Knowledge layer (Obsidian + link metadata) | User starts long-form study notes AND asks for cross-linking with Life OS records. |
 | Aviation A2+ (CFM56 study, cert tracking, hangar) | Per-slice user need after A0 / A1. |

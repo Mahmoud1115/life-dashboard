@@ -505,3 +505,216 @@ may perform without explicit per-instance human approval.
 
 - No prior ADR. Consolidates warnings scattered across previous
   strategic reviews and the Council architecture review of 2026-08-28.
+
+### ADR-013 addendum #1 (2026-08-28 personal-data egress + deployment approval semantics)
+
+Codex's Round 1 audit of the AI Council V1 branch flagged that the
+personal-data egress rule existed only in Layer 2 docs (`CLAUDE.md`
+/ `AGENTS.md` guidance and the Council README) and was not
+canonical at Layer 1. This addendum pins the egress rule as Layer 1
+truth (P1-7 remediation on the AI Council V1 branch).
+
+**Canonical rule.** No automation of any kind may transmit raw or
+private user data to any of the following without explicit
+per-instance human approval:
+
+- external AI providers (Anthropic, OpenAI, Google, Alibaba,
+  Mistral, Cohere, any other hosted model provider);
+- hosted MCP services;
+- third-party SaaS integrations;
+- remote telemetry / debugging / error-tracking services;
+- cloud logging or monitoring endpoints;
+- any host outside the user's own browser or a local process running
+  under the user's direct control.
+
+**Data classes covered — non-exhaustive:**
+
+- Money values (rent, salary, expenses, savings, custom rows).
+- Health data.
+- Journal content, decision text, weekly review notes.
+- Contacts.
+- Real Logbook entries (Tracker AND Builder), unredacted.
+- Real Apartments listings with personally identifying addresses.
+- Real backups (file / clipboard / Gist).
+- Real exports.
+- Credentials (GitHub PAT, any API key, any secret).
+- Unredacted diagnostic bundles.
+- Any content the user has flagged as private.
+
+**Allowed by default** (subject to repository confidentiality per
+ADR-008 and to any per-provider allowlist declared in Layer 2):
+
+- Source code in this repository.
+- Architecture, ADR, and roadmap documents.
+- Synthetic test fixtures under `tests/fixtures/**` provided they
+  contain no real user data.
+- Redacted diagnostics — output of `lifeos diagnostics` or the
+  in-app `#health` panel, which by design emit key NAMES and byte
+  SIZES only, never values.
+- Redacted CI logs — Playwright artifacts, because tests use
+  isolated in-page synthetic localStorage and the CI harness has
+  no real user profile.
+
+**Local-model clarification.** A cloud-model CLI running locally
+(e.g. Claude Code CLI, Codex CLI) still transmits every message it
+sends to an external provider's API. "Local" refers to the process
+location, not the data path. The egress rule applies to those CLIs
+identically: real personal data does not flow into their prompts
+without explicit per-instance human approval.
+
+**Deployment approval semantics.** GitHub Pages automatically
+deploys `main` on every merge. Explicit human approval to merge a
+PR to `main` counts as approval for the known automatic deployment
+of that PR's contents to the public GitHub Pages site. Do not
+require a second redundant approval click for the same
+deterministic consequence, **unless** the deploy itself is
+separately HIGH-risk (e.g. an authority-cutover, a change that
+would broadcast previously-private data, a change that modifies
+the site's outbound network footprint), in which case the deploy
+requires its own per-instance approval distinct from the merge
+approval.
+
+No autonomous merge remains allowed. The user's merge click is the
+approval; automation never produces it.
+
+**Enforcement.** Any process (hook, MCP tool, scheduled workflow,
+scripted `gh api` call, agent skill) discovered to be transmitting
+personal data outside this rule must be disabled and reviewed. The
+`.claude/agents/**` drift audit convention (per the reviewer md and
+council/README.md) is the routine check.
+
+## ADR-014 — Backend and per-domain migration policy (supersedes parts of ADR-001 and ADR-006)
+
+**Status:** Accepted (2026-08-28).
+**Applies to:** every future decision about backend adoption
+(Supabase or alternatives), sync architecture, and per-domain
+Gen-1 → Gen-2 consolidation.
+**Supersedes:** ADR-001's inevitable-Supabase framing; ADR-006's
+implicit universal Gen-1 → Gen-2 mandate. ADR-001 and ADR-006 are
+NOT edited in place — their history is preserved and this ADR
+governs going forward.
+
+**Context.** ADR-001 (Supabase as the future structured backend)
+and ADR-006 (Gen-1 → Gen-2 → Supabase, one domain per commit) both
+framed Supabase adoption as inevitable. Since then, three factors
+have accumulated evidence:
+
+- The single-user constraint has held. No cross-device, multi-user,
+  or relational-query pain has been measured that a backend would
+  uniquely solve.
+- Migrating every legacy domain "for architectural purity" is a
+  cost the project cannot amortize — several legacy domains
+  (Deadlines, Ideas, Claims, EASA) are stable and produce no user
+  value from canonicalization.
+- Money remains high-blast-radius (custom row shapes + one-way
+  Russia finance bridge per commit `89728eb`); forcing it through
+  a generic per-domain migration is a legitimate "never" decision,
+  not a "later" decision.
+
+**Decision.** The backend and per-domain migration policy is now:
+
+- **Backend adoption is trigger-driven, not scheduled.** Supabase
+  (or the best alternative at the time) is evaluated only when one
+  of the following triggers fires: repeated cross-device conflict
+  or friction; measured localStorage quota / size limit; a real
+  relational or server-side query need; OAuth / secret-proxy /
+  server-job / inbound-integration need; real multi-device
+  concurrent editing.
+- **Provider evaluation, not vendor lock-in.** When triggered,
+  Supabase is the FIRST candidate but not the ONLY candidate; the
+  evaluation ADR at the time compares realistic alternatives.
+- **`Never Gen-1 directly to backend`** — preserved from ADR-006.
+  Any backend migration goes through a canonical Gen-2 form first.
+- **Mandatory Gen-1 → Gen-2 consolidation is limited to** active
+  domains, retained domains, and migration-relevant domains. A
+  legacy domain that is stable and produces no additional user
+  value from canonicalization may remain on legacy indefinitely,
+  or be explicitly retired via a follow-up decision recorded in a
+  future ADR.
+- **Explicit retirement / leave path.** For each inactive legacy
+  domain, the current ADR (or its successor) records one of three
+  states: `active-migrated`, `retained-legacy`, `retired`.
+  `retained-legacy` is a legitimate long-term outcome, not a
+  deferral.
+- **Governance rule.** Accepted ADRs govern architecture until
+  explicitly superseded by a later ADR. `docs/lifeos/ROADMAP.md`
+  schedules and reflects those decisions but does NOT silently
+  override ADRs. If the roadmap and an accepted ADR conflict, the
+  ADR wins until a new ADR is written.
+
+**Rejected alternatives.**
+
+- Continue framing Supabase adoption as inevitable (rejected: no
+  measured triggers; single-user pattern still holds).
+- Migrate every legacy domain to Gen-2 for architectural symmetry
+  (rejected: cost / benefit is negative on stable legacy).
+- Delete ADR-001 or ADR-006 (rejected: history is append-only per
+  the DECISIONS.md format; supersession is the correct mechanism).
+- Route ADR authority through the roadmap (rejected: the roadmap
+  changes weekly; ADRs are the durable authority).
+
+**Consequences.**
+
+- `docs/lifeos/ROADMAP.md` is updated to reference this ADR in its
+  Supabase and M2 triggered-branch sections. The ROADMAP language
+  already reflected the intent; this ADR makes the governance
+  explicit.
+- The M2 section of the roadmap is understood as a per-domain PR
+  stream, not a phase, with each domain landing on one of the
+  three end-state values above.
+- Any future backend-evaluation ADR must reference this ADR as its
+  starting point.
+
+**Date:** 2026-08-28 (P1-6 remediation on the AI Council V1 branch).
+
+## ADR-012 addendum #1 (2026-08-28 risk-tier precedence)
+
+Codex's Round 1 audit of the AI Council V1 branch flagged that
+ADR-012's tier examples could be read as permitting a HIGH-risk
+change to be tier-declared MEDIUM if only a small portion of the
+change looked MEDIUM-shaped. This addendum pins an explicit
+precedence rule (P1-5 remediation).
+
+**Precedence rule.** If a change touches ANY of the HIGH-risk
+invariants listed below, the entire change-set is HIGH-tier
+regardless of file count, narrow scope, current authority state,
+or the presence of another MEDIUM-shaped example inside the same
+change:
+
+- `BACKUP_KEYS` set or `NON_BACKUP_KEYS` set.
+- Persisted Store schema (schema version, wrapper shape, envelope
+  authority values, migration path).
+- Migration paths (`migrateUp`, `validate`, `normalizeLogbookDomain`,
+  `deriveStateFromLegacy`, or any new per-domain migration
+  function).
+- Import / export scope (`processImport`, `getAllBackupData`, any
+  Gist / clipboard / file backup path).
+- Snapshot creation / restore / reset.
+- Recovery derivation logic.
+- Any change to the two-source Logbook reconstruction path.
+- Canonical authority values or authority transitions.
+
+**Reclassified as HIGH by this addendum.**
+
+- `B2a.1` — Builder-complete / two-source derivation correction
+  (touches `deriveStateFromLegacy` at [core.js:510](core.js:510)
+  and `normalizeLogbookDomain` at [core.js:922](core.js:922); both
+  are recovery-derivation surfaces).
+- Any future change to the recovery-derivation surfaces named
+  above, even if it is a one-file bug fix.
+
+**Narrowed MEDIUM example.** A Gen-2 product slice may be MEDIUM
+ONLY IF it does not change: persisted schema, migration paths,
+import / export, snapshot / reset, recovery behavior, or authority
+semantics. A Gen-2 slice that touches any of those is HIGH.
+
+**Not all persisted UI is automatically HIGH.** A rendering-only
+change that does not touch the invariants above (e.g. a display
+tweak, a new filter, a new empty-state message) may remain
+MEDIUM. The precedence rule targets the invariants, not the
+persistence layer as a whole.
+
+**Author self-declaration + reviewer escalation.** The author
+declares the tier in the PR body. A reviewer may disagree with
+the declaration and request escalation to HIGH; escalation is
+never negotiable when the change touches a listed invariant.
