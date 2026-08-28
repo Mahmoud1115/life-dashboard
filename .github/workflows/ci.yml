@@ -27,10 +27,6 @@ on:
   push:
     branches:
       - main
-      - 'claude/**'
-      - 'codex/**'
-      - 'chore/**'
-      - 'feature/**'
   pull_request:
     branches:
       - main
@@ -89,16 +85,31 @@ jobs:
           echo "syntax: PASS"
 
       # ── Deterministic gate 2: git diff --check ─────────────────────
+      # PR events check the merge base against HEAD.
+      # Push events (only ever "main" per the workflow triggers) check
+      # the pushed commit range github.event.before...github.sha, so a
+      # bad merge landing directly on main is still caught. The
+      # all-zero SHA that GitHub sends for branch-creation and
+      # branch-delete events is handled by falling back to a no-op:
+      # branch creation has no "prior" state to diff against.
       - name: git diff --check
         shell: bash
         run: |
           set -euo pipefail
-          # On PRs, check the merge base. On push events, check working
-          # tree cleanliness (a no-op unless a previous step wrote files).
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             base_sha='${{ github.event.pull_request.base.sha }}'
             git diff --check "${base_sha}"...HEAD
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            before_sha='${{ github.event.before }}'
+            head_sha='${{ github.sha }}'
+            zero_sha='0000000000000000000000000000000000000000'
+            if [ "${before_sha}" = "${zero_sha}" ] || [ -z "${before_sha}" ]; then
+              echo "diff --check: SKIPPED (branch creation event — no prior SHA to diff)"
+            else
+              git diff --check "${before_sha}"..."${head_sha}"
+            fi
           else
+            # workflow_dispatch or other manual events: check working tree only.
             git diff --check
           fi
           echo "diff --check: PASS"
