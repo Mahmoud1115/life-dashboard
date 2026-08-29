@@ -1,10 +1,16 @@
-// PRV-0.5 preservation-migration Playwright specs — see docs/lifeos/DECISIONS.md ADR-015.
-// Each test spins the app in an isolated Playwright context; real
-// user localStorage is never touched. Tests are keyed to the eight
-// failure modes named in the PRV-0.5 preservation-migration handoff
-// (A existing-state hydration, B idempotence, C concurrency, D reader
-// cutover, E backup completeness, F restore independence, G reset
-// safety, H failure injection).
+// PRV-0.5 Round 2 preservation-migration Playwright specs.
+// See docs/lifeos/DECISIONS.md ADR-015 addendum #1.
+//
+// After Codex Round 2's HIGH-risk review, migration authority moved
+// INSIDE the coordinated wrapper (schema 14) as
+// `data.meta.recordsMigration = { status: 'migrated' | 'unmigrated', ... }`.
+// The prior out-of-band Gen-1 sticky flag `dune_records_hydrated_v1`
+// was removed — it could survive a durability failure and permanently
+// skip migration.
+//
+// Every test spins the app in an isolated Playwright context; real
+// user localStorage is never touched. Each test names precisely the
+// property it exercises. No test overstates what it proves.
 
 const { test, expect } = require('@playwright/test');
 
@@ -21,241 +27,609 @@ function isAppExpectedGithubCommitsRequest(rawUrl) {
   return Array.from(parsed.searchParams.keys()).length === 1;
 }
 
-test.beforeEach(async ({ context }) => {
+async function routeSyntheticContext(context) {
   await context.route(EXPECTED_BLOCKED_URL, (route) => route.abort());
   await context.route(GITHUB_ORIGIN, (route) => {
     if (!isAppExpectedGithubCommitsRequest(route.request().url())) return route.abort();
     return route.fulfill({
-      status: 200, contentType: 'application/json',
+      status: 200,
+      contentType: 'application/json',
       body: JSON.stringify([{ commit: { author: { date: SYNTHETIC_COMMIT_ISO } } }])
     });
   });
-});
-
-async function waitForApp(page) {
-  await page.waitForFunction(() => !!(window.Store && typeof window.Store.get === 'function' && window.LEGACY_RECORDS && typeof window.hydratePreservationRecordsOnce === 'function'));
 }
 
-// Waits for one Store save-listener fire, guaranteeing that recent
-// Store.set operations have been flushed to dune_state_v4.
+test.beforeEach(async ({ context }) => { await routeSyntheticContext(context); });
+
+async function waitForApp(page) {
+  await page.waitForFunction(() =>
+    !!(window.Store && typeof window.Store.get === 'function' &&
+       window.LEGACY_RECORDS && typeof window.hydratePreservationRecordsOnce === 'function'));
+}
+
 async function waitForNextSave(page) {
   await page.evaluate(() => new Promise((resolve) => {
-    if (!window.Store || typeof window.Store.onSave !== 'function') { resolve(); return; }
-    const unsub = window.Store.onSave(() => { try { unsub(); } catch(e){} resolve(); });
-    // Safety timeout in case no save is currently pending — resolve
-    // after a short window so we don't hang.
-    setTimeout(() => { try { unsub(); } catch(e){} resolve(); }, 1500);
+    let done = false;
+    const finish = () => { if (done) return; done = true; try { unsub(); } catch (e) {} resolve(); };
+    const unsub = window.Store.onSave(finish);
+    setTimeout(finish, 2000);
   }));
 }
 
+async function waitForMigrated(page, timeoutMs) {
+  await page.waitForFunction(() => {
+    const m = window.Store.get('meta.recordsMigration');
+    return m && m.status === 'migrated';
+  }, {}, { timeout: timeoutMs || 5000 });
+}
+
+// A pre-PRV schema-13 wrapper the app must accept + migrate on load.
+function seedV13Wrapper(page, extra) {
+  return page.addInitScript((extraArg) => {
+    const nowIso = new Date().toISOString();
+    // Minimal v13-shaped wrapper. The core.js validate() gate only
+    // requires money.salary_net + qatarVisit, so a lean v13 data block
+    // suffices to prove the migration path end-to-end.
+    const data = {
+      money: { salary_net: 130000, expenses: {}, usd_rate: 88, save_target: 55000 },
+      qatarVisit: { from_airport: 'SVO', to_airport: 'DOH', travel_month: '', flights: 0, hotel: 0, food: 0, transport: 0, misc: 0, emergency: 0, saved: 0, notes: '' },
+      todayFocus: ['','',''],
+      goals: {},
+      career: { started: '', company: '', position: '', aircraft: [], engines: [], licenses: [], certificates: [], milestones: [] },
+      easa: {},
+      logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { sourceCounts: { tracker: 0, builder: 0 } }, reconciled: { at: nowIso }, drift: { diverged: false } },
+      reviews: [],
+      decisions: [],
+      timeline: [],
+      about: { version: 2, createdAt: '', lastUpdated: '', strengths: [], lessons: [], vision: '', values: [], reminders: [] },
+      apartments: [],
+      sbTasks: {},
+      bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: '', model: '' }, meta: {} },
+      telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
+      ideas: [],
+      meta: { version: 13, createdAt: nowIso, lastUpdated: nowIso }
+    };
+    if (extraArg && extraArg.goalsOv) {
+      try { localStorage.setItem('dune_goals_v1', JSON.stringify(extraArg.goalsOv)); } catch (e) {}
+    }
+    if (extraArg && extraArg.claimsOv) {
+      try { localStorage.setItem('dune_claims_v1', JSON.stringify(extraArg.claimsOv)); } catch (e) {}
+    }
+    try {
+      const wrapper = { version: 13, revision: 1, committedAt: nowIso, data: data };
+      localStorage.setItem('dune_state_v4', JSON.stringify(wrapper));
+    } catch (e) {}
+  }, extra || null);
+}
+
 // ────────────────────────────────────────────────────────
-// A. Existing-state hydration
-// Fresh browser, no records.*, no flag → hydration copies all four
-// domains completely from LEGACY_RECORDS into Store, sets the sticky
-// flag exactly once, and every field survives the copy.
+// PRV-R2-FRESH-DEFAULT — fresh browser boots at schema 14 with
+// status='migrated' + empty records. Legacy corpus CANNOT resurrect
+// on a fresh browser under the new default; hydration is a no-op.
 // ────────────────────────────────────────────────────────
-test('PRV-A-hydrate-full — fresh browser hydrates all four domains from LEGACY_RECORDS', async ({ page }) => {
+test('PRV-R2-FRESH-DEFAULT — fresh browser has schema 14 + status=migrated + empty records; hydration is a no-op', async ({ page }) => {
   await page.goto('/');
   await waitForApp(page);
-  const proof = await page.evaluate(() => {
-    const seed = window.LEGACY_RECORDS;
+  await waitForNextSave(page);
+  const proof = await page.evaluate(async () => {
+    const marker = window.Store.get('meta.recordsMigration');
     const domains = ['deadlines','claims','risks','goals'];
-    const out = { flag: localStorage.getItem('dune_records_hydrated_v1'), domains: {} };
-    for (const d of domains) {
-      const stored = window.Store.get('records.' + d);
-      out.domains[d] = {
-        storedLen: Array.isArray(stored) ? stored.length : null,
-        seedLen: Array.isArray(seed[d]) ? seed[d].length : null,
-        storedIds: Array.isArray(stored) ? stored.map(x => x && x.id) : null,
-        seedIds: Array.isArray(seed[d]) ? seed[d].map(x => x && x.id) : null
-      };
-    }
-    // Verify risks got their computed score field
-    const risks = window.Store.get('records.risks');
-    out.risksScoreOk = Array.isArray(risks) && risks.every(r => typeof r.score === 'number' && r.score === (r.prob||0) * (r.impact||0));
-    return out;
+    const counts = {}; for (const d of domains) counts[d] = (window.Store.get('records.'+d) || []).length;
+    const res = await window.hydratePreservationRecordsOnce();
+    let persisted = null;
+    try { persisted = JSON.parse(localStorage.getItem('dune_state_v4') || 'null'); } catch (e) {}
+    const stickyFlag = localStorage.getItem('dune_records_hydrated_v1');
+    return { marker, counts, res, wrapperVersion: persisted && persisted.version, stickyFlag };
   });
-  expect(proof.flag).toBe('1');
-  for (const d of ['deadlines','claims','risks','goals']) {
-    expect(proof.domains[d].storedLen).toBe(proof.domains[d].seedLen);
-    expect(proof.domains[d].storedIds).toEqual(proof.domains[d].seedIds);
-  }
-  expect(proof.risksScoreOk).toBe(true);
+  expect(proof.wrapperVersion).toBe(14);
+  expect(proof.marker && proof.marker.status).toBe('migrated');
+  expect(proof.counts.deadlines).toBe(0);
+  expect(proof.counts.claims).toBe(0);
+  expect(proof.counts.risks).toBe(0);
+  expect(proof.counts.goals).toBe(0);
+  expect(proof.res && proof.res.ok).toBe(true);
+  expect(proof.res.skipped).toBe('already-migrated');
+  // The Round 1 sticky flag must NOT be written under the new design.
+  expect(proof.stickyFlag).toBeNull();
 });
 
 // ────────────────────────────────────────────────────────
-// A2. Existing-state hydration MERGES per-id legacy overrides.
-// Pre-seed dune_goals_v1 + dune_claims_v1 with edits; assert hydration
-// carries the edits forward into records.goals / records.claims.
+// PRV-R2-V13-HYDRATE — a real v13 wrapper migrates up, hydration
+// runs and durably persists all four domains + a migrated marker.
+// This proves the boot-time migration path end-to-end.
 // ────────────────────────────────────────────────────────
-test('PRV-A-merge-overrides — pre-existing per-id overrides in dune_goals_v1 / dune_claims_v1 survive hydration', async ({ page }) => {
-  await page.addInitScript(() => {
-    try { localStorage.setItem('dune_goals_v1', JSON.stringify({ go01: { progress: 77, status: 'blocked' } })); } catch(e){}
-    try { localStorage.setItem('dune_claims_v1', JSON.stringify({ cl01: { confidence: 'dangerous', lastChecked: '2026-08-01' } })); } catch(e){}
+test('PRV-R2-V13-HYDRATE — v13 wrapper triggers hydration; records + migrated marker durably persist', async ({ page }) => {
+  await seedV13Wrapper(page, {});
+  await page.goto('/');
+  await waitForApp(page);
+  await waitForMigrated(page, 5000);
+  // The onSave-driven hydration issues a second wrapper commit; wait
+  // once more so we can re-read localStorage and prove durability.
+  await waitForNextSave(page);
+  const proof = await page.evaluate(() => {
+    const seed = window.LEGACY_RECORDS;
+    const persisted = JSON.parse(localStorage.getItem('dune_state_v4') || 'null');
+    const pData = persisted && persisted.data;
+    const pRecords = pData && pData.records;
+    const pMarker = pData && pData.meta && pData.meta.recordsMigration;
+    return {
+      wrapperVersion: persisted && persisted.version,
+      persistedMarker: pMarker,
+      persistedDeadlines: (pRecords && pRecords.deadlines || []).length,
+      persistedClaims: (pRecords && pRecords.claims || []).length,
+      persistedRisks: (pRecords && pRecords.risks || []).length,
+      persistedGoals: (pRecords && pRecords.goals || []).length,
+      seedDeadlines: seed.deadlines.length,
+      seedClaims: seed.claims.length,
+      seedRisks: seed.risks.length,
+      seedGoals: seed.goals.length,
+      // Risks got their computed score.
+      allRisksScored: (pRecords && Array.isArray(pRecords.risks)) && pRecords.risks.every(r => typeof r.score === 'number' && r.score === (r.prob || 0) * (r.impact || 0)),
+      // Legacy sticky flag stayed absent.
+      stickyFlag: localStorage.getItem('dune_records_hydrated_v1')
+    };
+  });
+  expect(proof.wrapperVersion).toBe(14);
+  expect(proof.persistedMarker && proof.persistedMarker.status).toBe('migrated');
+  expect(proof.persistedDeadlines).toBe(proof.seedDeadlines);
+  expect(proof.persistedClaims).toBe(proof.seedClaims);
+  expect(proof.persistedRisks).toBe(proof.seedRisks);
+  expect(proof.persistedGoals).toBe(proof.seedGoals);
+  expect(proof.allRisksScored).toBe(true);
+  expect(proof.stickyFlag).toBeNull();
+});
+
+// ────────────────────────────────────────────────────────
+// PRV-R2-V13-OVERRIDES — pre-PRV per-id overrides in dune_goals_v1
+// and dune_claims_v1 survive hydration merge.
+// ────────────────────────────────────────────────────────
+test('PRV-R2-V13-OVERRIDES — legacy per-id overrides survive hydration merge', async ({ page }) => {
+  await seedV13Wrapper(page, {
+    goalsOv: { go01: { progress: 77, status: 'blocked' } },
+    claimsOv: { cl01: { confidence: 'dangerous', lastChecked: '2026-08-01' } }
   });
   await page.goto('/');
   await waitForApp(page);
+  await waitForMigrated(page);
+  await waitForNextSave(page);
   const proof = await page.evaluate(() => {
-    const g = window.Store.get('records.goals').find(x => x.id === 'go01');
-    const c = window.Store.get('records.claims').find(x => x.id === 'cl01');
+    const persisted = JSON.parse(localStorage.getItem('dune_state_v4'));
+    const goals = persisted.data.records.goals;
+    const claims = persisted.data.records.claims;
+    const g = goals.find(x => x.id === 'go01');
+    const c = claims.find(x => x.id === 'cl01');
     return {
       goalProgress: g && g.progress,
       goalStatus: g && g.status,
-      claimConf: c && c.confidence,
-      claimChecked: c && c.lastChecked,
-      flag: localStorage.getItem('dune_records_hydrated_v1')
+      claimConfidence: c && c.confidence,
+      claimChecked: c && c.lastChecked
     };
   });
   expect(proof.goalProgress).toBe(77);
   expect(proof.goalStatus).toBe('blocked');
-  expect(proof.claimConf).toBe('dangerous');
+  expect(proof.claimConfidence).toBe('dangerous');
   expect(proof.claimChecked).toBe('2026-08-01');
-  expect(proof.flag).toBe('1');
 });
 
 // ────────────────────────────────────────────────────────
-// B. Idempotence — repeated calls do not duplicate records nor
-// overwrite user edits.
+// PRV-R2-EMPTY-STATE — an intentionally-empty migrated state is
+// distinguishable from unmigrated. Deleting all goals leaves
+// records.goals=[] AND status='migrated'; subsequent hydration
+// invocations skip. Legacy records CANNOT resurrect.
 // ────────────────────────────────────────────────────────
-test('PRV-B-idempotent — re-running hydration is a no-op and never overwrites user edits', async ({ page }) => {
+test('PRV-R2-EMPTY-STATE — records.goals=[] with status=migrated is preserved; hydration skips', async ({ page }) => {
+  await seedV13Wrapper(page, {});
   await page.goto('/');
   await waitForApp(page);
-  const proof = await page.evaluate(() => {
-    // Simulate a user edit through the writer path.
-    window.Store.set('records.goals', [
-      Object.assign({}, window.Store.get('records.goals')[0], { progress: 99, status: 'done' }),
-      ...window.Store.get('records.goals').slice(1)
-    ]);
-    const beforeLen = window.Store.get('records.goals').length;
-    const beforeFirst = window.Store.get('records.goals')[0].progress;
-    // Clear the flag and re-run hydration — must not overwrite the
-    // populated records.goals with the seed's original progress value.
-    localStorage.removeItem('dune_records_hydrated_v1');
-    const res = window.hydratePreservationRecordsOnce();
+  await waitForMigrated(page);
+  await waitForNextSave(page);
+  const proof = await page.evaluate(async () => {
+    // Simulate the user deleting all goals through the writer path.
+    const setRes = window.Store.set('records.goals', []);
+    // Wait for durability so the persisted wrapper shows the empty array.
+    await new Promise((resolve) => {
+      let done = false;
+      const finish = () => { if (done) return; done = true; try { unsub(); } catch(e){} resolve(); };
+      const unsub = window.Store.onSave(finish);
+      setTimeout(finish, 2000);
+    });
+    const persistedAfter = JSON.parse(localStorage.getItem('dune_state_v4'));
+    const rerun = await window.hydratePreservationRecordsOnce();
+    const persistedFinal = JSON.parse(localStorage.getItem('dune_state_v4'));
     return {
-      res,
-      afterLen: window.Store.get('records.goals').length,
-      afterFirst: window.Store.get('records.goals')[0].progress,
-      beforeLen, beforeFirst,
-      flagAfter: localStorage.getItem('dune_records_hydrated_v1')
-    };
-  });
-  expect(proof.afterLen).toBe(proof.beforeLen);
-  expect(proof.afterFirst).toBe(99);
-  expect(proof.afterFirst).toBe(proof.beforeFirst);
-  expect(proof.res && proof.res.ok).toBe(true);
-  expect(proof.res.skipped).toBe('already-populated');
-  expect(proof.flagAfter).toBe('1');
-});
-
-// ────────────────────────────────────────────────────────
-// C. Concurrency — two tabs booting simultaneously converge to one
-// hydrated result, no duplicate records, no lost updates.
-// ────────────────────────────────────────────────────────
-test('PRV-C-concurrent — sequential-boot convergence (deterministic-framework proxy for two-tab behaviour)', async ({ context }) => {
-  // The Playwright deterministic framework cannot reliably schedule
-  // two truly-concurrent Store.set operations across pages (they get
-  // serialized by the Web-Locks coordinator either way). What we CAN
-  // prove is that a second boot observes the hydrated state through
-  // the persisted wrapper and does NOT re-hydrate or duplicate — which
-  // is the failure mode the test guards against.
-  const a = await context.newPage();
-  await a.goto('/');
-  await waitForApp(a);
-  await waitForNextSave(a);
-  const proofA = await a.evaluate(() => ({
-    len: (window.Store.get('records.goals') || []).length,
-    ids: (window.Store.get('records.goals') || []).map(x => x && x.id),
-    flag: localStorage.getItem('dune_records_hydrated_v1')
-  }));
-  await a.close();
-
-  const b = await context.newPage();
-  await b.goto('/');
-  await waitForApp(b);
-  // Second boot must observe the same hydrated records; no duplication.
-  const proofB = await b.evaluate(() => {
-    // Re-run hydration to prove idempotence across sessions on the
-    // same localStorage.
-    const res = window.hydratePreservationRecordsOnce();
-    return {
-      len: (window.Store.get('records.goals') || []).length,
-      ids: (window.Store.get('records.goals') || []).map(x => x && x.id),
-      flag: localStorage.getItem('dune_records_hydrated_v1'),
-      secondRun: res
-    };
-  });
-  expect(proofA.len).toBe(proofB.len);
-  expect(proofA.ids).toEqual(proofB.ids);
-  const dedupA = new Set(proofA.ids);
-  expect(dedupA.size).toBe(proofA.ids.length);
-  expect(proofA.flag).toBe('1');
-  expect(proofB.flag).toBe('1');
-  expect(proofB.secondRun && proofB.secondRun.ok).toBe(true);
-  expect(proofB.secondRun.skipped).toBe('flag-set');
-});
-
-// ────────────────────────────────────────────────────────
-// D. Reader cutover — after hydration, mutating LEGACY_RECORDS in
-// place must NOT affect the runtime UI. Store is authoritative.
-// ────────────────────────────────────────────────────────
-test('PRV-D-reader-cutover — runtime reads from Store not from LEGACY_RECORDS', async ({ page }) => {
-  await page.goto('/');
-  await waitForApp(page);
-  const proof = await page.evaluate(() => {
-    // `D` is a script-global from data.js (top-level `const`), not a
-    // property of window. Access it via the same namespace app.js uses.
-    const D_ref = (typeof D !== 'undefined') ? D : null;
-    // Mutate a copy in Store (write path).
-    const cur = window.Store.get('records.goals');
-    const nextFirst = Object.assign({}, cur[0], { progress: 42, status: 'active' });
-    const setRes = window.Store.set('records.goals', [nextFirst, ...cur.slice(1)]);
-    // Try to mutate the seed — frozen at author time, but even if not,
-    // Store-backed D.goals is the authoritative accessor.
-    try { window.LEGACY_RECORDS.goals[0].progress = -999; } catch(e) { /* frozen */ }
-    const dGoals = D_ref && D_ref.goals;
-    const storeGoals = window.Store.get('records.goals');
-    return {
-      setOk: !!(setRes && setRes.ok),
-      dGoalsIsArray: Array.isArray(dGoals),
-      dFirstProgress: (dGoals && dGoals[0] && dGoals[0].progress),
-      storeFirstProgress: storeGoals[0].progress,
-      seedIsFrozen: Object.isFrozen(window.LEGACY_RECORDS.goals)
+      setOk: setRes && setRes.ok,
+      afterUserDeleteGoalsLen: persistedAfter.data.records.goals.length,
+      afterUserDeleteMarker: persistedAfter.data.meta.recordsMigration,
+      rerunResult: rerun,
+      finalGoalsLen: persistedFinal.data.records.goals.length,
+      finalMarker: persistedFinal.data.meta.recordsMigration
     };
   });
   expect(proof.setOk).toBe(true);
-  expect(proof.dGoalsIsArray).toBe(true);
-  expect(proof.dFirstProgress).toBe(42);
-  expect(proof.storeFirstProgress).toBe(42);
+  expect(proof.afterUserDeleteGoalsLen).toBe(0);
+  expect(proof.afterUserDeleteMarker && proof.afterUserDeleteMarker.status).toBe('migrated');
+  expect(proof.rerunResult && proof.rerunResult.ok).toBe(true);
+  expect(proof.rerunResult.skipped).toBe('already-migrated');
+  // Rehydration was a no-op; goals stayed empty; legacy DID NOT resurrect.
+  expect(proof.finalGoalsLen).toBe(0);
+  expect(proof.finalMarker && proof.finalMarker.status).toBe('migrated');
 });
 
 // ────────────────────────────────────────────────────────
-// E. Backup completeness — an exported backup contains records.* for
-// all four domains under dune_state_v4.
+// PRV-R2-RESET-SAFETY — Store.reset() commits defaultState()
+// (schema 14 with status='migrated' + empty records). Hydration is a
+// no-op post-Reset. Legacy personal records CANNOT resurrect.
 // ────────────────────────────────────────────────────────
-test('PRV-E-backup-completeness — exported backup carries records.* for all four domains', async ({ page }) => {
+test('PRV-R2-RESET-SAFETY — Reset produces empty migrated records; hydration does not resurrect legacy', async ({ page }) => {
+  await seedV13Wrapper(page, {});
   await page.goto('/');
   await waitForApp(page);
-  // Wait for at least one save to guarantee the hydration commit has
-  // flushed to dune_state_v4 in localStorage.
+  await waitForMigrated(page);
   await waitForNextSave(page);
-  const proof = await page.evaluate(() => {
-    const raw = localStorage.getItem('dune_state_v4');
-    if (!raw) return { hasWrapper: false };
-    const parsed = JSON.parse(raw);
-    const data = parsed && parsed.data;
-    const records = data && data.records;
+  const proof = await page.evaluate(async () => {
+    const preGoalsLen = (window.Store.get('records.goals') || []).length;
+    // Drive Reset via the public API. Store.reset returns boolean
+    // and fires an onSave listener when durability settles.
+    await new Promise((resolve) => {
+      let done = false;
+      const finish = () => { if (done) return; done = true; try { unsub(); } catch(e){} resolve(); };
+      const unsub = window.Store.onSave(finish);
+      const ok = window.Store.reset({ force: true });
+      if (!ok) finish();
+      setTimeout(finish, 3000);
+    });
+    const persisted = JSON.parse(localStorage.getItem('dune_state_v4'));
+    // Explicit re-invoke to prove hydration does NOT reseed after Reset.
+    const rerun = await window.hydratePreservationRecordsOnce();
+    const persistedFinal = JSON.parse(localStorage.getItem('dune_state_v4'));
     return {
-      hasWrapper: true,
-      hasRecords: !!records,
-      deadlinesLen: Array.isArray(records && records.deadlines) ? records.deadlines.length : 0,
-      claimsLen: Array.isArray(records && records.claims) ? records.claims.length : 0,
-      risksLen: Array.isArray(records && records.risks) ? records.risks.length : 0,
-      goalsLen: Array.isArray(records && records.goals) ? records.goals.length : 0
+      preGoalsLen,
+      postResetGoalsLen: persisted.data.records.goals.length,
+      postResetMarker: persisted.data.meta.recordsMigration,
+      rerunResult: rerun,
+      finalGoalsLen: persistedFinal.data.records.goals.length
     };
   });
-  expect(proof.hasWrapper).toBe(true);
-  expect(proof.hasRecords).toBe(true);
+  expect(proof.preGoalsLen).toBeGreaterThan(0);
+  expect(proof.postResetGoalsLen).toBe(0);
+  expect(proof.postResetMarker && proof.postResetMarker.status).toBe('migrated');
+  expect(proof.rerunResult && proof.rerunResult.ok).toBe(true);
+  expect(proof.rerunResult.skipped).toBe('already-migrated');
+  expect(proof.finalGoalsLen).toBe(0);
+});
+
+// ────────────────────────────────────────────────────────
+// PRV-R2-DURABILITY-FAILURE — force the wrapper write to fail after
+// hydration enqueues its ops. The migration marker MUST NOT flip to
+// 'migrated', and a retry after failure removal MUST complete.
+// This is the P1-A defect from the Codex Round 2 review.
+// ────────────────────────────────────────────────────────
+test('PRV-R2-DURABILITY-FAILURE — Store.set failure keeps marker unmigrated; retry succeeds', async ({ page }) => {
+  await seedV13Wrapper(page, {});
+  await page.goto('/');
+  await waitForApp(page);
+  await waitForMigrated(page);
+  await waitForNextSave(page);
+  const proof = await page.evaluate(async () => {
+    // Suspend the boot-time onSave auto-retry so it does not race with
+    // the test's own hydration invocations. Production always leaves
+    // this enabled; the toggle exists only for deterministic tests.
+    window.__prv05HydrationAutoRetryEnabled = false;
+    // Roll the marker BACK to unmigrated via the same Store writer
+    // (simulating either a fresh v13 boot that has not yet completed,
+    // or a post-import wrapper). Then break Store.set for the marker
+    // path so hydration cannot flip it forward.
+    const rollbackMarker = window.Store.set('meta.recordsMigration', { status: 'unmigrated', schemaVersion: 14, reason: 'test-rollback' });
+    // Wait for the rollback commit to durably land so the injected
+    // failure applies to the retry attempt, not to a stale in-flight write.
+    await new Promise((resolve) => {
+      let done = false;
+      const finish = () => { if (done) return; done = true; try { unsub(); } catch(e){} resolve(); };
+      const unsub = window.Store.onSave(finish);
+      setTimeout(finish, 2000);
+    });
+    const realSet = window.Store.set;
+    let markerSetCalls = 0;
+    window.Store.set = function (path, val) {
+      if (path === 'meta.recordsMigration' && val && val.status === 'migrated') {
+        markerSetCalls++;
+        return { ok: false, error: 'INJECTED_FAILURE' };
+      }
+      return realSet.call(window.Store, path, val);
+    };
+    const firstAttempt = await window.hydratePreservationRecordsOnce();
+    const persistedAfterFail = JSON.parse(localStorage.getItem('dune_state_v4'));
+    // Restore Store.set and retry.
+    window.Store.set = realSet;
+    const secondAttempt = await window.hydratePreservationRecordsOnce();
+    const persistedAfterSuccess = JSON.parse(localStorage.getItem('dune_state_v4'));
+    return {
+      rollbackOk: !!(rollbackMarker && rollbackMarker.ok),
+      firstAttempt,
+      failMarker: persistedAfterFail.data.meta.recordsMigration,
+      failGoalsLen: persistedAfterFail.data.records.goals.length,
+      secondAttempt,
+      finalMarker: persistedAfterSuccess.data.meta.recordsMigration,
+      finalGoalsLen: persistedAfterSuccess.data.records.goals.length,
+      markerFailedSetCalls: markerSetCalls
+    };
+  });
+  expect(proof.rollbackOk).toBe(true);
+  // First attempt failed on the marker set; the marker MUST stay unmigrated.
+  expect(proof.firstAttempt.ok).toBe(false);
+  expect(proof.firstAttempt.reason).toBe('set-marker-failed');
+  expect(proof.failMarker && proof.failMarker.status).toBe('unmigrated');
+  // Retry after restoration succeeds.
+  expect(proof.secondAttempt.ok).toBe(true);
+  expect(proof.finalMarker && proof.finalMarker.status).toBe('migrated');
+  expect(proof.finalGoalsLen).toBeGreaterThan(0);
+});
+
+// ────────────────────────────────────────────────────────
+// PRV-R2-DURABILITY-VERIFY-REREAD — even if Store.set returns ok,
+// hydration re-reads the persisted wrapper to verify durability. If
+// the wrapper is missing records or the marker post-flush, hydration
+// reports failure and the marker stays unmigrated.
+// ────────────────────────────────────────────────────────
+test('PRV-R2-DURABILITY-VERIFY-REREAD — hydration verifies persisted wrapper before reporting success', async ({ page }) => {
+  await seedV13Wrapper(page, {});
+  await page.goto('/');
+  await waitForApp(page);
+  await waitForMigrated(page);
+  await waitForNextSave(page);
+  const proof = await page.evaluate(async () => {
+    // Force marker back to unmigrated for a clean retry.
+    window.__prv05HydrationAutoRetryEnabled = false;
+    window.Store.set('meta.recordsMigration', { status: 'unmigrated', schemaVersion: 14, reason: 'test-rollback' });
+    await new Promise((resolve) => {
+      let done = false;
+      const finish = () => { if (done) return; done = true; try { unsub(); } catch(e){} resolve(); };
+      const unsub = window.Store.onSave(finish);
+      setTimeout(finish, 2000);
+    });
+    // Patch localStorage.getItem so hydration's post-commit re-read
+    // sees a wrapper with a stale (unmigrated) marker even though the
+    // in-memory Store believes the commit landed.
+    const realGetItem = Storage.prototype.getItem;
+    Storage.prototype.getItem = function (k) {
+      if (k === 'dune_state_v4') {
+        const raw = realGetItem.call(this, k);
+        try {
+          const parsed = JSON.parse(raw);
+          if (parsed && parsed.data && parsed.data.meta && parsed.data.meta.recordsMigration) {
+            parsed.data.meta.recordsMigration = { status: 'unmigrated', schemaVersion: 14, reason: 'test-strip' };
+            return JSON.stringify(parsed);
+          }
+        } catch (e) {}
+        return raw;
+      }
+      return realGetItem.call(this, k);
+    };
+    const res = await window.hydratePreservationRecordsOnce();
+    Storage.prototype.getItem = realGetItem;
+    return { res };
+  });
+  expect(proof.res.ok).toBe(false);
+  expect(proof.res.reason).toBe('durability-verification-failed');
+});
+
+// ────────────────────────────────────────────────────────
+// PRV-R2-CROSS-TAB-DURABILITY — cross-tab flag-before-durability
+// regression. Tab A's hydration marker-set fails; Tab B boots and
+// observes the unmigrated marker, then completes hydration itself.
+// Tab B MUST NOT treat the migration as complete based on any
+// out-of-band signal (the sticky flag no longer exists).
+// ────────────────────────────────────────────────────────
+test('PRV-R2-CROSS-TAB-DURABILITY — Tab B does not treat migration as complete when Tab A failed', async ({ context }) => {
+  const a = await context.newPage();
+  await seedV13Wrapper(a, {});
+  await a.goto('/');
+  await waitForApp(a);
+  await waitForMigrated(a);
+  await waitForNextSave(a);
+  // Tab A: roll marker back and break marker-set. Fail attempt persists
+  // records but leaves marker unmigrated.
+  await a.evaluate(async () => {
+    window.__prv05HydrationAutoRetryEnabled = false;
+    window.Store.set('meta.recordsMigration', { status: 'unmigrated', schemaVersion: 14, reason: 'test-cross-tab' });
+    await new Promise((resolve) => {
+      let done = false;
+      const finish = () => { if (done) return; done = true; try { unsub(); } catch(e){} resolve(); };
+      const unsub = window.Store.onSave(finish);
+      setTimeout(finish, 2000);
+    });
+    const realSet = window.Store.set;
+    window.Store.set = function (path, val) {
+      if (path === 'meta.recordsMigration' && val && val.status === 'migrated') {
+        return { ok: false, error: 'INJECTED_FAILURE' };
+      }
+      return realSet.call(window.Store, path, val);
+    };
+    await window.hydratePreservationRecordsOnce();
+    window.Store.set = realSet;
+  });
+  // Tab A's post-fail localStorage: marker unmigrated.
+  const aPostFail = await a.evaluate(() => {
+    const p = JSON.parse(localStorage.getItem('dune_state_v4'));
+    return p.data.meta.recordsMigration && p.data.meta.recordsMigration.status;
+  });
+  expect(aPostFail).toBe('unmigrated');
+  await a.close();
+
+  // Tab B boots on the same localStorage.
+  const b = await context.newPage();
+  await b.goto('/');
+  await waitForApp(b);
+  // Tab B's hydration should detect status='unmigrated' and re-run.
+  await waitForMigrated(b, 5000);
+  await waitForNextSave(b);
+  const bProof = await b.evaluate(() => {
+    const p = JSON.parse(localStorage.getItem('dune_state_v4'));
+    return {
+      status: p.data.meta.recordsMigration && p.data.meta.recordsMigration.status,
+      goalsLen: (p.data.records.goals || []).length
+    };
+  });
+  expect(bProof.status).toBe('migrated');
+  expect(bProof.goalsLen).toBeGreaterThan(0);
+});
+
+// ────────────────────────────────────────────────────────
+// PRV-R2-IMPORT-PRE-PRV — a pre-PRV (v13) backup imported through the
+// PRODUCTION processImport() function is migration-aware. The imported
+// wrapper carries status='unmigrated' after migrateUp; the onSave
+// listener re-triggers hydration and the final persisted state is
+// schema 14 with records populated + status='migrated'.
+// ────────────────────────────────────────────────────────
+test('PRV-R2-IMPORT-PRE-PRV — production processImport() of a v13 backup ends up migrated with records populated', async ({ page }) => {
+  await page.goto('/');
+  await waitForApp(page);
+  await waitForNextSave(page);
+  // Prepare a v13-shaped backup with legacy per-id override keys.
+  const backupText = await page.evaluate(() => {
+    const nowIso = new Date().toISOString();
+    const v13data = {
+      money: { salary_net: 130000, expenses: {}, usd_rate: 88, save_target: 55000 },
+      qatarVisit: { from_airport: 'SVO', to_airport: 'DOH', travel_month: '', flights: 0, hotel: 0, food: 0, transport: 0, misc: 0, emergency: 0, saved: 0, notes: '' },
+      todayFocus: ['','',''],
+      goals: {},
+      career: { started: '', company: '', position: '', aircraft: [], engines: [], licenses: [], certificates: [], milestones: [] },
+      easa: {},
+      logbook: [],
+      reviews: [],
+      decisions: [],
+      timeline: [],
+      about: { version: 2, createdAt: '', lastUpdated: '', strengths: [], lessons: [], vision: '', values: [], reminders: [] },
+      apartments: [],
+      sbTasks: {},
+      bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: '', model: '' }, meta: {} },
+      telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
+      ideas: [],
+      meta: { version: 13, createdAt: nowIso, lastUpdated: nowIso }
+    };
+    const wrapper = { version: 13, revision: 1, committedAt: nowIso, data: v13data };
+    const backup = {
+      version: '2026.1',
+      exported_at: nowIso,
+      data: {
+        dune_state_v4: wrapper,
+        dune_goals_v1: { go01: { progress: 42, status: 'active' } },
+        dune_claims_v1: { cl02: { confidence: 'uncertain', lastChecked: '2026-07-15' } }
+      }
+    };
+    return JSON.stringify(backup);
+  });
+  // Auto-accept the destructive-import confirm() prompt.
+  page.on('dialog', (d) => d.accept());
+  // processImport schedules `location.reload()` 1.2s after success in
+  // production. Run the import AND the post-import hydration + read
+  // inside a single evaluate so the reload's context destruction
+  // cannot race the assertions.
+  const proof = await page.evaluate(async (text) => {
+    const importOk = await window.processImport(text);
+    // Force-drive the hydration synchronously so we do not depend on
+    // the fire-and-forget onSave auto-retry timing.
+    const hydrateResult = await window.hydratePreservationRecordsOnce();
+    const p = JSON.parse(localStorage.getItem('dune_state_v4'));
+    const g = p.data.records.goals.find(x => x.id === 'go01');
+    const c = p.data.records.claims.find(x => x.id === 'cl02');
+    return {
+      importOk,
+      hydrateResult,
+      wrapperVersion: p.version,
+      status: p.data.meta.recordsMigration && p.data.meta.recordsMigration.status,
+      deadlinesLen: p.data.records.deadlines.length,
+      claimsLen: p.data.records.claims.length,
+      risksLen: p.data.records.risks.length,
+      goalsLen: p.data.records.goals.length,
+      go01Progress: g && g.progress,
+      go01Status: g && g.status,
+      cl02Confidence: c && c.confidence
+    };
+  }, backupText);
+  expect(proof.importOk).toBe(true);
+  expect(proof.hydrateResult && proof.hydrateResult.ok).toBe(true);
+  expect(proof.wrapperVersion).toBe(14);
+  expect(proof.status).toBe('migrated');
+  expect(proof.deadlinesLen).toBeGreaterThan(0);
+  expect(proof.claimsLen).toBeGreaterThan(0);
+  expect(proof.risksLen).toBeGreaterThan(0);
+  expect(proof.goalsLen).toBeGreaterThan(0);
+  // Per-id overrides from the pre-PRV backup survived the migration.
+  expect(proof.go01Progress).toBe(42);
+  expect(proof.go01Status).toBe('active');
+  expect(proof.cl02Confidence).toBe('uncertain');
+});
+
+// ────────────────────────────────────────────────────────
+// PRV-R2-RESTORE-WITHOUT-LEGACY — a post-migration backup is restored
+// into a fresh browser where LEGACY_RECORDS has been NEUTRALIZED
+// (emptied). The wrapper alone must reconstruct all four domains.
+// This is the key PRV-1 prerequisite Codex asked for — legacy source
+// truly unavailable, not just seeded around.
+// ────────────────────────────────────────────────────────
+test('PRV-R2-RESTORE-WITHOUT-LEGACY — restore reconstructs records with LEGACY_RECORDS neutralized', async ({ context }) => {
+  // Boot A on a v13 wrapper, hydrate, wait for durability, capture backup.
+  const a = await context.newPage();
+  await seedV13Wrapper(a, {});
+  await a.goto('/');
+  await waitForApp(a);
+  await waitForMigrated(a);
+  await waitForNextSave(a);
+  const backupText = await a.evaluate(() => {
+    // Call the production exporter equivalent.
+    const bd = window.getAllBackupData();
+    const backup = { version: '2026.1', exported_at: new Date().toISOString(), data: bd };
+    return JSON.stringify(backup);
+  });
+  await a.close();
+
+  // Fresh context. Before app.js loads, neutralize LEGACY_RECORDS.
+  const fresh = await context.browser().newContext();
+  await routeSyntheticContext(fresh);
+  const b = await fresh.newPage();
+  await b.addInitScript(() => {
+    // Overwrite LEGACY_RECORDS with an EMPTY object as soon as it is
+    // defined by _migration-legacy-records.js. Assignment beats freeze
+    // at the outer binding — the file's `try { Object.freeze(...) }`
+    // freezes the inner arrays but does not seal `window.LEGACY_RECORDS`.
+    // If a future rev seals the whole object, this init script will
+    // fail visibly and the test will surface it.
+    Object.defineProperty(window, 'LEGACY_RECORDS', {
+      configurable: true,
+      get() { return { deadlines: [], claims: [], risks: [], goals: [] }; },
+      set() { /* absorb */ }
+    });
+  });
+  b.on('dialog', (d) => d.accept());
+  await b.goto('/');
+  await b.waitForFunction(() => !!(window.Store && typeof window.Store.get === 'function' && typeof window.processImport === 'function'));
+  // processImport schedules `location.reload()` 1.2s after success in
+  // production. To keep the test's execution context alive so we can
+  // read localStorage post-import, capture the persisted wrapper INSIDE
+  // the same evaluate as the import call — before the 1.2s timer fires.
+  const proof = await b.evaluate(async (text) => {
+    const ok = await window.processImport(text);
+    // Read the persisted state immediately; the wrapper commit landed
+    // synchronously via commitFullStateWrapper inside processImport
+    // before it returned.
+    const p = JSON.parse(localStorage.getItem('dune_state_v4'));
+    return {
+      importOk: ok,
+      wrapperVersion: p && p.version,
+      status: p && p.data && p.data.meta && p.data.meta.recordsMigration && p.data.meta.recordsMigration.status,
+      deadlinesLen: p && p.data && p.data.records && (p.data.records.deadlines || []).length,
+      claimsLen: p && p.data && p.data.records && (p.data.records.claims || []).length,
+      risksLen: p && p.data && p.data.records && (p.data.records.risks || []).length,
+      goalsLen: p && p.data && p.data.records && (p.data.records.goals || []).length,
+      seedIsEmpty: window.LEGACY_RECORDS.goals.length === 0
+    };
+  }, backupText);
+  expect(proof.importOk).toBe(true);
+  await fresh.close();
+  expect(proof.seedIsEmpty).toBe(true);
+  expect(proof.wrapperVersion).toBe(14);
+  expect(proof.status).toBe('migrated');
   expect(proof.deadlinesLen).toBeGreaterThan(0);
   expect(proof.claimsLen).toBeGreaterThan(0);
   expect(proof.risksLen).toBeGreaterThan(0);
@@ -263,146 +637,29 @@ test('PRV-E-backup-completeness — exported backup carries records.* for all fo
 });
 
 // ────────────────────────────────────────────────────────
-// F. Restore independence — an exported wrapper captured today can be
-// re-imported into a fresh browser and reconstruct records.* WITHOUT
-// consulting LEGACY_RECORDS. This is the key PRV-1 prerequisite.
+// PRV-R2-READER-CUTOVER — the D.deadlines / .goals / .claims / .risks
+// runtime accessors read from the Store, not from LEGACY_RECORDS.
+// After hydration, mutating LEGACY_RECORDS in-place has no effect on
+// what the app renders.
 // ────────────────────────────────────────────────────────
-test('PRV-F-restore-independence — captured wrapper restores records.* into a fresh browser without LEGACY_RECORDS', async ({ context }) => {
-  // Boot A, hydrate, WAIT FOR FLUSH, then snapshot the wrapper.
-  const a = await context.newPage();
-  await a.goto('/');
-  await waitForApp(a);
-  await waitForNextSave(a);
-  const captured = await a.evaluate(() => localStorage.getItem('dune_state_v4'));
-  await a.close();
-
-  // Boot B in a fresh context, seeding the wrapper via addInitScript
-  // AND stubbing LEGACY_RECORDS to an empty object so hydration cannot
-  // possibly recreate records from the seed corpus. Restore must
-  // depend on the wrapper alone.
-  const freshContext = await context.browser().newContext();
-  await freshContext.route(EXPECTED_BLOCKED_URL, (route) => route.abort());
-  await freshContext.route(GITHUB_ORIGIN, (route) => {
-    if (!isAppExpectedGithubCommitsRequest(route.request().url())) return route.abort();
-    return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([{ commit: { author: { date: SYNTHETIC_COMMIT_ISO } } }]) });
-  });
-  const b = await freshContext.newPage();
-  await b.addInitScript((wrapper) => {
-    try { localStorage.setItem('dune_state_v4', wrapper); } catch(e){}
-    try { localStorage.setItem('dune_records_hydrated_v1', '1'); } catch(e){}
-  }, captured);
-  await b.goto('/');
-  await b.waitForFunction(() => !!(window.Store && typeof window.Store.get === 'function'));
-  const proof = await b.evaluate(() => {
-    const domains = ['deadlines','claims','risks','goals'];
-    const out = {};
-    for (const d of domains) {
-      const v = window.Store.get('records.' + d);
-      out[d] = Array.isArray(v) ? v.length : 0;
-    }
-    // Also confirm we can identify at least one specific id in each
-    // domain — proves content, not just length.
-    const g = window.Store.get('records.goals') || [];
-    const c = window.Store.get('records.claims') || [];
-    out.hasGo01 = g.some(x => x.id === 'go01');
-    out.hasCl01 = c.some(x => x.id === 'cl01');
-    return out;
-  });
-  await freshContext.close();
-  expect(proof.deadlines).toBeGreaterThan(0);
-  expect(proof.claims).toBeGreaterThan(0);
-  expect(proof.risks).toBeGreaterThan(0);
-  expect(proof.goals).toBeGreaterThan(0);
-  expect(proof.hasGo01).toBe(true);
-  expect(proof.hasCl01).toBe(true);
-});
-
-// ────────────────────────────────────────────────────────
-// G. Reset safety — after hydration + user edit, Reset via
-// Store.reset() clears records to empty. Hydration is NOT re-triggered
-// (sticky flag survives Reset). Legacy personal records are NOT
-// resurrected.
-// ────────────────────────────────────────────────────────
-test('PRV-G-reset-safety — Reset produces empty records; hydration does not re-fire', async ({ page }) => {
+test('PRV-R2-READER-CUTOVER — D.* accessors read from Store, not from LEGACY_RECORDS', async ({ page }) => {
+  await seedV13Wrapper(page, {});
   await page.goto('/');
   await waitForApp(page);
-  await waitForNextSave(page);
-  const pre = await page.evaluate(() => ({
-    flag: localStorage.getItem('dune_records_hydrated_v1'),
-    goals: (window.Store.get('records.goals') || []).length
-  }));
-  expect(pre.flag).toBe('1');
-  expect(pre.goals).toBeGreaterThan(0);
-  // Drive Reset via the same code path the UI uses. Store.reset()
-  // returns bool; the commit lands on the coordinator and fires an
-  // onSave listener when durability settles.
-  await page.evaluate(() => new Promise((resolve) => {
-    const unsub = window.Store.onSave(() => { try { unsub(); } catch(e){} resolve(); });
-    const ok = window.Store.reset({ force: true });
-    if (!ok) { try { unsub(); } catch(e){} resolve(); }
-    setTimeout(() => { try { unsub(); } catch(e){} resolve(); }, 3000);
-  }));
-  const post = await page.evaluate(() => {
-    const secondResult = window.hydratePreservationRecordsOnce();
-    return {
-      goalsRaw: window.Store.get('records.goals'),
-      flag: localStorage.getItem('dune_records_hydrated_v1'),
-      secondResult
-    };
-  });
-  const emptyGoals = (post.goalsRaw === undefined || (Array.isArray(post.goalsRaw) && post.goalsRaw.length === 0));
-  expect(emptyGoals).toBe(true);
-  expect(post.flag).toBe('1');
-  expect(post.secondResult && post.secondResult.ok).toBe(true);
-  expect(post.secondResult.skipped).toBe('flag-set');
-});
-
-// ────────────────────────────────────────────────────────
-// H. Failure injection — Store.set failure on any domain leaves the
-// flag UNSET, retry is possible, and no partial write corrupts
-// already-populated domains.
-// ────────────────────────────────────────────────────────
-test('PRV-H-failure-injection — commit failure leaves flag unset and retry succeeds', async ({ page }) => {
-  await page.goto('/');
-  await waitForApp(page);
+  await waitForMigrated(page);
   const proof = await page.evaluate(() => {
-    // Force an unhydrated state, then monkey-patch Store.set to fail
-    // on the third domain (risks) — first two commit fine.
-    localStorage.removeItem('dune_records_hydrated_v1');
-    // Also wipe records.* so hydration will attempt to commit.
-    window.Store.set('records.deadlines', []);
-    window.Store.set('records.claims', []);
-    window.Store.set('records.risks', []);
-    window.Store.set('records.goals', []);
-    const realSet = window.Store.set;
-    let called = 0;
-    window.Store.set = function(path, val) {
-      if (path === 'records.risks') {
-        return { ok: false, error: 'INJECTED_FAILURE' };
-      }
-      called++;
-      return realSet.call(window.Store, path, val);
-    };
-    const firstAttempt = window.hydratePreservationRecordsOnce();
-    const flagAfterFail = localStorage.getItem('dune_records_hydrated_v1');
-    // Restore Store.set and retry — must now succeed and set the flag.
-    window.Store.set = realSet;
-    const secondAttempt = window.hydratePreservationRecordsOnce();
+    const D_ref = (typeof D !== 'undefined') ? D : null;
+    const cur = window.Store.get('records.goals');
+    const nextFirst = Object.assign({}, cur[0], { progress: 91, status: 'done' });
+    const setRes = window.Store.set('records.goals', [nextFirst, ...cur.slice(1)]);
+    // Try to poison the seed — the accessor MUST NOT use it.
+    try { window.LEGACY_RECORDS.goals[0].progress = -999; } catch (e) { /* frozen */ }
     return {
-      firstAttempt,
-      flagAfterFail,
-      secondAttempt,
-      flagAfterSuccess: localStorage.getItem('dune_records_hydrated_v1'),
-      finalRisksLen: (window.Store.get('records.risks') || []).length
+      setOk: !!(setRes && setRes.ok),
+      dFirstProgress: (D_ref && D_ref.goals && D_ref.goals[0] && D_ref.goals[0].progress),
+      seedIsFrozen: Object.isFrozen(window.LEGACY_RECORDS.goals)
     };
   });
-  // First attempt failed on risks; flag must remain unset.
-  expect(proof.firstAttempt.ok).toBe(false);
-  expect(proof.firstAttempt.reason).toBe('commit-failed');
-  expect(proof.firstAttempt.domain).toBe('risks');
-  expect(proof.flagAfterFail).toBeNull();
-  // Retry after Store.set restoration must succeed.
-  expect(proof.secondAttempt.ok).toBe(true);
-  expect(proof.flagAfterSuccess).toBe('1');
-  expect(proof.finalRisksLen).toBeGreaterThan(0);
+  expect(proof.setOk).toBe(true);
+  expect(proof.dFirstProgress).toBe(91);
 });

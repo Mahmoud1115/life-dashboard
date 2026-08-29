@@ -98,7 +98,7 @@ test('T1 — valid backup restores allowed keys and creates recovery snapshot', 
   // commitFullStateWrapper. The inner data is the migrated payload; the
   // wrapper carries a fresh revision (diskRevision+1) and committedAt.
   const stateAfter = JSON.parse(r.after.dune_state_v4);
-  expect(stateAfter.version).toBe(13);
+  expect(stateAfter.version).toBe(14);
   expect(typeof stateAfter.revision).toBe('number');
   expect(Number.isInteger(stateAfter.revision)).toBe(true);
   expect(stateAfter.revision).toBeGreaterThanOrEqual(1);
@@ -304,7 +304,7 @@ test('T9 — pending Store autosave race: stale in-memory Store cannot overwrite
   // be the imported value; the pre-import optimistic write (130000) must not
   // survive the transaction.
   const parsed = JSON.parse(r.raw);
-  expect(parsed.version).toBe(13);
+  expect(parsed.version).toBe(14);
   expect(parsed.data.money.salary_net).toBe(222222);
 });
 
@@ -587,7 +587,7 @@ test('T15 — failed B0 import unfreezes and pre-import pending Store edit persi
   expect(r.ok).toBe(false);
   // The pre-import Store edit remains persisted; the imported value did not land.
   const parsed = JSON.parse(r.raw);
-  expect(parsed.version).toBe(13);
+  expect(parsed.version).toBe(14);
   expect(parsed.data.money.salary_net).toBe(555555);
 });
 

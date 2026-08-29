@@ -10,7 +10,15 @@
   // ──────────────────────────────────────────────
   // SCHEMA
   // ──────────────────────────────────────────────
-  const SCHEMA_VERSION = 13;
+  const SCHEMA_VERSION = 14;
+  // PRV-0.5 R2 (ADR-015 addendum #1): version 14 introduces persisted
+  // migration-status state for the four record domains (deadlines,
+  // claims, risks, goals) under `data.records.*` with a companion
+  // `data.meta.recordsMigration` marker. Fresh cold-boot state is
+  // `{ status: 'migrated', at: <iso> }` with empty record arrays, so
+  // Reset cannot resurrect legacy personal records. A v13 wrapper
+  // migrated up marks `status: 'unmigrated'`; app.js hydration reads
+  // this marker to decide whether to seed from LEGACY_RECORDS.
   const STATE_KEY = 'dune_state_v4';
   const SNAPSHOTS_KEY = 'dune_snapshots_v1';
   const MAX_SNAPSHOTS = 8;
@@ -491,10 +499,29 @@
         focusReserve: 100
       },
       ideas: [],
+      // PRV-0.5 R2 (schema 14): explicit per-domain record store for
+      // deadlines / claims / risks / goals. Fresh state ships EMPTY;
+      // hydration in app.js seeds from LEGACY_RECORDS only when a
+      // v13-or-earlier wrapper is migrated up (see meta.recordsMigration).
+      records: {
+        deadlines: [],
+        claims: [],
+        risks: [],
+        goals: []
+      },
       meta: {
         version: SCHEMA_VERSION,
         createdAt: isoNow,
-        lastUpdated: isoNow
+        lastUpdated: isoNow,
+        // Fresh cold-boot and post-Reset state is `migrated + empty`:
+        // Reset cannot rehydrate legacy personal records because the
+        // hydration path (app.js) only fires when status === 'unmigrated'.
+        recordsMigration: {
+          status: 'migrated',
+          schemaVersion: SCHEMA_VERSION,
+          at: isoNow,
+          reason: 'default-state'
+        }
       }
     };
   }
@@ -631,6 +658,36 @@
       s.logbook = env;
     } else if (!isLogbookEnvelope(s.logbook)) {
       s.logbook = defaultLogbookEnvelope();
+    }
+
+    // v13 → v14: records subtree + persisted migration marker (ADR-015
+    // addendum #1 / PRV-0.5 Round 2). A wrapper that reaches this
+    // migration step from a version <14 has never carried a records.*
+    // subtree; app.js hydration is responsible for populating it from
+    // LEGACY_RECORDS + any surviving Gen-1 override keys. The marker
+    // starts as 'unmigrated' so hydration fires on next boot; hydration
+    // flips it to 'migrated' only after durable persistence is verified.
+    // A wrapper migrated up that ALREADY has records.* populated (e.g.
+    // an older PRV-0.5 attempt that persisted its shape but not the
+    // marker) is preserved: records survive, and the marker is set
+    // conservatively to 'unmigrated' so the async verifier can prove
+    // durability before promoting to 'migrated'.
+    if ((fromVersion || 0) < 14) {
+      if (!s.records || typeof s.records !== 'object' || Array.isArray(s.records)) {
+        s.records = { deadlines: [], claims: [], risks: [], goals: [] };
+      } else {
+        for (const d of ['deadlines', 'claims', 'risks', 'goals']) {
+          if (!Array.isArray(s.records[d])) s.records[d] = [];
+        }
+      }
+      if (!s.meta.recordsMigration || typeof s.meta.recordsMigration !== 'object') {
+        s.meta.recordsMigration = {
+          status: 'unmigrated',
+          schemaVersion: SCHEMA_VERSION,
+          priorSchemaVersion: fromVersion || 0,
+          reason: 'migrateUp-from-v' + (fromVersion || 0)
+        };
+      }
     }
 
     s.meta.version = SCHEMA_VERSION;

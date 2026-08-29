@@ -10,38 +10,57 @@ const LS = {
 };
 
 /* ═══════════════════════════════════════════
-   PRV-0.5 — Preservation hydration (ADR-015).
-   One-shot copy of pre-sanitization records for deadlines / claims /
-   risks / goals from window.LEGACY_RECORDS into durable Store paths
-   `records.deadlines / .claims / .risks / .goals`. Merges any existing
-   per-id overrides from legacy Gen-1 keys (dune_goals_v1,
-   dune_claims_v1) on the way through so no user progress/status is
-   lost. Gated by the sticky Gen-1 flag `dune_records_hydrated_v1`
-   (outside dune_state_v4) so a subsequent Store.reset() cannot
-   rehydrate old legacy records — Reset produces empty records, which
-   is the required post-Reset invariant.
-   Failure to commit any domain LEAVES the flag unset; retry runs on
-   the next boot. This function must remain idempotent.
+   PRV-0.5 Round 2 — Preservation hydration (ADR-015 addendum #1).
+
+   Migration authority now lives INSIDE the coordinated wrapper as
+   `state.meta.recordsMigration = { status, at, ... }` (schema 14).
+   The previous out-of-band Gen-1 sticky flag `dune_records_hydrated_v1`
+   has been removed — it could survive a durability failure (flag set
+   in localStorage while records.* absent from the wrapper) and permanently
+   skip migration in later tabs.
+
+   Semantics after the schema bump:
+
+     - `defaultState()` (fresh browser + Reset) → status: 'migrated', records: {} (all empty).
+       Cold-boot fresh browsers and post-Reset states are already-migrated
+       with empty records; hydration is a no-op. Legacy personal records
+       CANNOT resurrect from Reset.
+
+     - `migrateUp` on a v13-or-earlier wrapper → status: 'unmigrated',
+       records: { …empty arrays }. Hydration in this file seeds records
+       from LEGACY_RECORDS (with per-id override merge from any surviving
+       Gen-1 keys) and, ONLY AFTER durable persistence is verified,
+       flips the marker to 'migrated'.
+
+     - Import of a pre-PRV backup via `processImport()` → the coordinated
+       transaction re-runs migrateUp on the imported wrapper, so the
+       committed state carries status='unmigrated'. An `onSave` listener
+       re-invokes hydration when it sees that status.
+
+   Durability contract:
+
+       enqueue records.* + meta.recordsMigration-intent
+             ↓
+       await onSave (the wrapper commit lands)
+             ↓
+       re-read dune_state_v4 from localStorage
+             ↓
+       verify all 4 domains are persisted AND status flipped to 'migrated'
+             ↓
+       report ok:true — otherwise the marker stays 'unmigrated' and
+       retry is possible on next boot / next onSave.
+
+   Concurrency: hydration serializes internally via `hydrationInFlight`
+   so a boot-time invocation and an onSave-triggered re-invocation
+   cannot race. Store's own Web-Locks coordinator serializes wrapper
+   commits across tabs.
    ═══════════════════════════════════════════ */
-const HYDRATION_FLAG_KEY = 'dune_records_hydrated_v1';
-function hydratePreservationRecordsOnce(){
-  if (!window.Store || typeof window.Store.get !== 'function' || typeof window.Store.set !== 'function') return { ok:false, reason:'no-store' };
-  if (!window.LEGACY_RECORDS) return { ok:false, reason:'no-seed' };
-  let flag = null;
-  try { flag = localStorage.getItem(HYDRATION_FLAG_KEY); } catch(e) { /* SecurityError → treat as absent */ }
-  if (flag === '1') return { ok:true, skipped:'flag-set' };
-  const domains = ['deadlines','claims','risks','goals'];
-  const existing = {};
-  for (const d of domains) existing[d] = window.Store.get('records.' + d);
-  const allPopulated = domains.every(d => Array.isArray(existing[d]) && existing[d].length > 0);
-  if (allPopulated) {
-    try { localStorage.setItem(HYDRATION_FLAG_KEY, '1'); } catch(e) {}
-    return { ok:true, skipped:'already-populated' };
-  }
-  let goalsOv = {}; try { const v = localStorage.getItem('dune_goals_v1'); if (v) goalsOv = JSON.parse(v) || {}; } catch(e){}
-  let claimsOv = {}; try { const v = localStorage.getItem('dune_claims_v1'); if (v) claimsOv = JSON.parse(v) || {}; } catch(e){}
-  const seed = window.LEGACY_RECORDS;
-  const merged = {
+
+const MIGRATION_MIGRATED = 'migrated';
+const MIGRATION_UNMIGRATED = 'unmigrated';
+
+function _buildHydratedRecords(seed, goalsOv, claimsOv) {
+  return {
     deadlines: Array.isArray(seed.deadlines) ? seed.deadlines.map(o => Object.assign({}, o)) : [],
     claims: Array.isArray(seed.claims) ? seed.claims.map(c => {
       const o = (c && c.id && claimsOv[c.id]) || {};
@@ -60,27 +79,143 @@ function hydratePreservationRecordsOnce(){
       return Object.assign({}, g, { progress: pct, status: status });
     }) : []
   };
-  // Commit each unpopulated domain. If any commit fails, DO NOT set the
-  // flag — retry runs on next boot. Populated domains are left alone
-  // (user edits win).
+}
+
+let _hydrationInFlight = null;
+
+async function hydratePreservationRecordsOnce() {
+  if (_hydrationInFlight) return _hydrationInFlight;
+  _hydrationInFlight = (async () => {
+    try { return await _hydratePreservationRecordsOnceImpl(); }
+    finally { _hydrationInFlight = null; }
+  })();
+  return _hydrationInFlight;
+}
+
+async function _hydratePreservationRecordsOnceImpl() {
+  if (!window.Store || typeof window.Store.get !== 'function' || typeof window.Store.set !== 'function' || typeof window.Store.onSave !== 'function') {
+    return { ok: false, reason: 'no-store' };
+  }
+  if (!window.LEGACY_RECORDS) return { ok: false, reason: 'no-seed' };
+
+  const marker = window.Store.get('meta.recordsMigration');
+  if (marker && marker.status === MIGRATION_MIGRATED) {
+    return { ok: true, skipped: 'already-migrated', marker: marker };
+  }
+
+  const domains = ['deadlines', 'claims', 'risks', 'goals'];
+
+  // Read any surviving legacy per-id override keys (pre-PRV browsers).
+  let goalsOv = {};
+  try { const v = localStorage.getItem('dune_goals_v1'); if (v) goalsOv = JSON.parse(v) || {}; } catch (e) {}
+  let claimsOv = {};
+  try { const v = localStorage.getItem('dune_claims_v1'); if (v) claimsOv = JSON.parse(v) || {}; } catch (e) {}
+
+  const merged = _buildHydratedRecords(window.LEGACY_RECORDS, goalsOv, claimsOv);
+
+  // Preserve any pre-existing user data (a partial prior migration or a
+  // v14 wrapper whose marker is missing for some reason). User data wins.
   for (const d of domains) {
-    const cur = existing[d];
-    if (Array.isArray(cur) && cur.length > 0) continue;
-    const res = window.Store.set('records.' + d, merged[d]);
-    if (!res || res.ok !== true) {
-      try { console.warn('[PRV-0.5 hydrate] commit failed for ' + d, res); } catch(e){}
-      return { ok:false, reason:'commit-failed', domain:d, res:res };
+    const cur = window.Store.get('records.' + d);
+    if (Array.isArray(cur) && cur.length > 0) merged[d] = cur;
+  }
+
+  // Enqueue all writes. Store's debounced flush emits ONE coordinated
+  // wrapper commit that includes every enqueued op.
+  for (const d of domains) {
+    const r = window.Store.set('records.' + d, merged[d]);
+    if (!r || r.ok !== true) {
+      try { console.warn('[PRV-0.5 R2 hydrate] set failed for ' + d, r); } catch (e) {}
+      return { ok: false, reason: 'set-failed', domain: d, res: r };
     }
   }
-  try { localStorage.setItem(HYDRATION_FLAG_KEY, '1'); } catch(e) {}
-  return { ok:true, hydrated:true };
+  const nowIso = (new Date()).toISOString();
+  const nextMarker = {
+    status: MIGRATION_MIGRATED,
+    schemaVersion: 14,
+    at: nowIso,
+    reason: 'hydration-complete'
+  };
+  const mRes = window.Store.set('meta.recordsMigration', nextMarker);
+  if (!mRes || mRes.ok !== true) {
+    try { console.warn('[PRV-0.5 R2 hydrate] set failed for meta.recordsMigration', mRes); } catch (e) {}
+    return { ok: false, reason: 'set-marker-failed', res: mRes };
+  }
+
+  // Await durable commit. Store fires onSave listeners only after the
+  // wrapper write lands under the coordinator lock.
+  await new Promise((resolve) => {
+    let done = false;
+    const unsub = window.Store.onSave(() => {
+      if (done) return;
+      done = true;
+      try { unsub(); } catch (e) {}
+      resolve();
+    });
+    // Safety timeout — if no save fires (paused / durability-blocked),
+    // fall through to the verification step below, which will report
+    // a durability failure and leave the marker unmigrated.
+    setTimeout(() => {
+      if (done) return;
+      done = true;
+      try { unsub(); } catch (e) {}
+      resolve();
+    }, 5000);
+  });
+
+  // Re-read the persisted wrapper from localStorage to prove durability.
+  let persisted = null;
+  try { persisted = JSON.parse(localStorage.getItem('dune_state_v4') || 'null'); } catch (e) { persisted = null; }
+  if (!persisted || !persisted.data) {
+    return { ok: false, reason: 'persisted-wrapper-missing' };
+  }
+  const pData = persisted.data;
+  const pMarker = pData.meta && pData.meta.recordsMigration;
+  const allDomainsPersisted = domains.every(d => Array.isArray(pData.records && pData.records[d]));
+  if (!pMarker || pMarker.status !== MIGRATION_MIGRATED || !allDomainsPersisted) {
+    return {
+      ok: false,
+      reason: 'durability-verification-failed',
+      persisted: {
+        wrapperVersion: persisted.version,
+        marker: pMarker || null,
+        domainsPresent: domains.filter(d => Array.isArray(pData.records && pData.records[d]))
+      }
+    };
+  }
+  return {
+    ok: true,
+    hydrated: true,
+    persistedAt: pMarker.at,
+    persistedVersion: persisted.version
+  };
 }
 window.hydratePreservationRecordsOnce = hydratePreservationRecordsOnce;
-// Run at script parse time so DOMContentLoaded renderers observe
-// populated records. Safe to no-op if Store is not yet available in a
-// test harness — tests call window.hydratePreservationRecordsOnce()
-// explicitly after seeding the Store.
-try { hydratePreservationRecordsOnce(); } catch(e) { try { console.warn('[PRV-0.5 hydrate] init exception', e); } catch(_){} }
+
+// Boot invocation + import/reset-aware re-invocation.
+// Register the onSave listener BEFORE the first invocation so we cannot
+// miss a save that flips status to 'unmigrated' during import.
+//
+// Tests that inject Store.set / durability failures can suspend the
+// auto-retry to prevent races with their own hydration invocations by
+// setting `window.__prv05HydrationAutoRetryEnabled = false`. Production
+// runs never touch this global; the default `undefined !== false` keeps
+// the listener enabled.
+if (window.Store && typeof window.Store.onSave === 'function') {
+  window.Store.onSave((snap) => {
+    try {
+      if (window.__prv05HydrationAutoRetryEnabled === false) return;
+      const m = snap && snap.meta && snap.meta.recordsMigration;
+      if (m && m.status === MIGRATION_UNMIGRATED) {
+        // Fire-and-forget; hydration is self-serializing via _hydrationInFlight.
+        hydratePreservationRecordsOnce().catch(() => {});
+      }
+    } catch (e) { /* onSave listeners must not throw */ }
+  });
+  hydratePreservationRecordsOnce().catch((e) => {
+    try { console.warn('[PRV-0.5 R2 hydrate] boot init exception', e); } catch (_) {}
+  });
+}
 
 /* ═══════════════════════════════════════════
    LOGBOOK — Phase A canonical mirror (see docs/lifeos/ARCHITECTURE.md)

@@ -867,3 +867,105 @@ PRV-1 source sanitization remains BLOCKED until:
 
 **Date:** 2026-08-28 (PRV-0.5 implementation on branch
 `claude/prv-0-5-preservation-migration`).
+
+### ADR-015 addendum #1 (2026-08-29) — Codex PRV-0.5 R2 remediation
+
+Codex's HIGH-risk review of the first PRV-0.5 implementation
+(commit `09b3aa9`) returned FAIL / merge blocked with two P1
+defects (P1-A: hydration flag preceded durable commit; P1-B:
+imports / intentionally-empty state were ambiguous). This
+addendum records the remediation applied.
+
+**Schema bump: 13 → 14.** Migration authority now lives INSIDE
+the coordinated wrapper. The Round 1 out-of-band Gen-1 sticky
+flag `dune_records_hydrated_v1` has been removed — it could
+survive a durability failure and permanently skip migration.
+
+**New persisted marker.** `data.meta.recordsMigration = { status,
+schemaVersion, at, reason }` inside `dune_state_v4`. Distinguishes
+four states without inference from array length:
+
+- **unmigrated** — `migrateUp` on a v13-or-earlier wrapper sets
+  this; hydration in `app.js` fires on next boot and on the
+  `onSave` re-trigger.
+- **migrated + populated** — records carry authoritative user data.
+- **migrated + intentionally empty** — user deleted all records or
+  imported an empty-migrated wrapper; hydration MUST NOT
+  resurrect legacy.
+- **malformed** — marker absent or shape-invalid; treated as
+  unmigrated so retry can complete safely.
+
+**Reset safety without an out-of-band flag.** `defaultState()` at
+v14 initializes `status: 'migrated'` with empty records. Because
+`Store.reset()` commits `defaultState()`, post-Reset state is
+"migrated + empty" — hydration is a no-op and legacy personal
+records CANNOT resurrect.
+
+**Durability contract.** `hydratePreservationRecordsOnce()` in
+`app.js` is now async and only reports success after:
+
+1. all four `Store.set('records.<domain>', …)` calls return `ok`;
+2. `Store.set('meta.recordsMigration', { status: 'migrated', …})`
+   returns `ok`;
+3. one `Store.onSave` listener fires (the wrapper commit lands
+   under the coordinator lock);
+4. the persisted `dune_state_v4` is re-read from `localStorage`
+   and independently verified to carry `status: 'migrated'` AND
+   all four `records.*` arrays.
+
+Failure at any step returns `ok: false` with a `reason:` field
+and leaves the marker on `unmigrated` — retry is safe on the
+next boot / next `onSave` re-trigger.
+
+**Import awareness.** `processImport()` restores an imported
+wrapper through the existing coordinated transaction (ADR-010),
+which invokes `Store.migrateData` → `migrateUp`. A pre-PRV (v13)
+backup imported through `processImport()` therefore commits a v14
+wrapper with `status: 'unmigrated'`. An `onSave` listener
+registered at boot re-invokes hydration when it observes that
+status, so the post-import state converges to `migrated + populated`
+without a manual reload.
+
+**No dual authority.** Legacy per-id override keys
+(`dune_goals_v1`, `dune_claims_v1`, `dune_deadlines_ext_v1`) are
+no longer written by any code path. They remain in `BACKUP_KEYS`
+for compatibility with pre-PRV backups; hydration reads them
+once during the migration merge and never again.
+
+**Test-only auto-retry toggle.** `window.__prv05HydrationAutoRetryEnabled = false`
+disables the boot-time `onSave` auto-retry listener so
+deterministic tests can inject Store failures without racing an
+auto-retry. Production runs never touch this global; the default
+`undefined !== false` keeps the listener enabled.
+
+**Tests added / rewritten.** `tests/prv-preservation.spec.js`
+covers every failure mode named in the Codex Round 2 handoff:
+fresh-default (schema 14 + status='migrated' + empty), v13
+hydrate + durable-persist verify, override merge, empty-state
+preservation, Reset safety, Store.set failure keeps marker
+unmigrated + retry succeeds, post-commit re-read verification,
+cross-tab flag-before-durability regression, real
+`processImport()` on a v13 backup + hydration converges to
+`migrated`, restore-independence with `LEGACY_RECORDS`
+neutralized, and D.* reader cutover. 11/11 pass; full suite
+168/168 green.
+
+**Test claim discipline.** Test names now describe only the
+property actually exercised. The prior overstatements
+("concurrent" for sequential-boot, "restore independence" without
+neutralizing the seed, "production import safety" without using
+`processImport`) have been corrected.
+
+**STORAGE_MAP narrative.** Fixed a Codex-P2 internal contradiction:
+the "priority" section listed Goals as still Gen-1 authoritative
+while the domain table already showed Gen-2 authoritative. The
+narrative and priority sections now match the table + production.
+
+**Not addressed here.** The PRV-1 personal-data sanitization is a
+separate cycle; this addendum only records the R2 remediation of
+the preservation migration itself. Personal content still lives
+in `_migration-legacy-records.js` (public) as designed — its
+removal is PRV-1's job.
+
+**Date:** 2026-08-29 (PRV-0.5 R2 remediation on branch
+`claude/prv-0-5-preservation-migration`).

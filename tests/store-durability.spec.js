@@ -1146,8 +1146,10 @@ test('T-snapshot-source-invalid-data-explicit — restoreSnapshot rejects schema
       await window.Store.flushNow();
       const baselineRev = window.Store.wrapperMeta().revision;
       const baselineVal = window.Store.get('goals.__b0_snapdatainv__');
-      // Structurally valid schema-13 wrapper, but data fails Store.validate.
-      const wrapper = { version: 13, revision: 5, committedAt: '2026-08-25T00:00:00Z', data: bad };
+      // Structurally valid current-schema wrapper, but data fails
+      // Store.validate. Uses SCHEMA_VERSION directly so the test binds
+      // to the current schema version (was hardcoded 13 pre-PRV-0.5-R2).
+      const wrapper = { version: window.Store.SCHEMA_VERSION, revision: 5, committedAt: '2026-08-25T00:00:00Z', data: bad };
       const list = JSON.parse(localStorage.getItem('dune_snapshots_v1') || '[]');
       list.unshift({ at: new Date().toISOString(), payload: JSON.stringify(wrapper) });
       localStorage.setItem('dune_snapshots_v1', JSON.stringify(list));
