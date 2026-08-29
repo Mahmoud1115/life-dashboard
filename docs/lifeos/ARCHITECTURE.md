@@ -20,7 +20,7 @@ Snapshot of how the code actually works today. Update when reality changes, not 
 - `dune_gist_id_v1` — cached Gist ID for sync target
 
 ### Gen-2 (reactive Store, in `core.js`)
-One versioned JSON blob under `dune_state_v4` (schema `SCHEMA_VERSION = 13` — B0 wrapper: `{version, revision, committedAt, data}`). Owns:
+One versioned JSON blob under `dune_state_v4` (schema `SCHEMA_VERSION = 14` — B0 wrapper: `{version, revision, committedAt, data}`; PRV-0.5 R2 bumped from 13 to 14 to introduce the `data.records.*` subtree and the `data.meta.recordsMigration` marker — see ADR-015 addendum #1). Owns:
 - `money`, `qatarVisit`, `todayFocus`, `goals`, `career`, `easa`, `logbook`, `reviews`, `decisions`, `timeline`, `about`, `apartments`, `sbTasks`, `bht`, `telemetry`, `ideas`
 
 Features:
@@ -33,8 +33,8 @@ Features:
 - **Conflict lifecycle** — a typed `Store.conflict` record freezes persistence but not enqueueing. Resolution: `use-this-tab` (`force-set` in place) or `use-saved-version` (drop the conflicting op only; later same-path ops are not silently subsumed). Accessible banner UI in `index.html`.
 - Pub/sub subscriptions (`Store.subscribe('qatarVisit', fn)`)
 - 300ms debounced flush
-- Rolling snapshot buffer (`dune_snapshots_v1`, max 8) — outer format `[{at, payload}]` unchanged; payload is a schema-13 wrapper.
-- Forward-only migration chain in `migrateUp()`; schema-12 blobs still load and are re-wrapped as schema-13 on the next commit.
+- Rolling snapshot buffer (`dune_snapshots_v1`, max 8) — outer format `[{at, payload}]` unchanged; payload is a schema-14 wrapper. Snapshot restore also enforces the schema-14 records-shape guard in `validate()` (rejects wrappers that claim `meta.recordsMigration.status='migrated'` but are missing any of the four required `records.*` arrays).
+- Forward-only migration chain in `migrateUp()`; older-schema blobs still load and are re-wrapped as schema-14 on the next commit. The v13→v14 step adds `records: {deadlines:[], claims:[], risks:[], goals:[]}` and marks `meta.recordsMigration = { status: 'unmigrated', priorSchemaVersion, … }` so app.js hydration can complete the preservation migration from `_migration-legacy-records.js` + surviving Gen-1 override keys.
 - Validate-on-load — missing `qatarVisit`/`money.salary_net` → snapshot recovery, then legacy migration.
 - **Revision exhaustion** — the last accepted revision is `Number.MAX_SAFE_INTEGER`; the next write fails with `STORE_REVISION_EXHAUSTED`.
 - **Pure, deterministic legacy derivation** — `Store.deriveStateFromLegacy(read)` reads only from a caller-supplied reader; no live localStorage access when a reader is supplied, no wall-clock (uses a fixed `DETERMINISTIC_META_ISO` epoch), no random defaults. Used by boot (live-localStorage reader) and by `processImport`'s legacy-only import derivation (staged-key reader). Same reader → byte-equivalent candidate across calls.
@@ -42,7 +42,7 @@ Features:
 See `docs/lifeos/DECISIONS.md` ADR-010 for the full protocol.
 
 ### The bridge
-`core.js`'s `migrateFromLegacy()` reads Gen-1 keys **once, on first load**, to seed `dune_state_v4`. After that, Gen-1 code keeps writing legacy keys independently — **with two live reconciliation exceptions**: Money-Russia (Gen-1 `dune_finance_v1.russia` shadowed one-way into `state.money`) and Logbook (Tracker + Builder legacy sources reconciled into `state.logbook` on boot and after every add/delete write, `authority: 'legacy-mirror'`). For all other domains (EASA, Goals, Apartments, Study Board, …), the Gen-1 key remains the write-authoritative source and the corresponding field inside `dune_state_v4` may be empty or stale. See `STORAGE_MAP.md`.
+`core.js`'s `migrateFromLegacy()` reads Gen-1 keys **once, on first load**, to seed `dune_state_v4`. After that, Gen-1 code keeps writing legacy keys independently — **with two live reconciliation exceptions**: Money-Russia (Gen-1 `dune_finance_v1.russia` shadowed one-way into `state.money`) and Logbook (Tracker + Builder legacy sources reconciled into `state.logbook` on boot and after every add/delete write, `authority: 'legacy-mirror'`). For EASA, Apartments, and Study Board, the Gen-1 key remains the write-authoritative source and the corresponding field inside `dune_state_v4` may be empty or stale. **PRV-0.5 R2 (ADR-015): Goals, Deadlines, Claims, and Risks moved to Gen-2 authoritative under `dune_state_v4.data.records.*` — `dune_goals_v1` / `dune_claims_v1` / `dune_deadlines_ext_v1` are retained in `BACKUP_KEYS` for pre-PRV restore compatibility only, no active reader or writer.** See `STORAGE_MAP.md`.
 
 ## Data flow
 
@@ -68,7 +68,7 @@ No server, no queue, no scheduled job. Every state change fires synchronously fr
 - **Load from Gist**: reverse. GET the Gist by cached ID (`dune_gist_id_v1`), overwrite matching `localStorage` keys, reload.
 - The PAT is deliberately excluded from `BACKUP_KEYS`. `state.bht.ai` no longer carries an `apiKey` field: `bht.js:sanitizeAI` strips it on load and rejects it on write (ADR-005). BHT AI provider config is fallback/ollama only; nothing that touches a network key is persisted.
 - **Known UX bug**: the "load from a different Gist ID" input only appears when auto-discovery fails, which makes recovering from a bad cached `dune_gist_id_v1` hard. Slated for fix under Priority 1.
-- **Import** (B0, ADR-010): `app.js:processImport` is now an `async` full-state transaction. Preflight → `beginFullStateTransaction({force:true, reason:'import'})` (freezes ordinary Store writes; UI banner via `lifeos:store-freeze-begin`) → snapshot byte-exact `BACKUP_KEYS` → write recovery capsule (`dune_pre_import_backup_v1`, preserved after both success and failure) → apply non-`dune_state_v4` `BACKUP_KEYS` in order (staged writes / removeItem for omitted keys) → derive candidate: `Store.migrateData` for a wrapped `dune_state_v4` payload, or `Store.deriveStateFromLegacy(stagedReader)` for legacy-only backups → `validateData` → `commitFullStateWrapper(token, candidate, 'import')` writes `dune_state_v4` LAST as a schema-13 wrapper under `navigator.locks.request('lifeos-state-write-v1', {mode:'exclusive'})`, revision = latest validated disk revision + 1, `committedAt` from `nowISO()`. Byte-exact rollback of touched auxiliaries on any apply failure. Guaranteed `endFullStateTransaction(token)` in a `finally` — even if `rawBefore` capture, capsule write, or any step throws. All callers (`handleImportFile`, `importFromClipboard`, Gist restore) `await`.
+- **Import** (B0, ADR-010, PRV-0.5 R3 hardened): `app.js:processImport` is an `async` full-state transaction. Preflight → `beginFullStateTransaction({force:true, reason:'import'})` (freezes ordinary Store writes; UI banner via `lifeos:store-freeze-begin`) → snapshot byte-exact `BACKUP_KEYS` → write recovery capsule (`dune_pre_import_backup_v1`, preserved after both success and failure) → apply non-`dune_state_v4` `BACKUP_KEYS` in order (staged writes / removeItem for omitted keys) → derive candidate: `Store.migrateData` for a wrapped `dune_state_v4` payload (v13 wrappers get migrated up to v14 with `meta.recordsMigration.status='unmigrated'`), or `Store.deriveStateFromLegacy(stagedReader)` for legacy-only backups → `validateData` (schema-14 shape-guard rejects wrappers claiming migrated with missing records domains) → additional `_isSchema14CanonicalMigratedShape` guard for candidates claiming migrated → `commitFullStateWrapper(token, candidate, 'import')` writes `dune_state_v4` LAST as a schema-14 wrapper under `navigator.locks.request('lifeos-state-write-v1', {mode:'exclusive'})`, revision = latest validated disk revision + 1, `committedAt` from `nowISO()`. Byte-exact rollback of touched auxiliaries on any apply failure. Guaranteed `endFullStateTransaction(token)` in a `finally`. Post-commit, if the imported wrapper carried `status='unmigrated'`, a registered `Store.onSave` listener re-invokes `hydratePreservationRecordsOnce()` under the `lifeos-prv05-migrate` Web Lock. All callers (`handleImportFile`, `importFromClipboard`, Gist restore) `await`.
 
 ## The BHT subsystem
 
@@ -89,7 +89,7 @@ Non-empty in a real user backup:
 Structurally present but empty in real user backups:
 - `goals`, `easa`, `logbook`, `reviews`, `decisions`, `timeline`, `apartments`, `sbTasks`
 
-The empty ones are because those domains still write to their Gen-1 keys (`dune_easa_v1`, `dune_logbook_entries_v1`, `dune_goals_v1`) rather than into the Store. See `STORAGE_MAP.md`.
+The empty ones are because those domains still write to their Gen-1 keys (`dune_easa_v1`, `dune_logbook_entries_v1`) rather than into the Store. Goals moved to Gen-2 in PRV-0.5 R2 and now live in `dune_state_v4.records.goals` — `dune_goals_v1` is historical-restore-compatibility only. See `STORAGE_MAP.md`.
 
 ## Logbook Phase A canonical mirror
 

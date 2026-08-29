@@ -5,7 +5,7 @@ Snapshot as of 2026-08-25. Update whenever a domain's write source changes.
 Every domain in Life OS reads from one or both of two storage generations:
 
 - **Gen-1**: a flat top-level `localStorage` key, written directly by `app.js` (or a bolt-on module like `money-custom.js`).
-- **Gen-2**: a slice inside `dune_state_v4` (the reactive `Store` in `core.js`). Since **B0** the wrapper is `{version:13, revision, committedAt, data}` and writes use absent-path-safe CAS operations under a `navigator.locks` coordinator (see ADR-010).
+- **Gen-2**: a slice inside `dune_state_v4` (the reactive `Store` in `core.js`). Since **B0** the wrapper is `{version, revision, committedAt, data}` (schema version is currently **14** as of PRV-0.5 R2 — was 13 through B0/B1) and writes use absent-path-safe CAS operations under a `navigator.locks` coordinator (see ADR-010).
 
 For each domain, exactly **one** is the write-authoritative source. Any migration plan must respect this.
 

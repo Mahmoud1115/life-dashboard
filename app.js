@@ -58,6 +58,47 @@ const LS = {
 
 const MIGRATION_MIGRATED = 'migrated';
 const MIGRATION_UNMIGRATED = 'unmigrated';
+const PRV05_MIGRATE_LOCK = 'lifeos-prv05-migrate';
+
+// PRV-0.5 R3 (P1-1 + P1-2): "already migrated" must be judged from the
+// PERSISTED wrapper in localStorage, never from optimistic in-memory
+// Store state, because a durable-write failure can leave in-memory
+// showing status='migrated' while the persisted wrapper is still
+// unmigrated. This helper reads the wrapper and validates its
+// schema-14 shape independently. A wrapper that CLAIMS migrated but
+// is missing any required domain array or the marker is treated as
+// NOT-migrated (unsafe to skip).
+function _readPersistedWrapper() {
+  let raw;
+  try { raw = localStorage.getItem('dune_state_v4'); } catch (e) { return { ok: false, reason: 'read-error' }; }
+  if (raw === null || raw === undefined) return { ok: false, reason: 'absent' };
+  let parsed;
+  try { parsed = JSON.parse(raw); } catch (e) { return { ok: false, reason: 'parse-error' }; }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { ok: false, reason: 'shape-invalid' };
+  if (!parsed.data || typeof parsed.data !== 'object' || Array.isArray(parsed.data)) return { ok: false, reason: 'data-shape-invalid' };
+  return { ok: true, wrapper: parsed, data: parsed.data, version: parsed.version };
+}
+
+// PRV-0.5 R3 (P1-2): schema-14 canonical migrated-shape validator.
+// A persisted wrapper is considered a valid current-schema migrated
+// state ONLY when all four required record domains are present as
+// arrays AND the marker exists AND status has a recognized value.
+// Any deviation is malformed — hydration MUST NOT trust it, and
+// processImport MUST NOT overwrite good state with it.
+function isSchema14CanonicalMigratedShape(data) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
+  const r = data.records;
+  if (!r || typeof r !== 'object' || Array.isArray(r)) return false;
+  for (const d of ['deadlines', 'claims', 'risks', 'goals']) {
+    if (!Array.isArray(r[d])) return false;
+  }
+  const m = data.meta && data.meta.recordsMigration;
+  if (!m || typeof m !== 'object' || Array.isArray(m)) return false;
+  if (m.status !== MIGRATION_MIGRATED && m.status !== MIGRATION_UNMIGRATED) return false;
+  return true;
+}
+window._isSchema14CanonicalMigratedShape = isSchema14CanonicalMigratedShape;
+window._readPersistedRecordsWrapper = _readPersistedWrapper;
 
 function _buildHydratedRecords(seed, goalsOv, claimsOv) {
   return {
@@ -98,12 +139,79 @@ async function _hydratePreservationRecordsOnceImpl() {
   }
   if (!window.LEGACY_RECORDS) return { ok: false, reason: 'no-seed' };
 
-  const marker = window.Store.get('meta.recordsMigration');
-  if (marker && marker.status === MIGRATION_MIGRATED) {
-    return { ok: true, skipped: 'already-migrated', marker: marker };
+  // PRV-0.5 R3: serialize hydration across tabs via Web Locks so two
+  // tabs booting the same v13 wrapper simultaneously cannot both
+  // enqueue distinct-timestamp marker ops and leave the losing tab
+  // conflict-blocked (Codex P1-3). Falls back to same-tab-only
+  // dedupe (`_hydrationInFlight`) when navigator.locks is absent.
+  if (typeof navigator !== 'undefined' && navigator.locks && typeof navigator.locks.request === 'function') {
+    return await navigator.locks.request(PRV05_MIGRATE_LOCK, { mode: 'exclusive' }, async () => {
+      return await _hydrateUnderLock();
+    });
   }
+  return await _hydrateUnderLock();
+}
 
+async function _hydrateUnderLock() {
   const domains = ['deadlines', 'claims', 'risks', 'goals'];
+
+  // PRV-0.5 R3 (P1-1): DISK-authoritative "already migrated?" check.
+  // Optimistic in-memory Store.get() can carry a stale 'migrated'
+  // marker after a durable-write failure, so we ignore it and read
+  // the persisted wrapper directly. A wrapper that CLAIMS migrated
+  // but fails schema-14 shape validation (P1-2) is treated as NOT
+  // migrated — hydration proceeds to overwrite the partial state.
+  const persistedNow = _readPersistedWrapper();
+  if (persistedNow.ok) {
+    const marker = persistedNow.data.meta && persistedNow.data.meta.recordsMigration;
+    if (marker && marker.status === MIGRATION_MIGRATED && isSchema14CanonicalMigratedShape(persistedNow.data)) {
+      // Persisted disk is authoritatively migrated + shape-valid.
+      // If in-memory Store somehow has a divergent pending marker op
+      // (e.g. from a prior optimistic write that never landed), drop
+      // it by re-writing the persisted-authoritative marker so future
+      // save flushes cannot leak a stale intent to disk.
+      // Reconcile every path this migration owns to the disk-authoritative
+      // values. Store.set is a noop when the in-memory value already
+      // matches; when it differs (e.g. a stale optimistic marker or a
+      // pending records op enqueued before storage-event rebase caught
+      // up), the write drains the pending op via the optimistic-replay's
+      // `opAppliesCleanlyToBase(cur, after)` idempotent-satisfied path.
+      // This is the mechanism that clears the losing-tab conflict Codex
+      // P1-3 called out: no `at` timestamp in the marker + matching
+      // records content → op silently dropped → no orphaned pending op
+      // blocks subsequent ordinary edits.
+      try {
+        for (const d of ['deadlines', 'claims', 'risks', 'goals']) {
+          const diskDomain = persistedNow.data.records && persistedNow.data.records[d];
+          if (Array.isArray(diskDomain)) window.Store.set('records.' + d, diskDomain);
+        }
+        window.Store.set('meta.recordsMigration', marker);
+      } catch (e) { /* best-effort reconcile */ }
+      return { ok: true, skipped: 'already-migrated', marker: marker };
+    }
+  } else if (persistedNow.reason === 'absent') {
+    // Fresh cold-boot: no dune_state_v4 has ever been persisted. The
+    // in-memory Store IS the truth here — it holds a freshly-minted
+    // defaultState from core.js's initialLoad, and defaultState v14
+    // is canonical migrated + empty records by design. Skip hydration
+    // so fresh browsers do NOT get seeded from LEGACY_RECORDS.
+    try {
+      const inMemMarker = window.Store.get('meta.recordsMigration');
+      const inMemData = {
+        meta: { recordsMigration: inMemMarker },
+        records: {
+          deadlines: window.Store.get('records.deadlines'),
+          claims: window.Store.get('records.claims'),
+          risks: window.Store.get('records.risks'),
+          goals: window.Store.get('records.goals')
+        }
+      };
+      if (inMemMarker && inMemMarker.status === MIGRATION_MIGRATED
+          && isSchema14CanonicalMigratedShape(inMemData)) {
+        return { ok: true, skipped: 'default-state-migrated', marker: inMemMarker };
+      }
+    } catch (e) { /* fall through to normal migration path */ }
+  }
 
   // Read any surviving legacy per-id override keys (pre-PRV browsers).
   let goalsOv = {};
@@ -115,8 +223,17 @@ async function _hydratePreservationRecordsOnceImpl() {
 
   // Preserve any pre-existing user data (a partial prior migration or a
   // v14 wrapper whose marker is missing for some reason). User data wins.
+  // Prefer disk over in-memory for this check too — otherwise a stale
+  // optimistic value could shadow the real persisted state.
+  const readForDomain = (d) => {
+    if (persistedNow.ok && persistedNow.data.records && Array.isArray(persistedNow.data.records[d])) {
+      return persistedNow.data.records[d];
+    }
+    const v = window.Store.get('records.' + d);
+    return Array.isArray(v) ? v : null;
+  };
   for (const d of domains) {
-    const cur = window.Store.get('records.' + d);
+    const cur = readForDomain(d);
     if (Array.isArray(cur) && cur.length > 0) merged[d] = cur;
   }
 
@@ -125,20 +242,27 @@ async function _hydratePreservationRecordsOnceImpl() {
   for (const d of domains) {
     const r = window.Store.set('records.' + d, merged[d]);
     if (!r || r.ok !== true) {
-      try { console.warn('[PRV-0.5 R2 hydrate] set failed for ' + d, r); } catch (e) {}
+      try { console.warn('[PRV-0.5 R3 hydrate] set failed for ' + d, r); } catch (e) {}
       return { ok: false, reason: 'set-failed', domain: d, res: r };
     }
   }
-  const nowIso = (new Date()).toISOString();
+  // PRV-0.5 R3 (P1-3): DETERMINISTIC marker content so simultaneous
+  // tabs converge on the SAME value. A wall-clock `at` timestamp
+  // would make each tab's marker CAS-non-idempotent — the losing tab
+  // would retain a pending marker op that blocks future ordinary
+  // Store edits. Two tabs that both complete the migration produce
+  // the same {status, schemaVersion, reason} triple, so the second
+  // Store.set returns `{ok:true, noop:true}` and no orphaned pending
+  // op remains. (Wall-clock provenance for a completed migration
+  // lives in the wrapper's own committedAt field.)
   const nextMarker = {
     status: MIGRATION_MIGRATED,
     schemaVersion: 14,
-    at: nowIso,
     reason: 'hydration-complete'
   };
   const mRes = window.Store.set('meta.recordsMigration', nextMarker);
   if (!mRes || mRes.ok !== true) {
-    try { console.warn('[PRV-0.5 R2 hydrate] set failed for meta.recordsMigration', mRes); } catch (e) {}
+    try { console.warn('[PRV-0.5 R3 hydrate] set failed for meta.recordsMigration', mRes); } catch (e) {}
     return { ok: false, reason: 'set-marker-failed', res: mRes };
   }
 
@@ -164,30 +288,32 @@ async function _hydratePreservationRecordsOnceImpl() {
   });
 
   // Re-read the persisted wrapper from localStorage to prove durability.
-  let persisted = null;
-  try { persisted = JSON.parse(localStorage.getItem('dune_state_v4') || 'null'); } catch (e) { persisted = null; }
-  if (!persisted || !persisted.data) {
-    return { ok: false, reason: 'persisted-wrapper-missing' };
+  // Under a real primary-write failure (quota, etc.), the wrapper on
+  // disk stays at the pre-hydration state; that failure surfaces here
+  // and returns {ok:false} — the marker stays 'unmigrated' on disk
+  // even though optimistic Store memory shows 'migrated'.
+  const verified = _readPersistedWrapper();
+  if (!verified.ok) {
+    return { ok: false, reason: 'persisted-wrapper-missing', detail: verified.reason };
   }
-  const pData = persisted.data;
+  const pData = verified.data;
   const pMarker = pData.meta && pData.meta.recordsMigration;
-  const allDomainsPersisted = domains.every(d => Array.isArray(pData.records && pData.records[d]));
-  if (!pMarker || pMarker.status !== MIGRATION_MIGRATED || !allDomainsPersisted) {
+  if (!pMarker || pMarker.status !== MIGRATION_MIGRATED || !isSchema14CanonicalMigratedShape(pData)) {
     return {
       ok: false,
       reason: 'durability-verification-failed',
       persisted: {
-        wrapperVersion: persisted.version,
+        wrapperVersion: verified.version,
         marker: pMarker || null,
-        domainsPresent: domains.filter(d => Array.isArray(pData.records && pData.records[d]))
+        shapeValid: isSchema14CanonicalMigratedShape(pData)
       }
     };
   }
   return {
     ok: true,
     hydrated: true,
-    persistedAt: pMarker.at,
-    persistedVersion: persisted.version
+    persistedVersion: verified.version,
+    committedAt: verified.wrapper && verified.wrapper.committedAt
   };
 }
 window.hydratePreservationRecordsOnce = hydratePreservationRecordsOnce;
@@ -2198,7 +2324,24 @@ async function processImport(text){
         throw new Error('IMPORT_VALIDATION_FAILED');
       }
 
-      // 3. Commit under coordinator — writes STATE_KEY LAST as schema-13.
+      // PRV-0.5 R3 (P1-2): schema-14 shape guard for imported wrappers.
+      // A candidate that claims meta.recordsMigration.status === 'migrated'
+      // MUST also satisfy the canonical shape: `records` is an object
+      // with all four required domains as arrays. A partial migrated
+      // shape (e.g. records.goals missing) would let hydration's
+      // early-check skip permanently, so we reject it BEFORE
+      // commitFullStateWrapper overwrites good current state. An
+      // 'unmigrated' claim is accepted — hydration will complete it.
+      const candMarker = candidate && candidate.meta && candidate.meta.recordsMigration;
+      if (candMarker && candMarker.status === MIGRATION_MIGRATED) {
+        if (typeof window._isSchema14CanonicalMigratedShape === 'function'
+            ? !window._isSchema14CanonicalMigratedShape(candidate)
+            : !isSchema14CanonicalMigratedShape(candidate)) {
+          throw new Error('IMPORT_SCHEMA14_MIGRATED_SHAPE_INVALID');
+        }
+      }
+
+      // 3. Commit under coordinator — writes STATE_KEY LAST as schema-14.
       const res=await window.Store.commitFullStateWrapper(token,candidate,'import');
       if(!res||!res.ok){ throw new Error(res&&res.error?res.error:'COMMIT_FAILED'); }
       applied.push(STATE_KEY_NAME);

@@ -969,3 +969,121 @@ removal is PRV-1's job.
 
 **Date:** 2026-08-29 (PRV-0.5 R2 remediation on branch
 `claude/prv-0-5-preservation-migration`).
+
+### ADR-015 addendum #2 (2026-08-29) — Codex PRV-0.5 R3 remediation
+
+Codex's HIGH-risk re-review of the PRV-0.5 R2 implementation
+(commit `4ead699`) returned FAIL / merge blocked with three
+independent P1 reproductions. This addendum records the
+remediation.
+
+**P1-1 — false success after real durable wrapper-write failure.**
+An actual `dune_state_v4` write failure (quota, patched
+`localStorage.setItem`, etc.) left optimistic in-memory Store
+state carrying `meta.recordsMigration.status='migrated'` while
+the persisted wrapper on disk was still `unmigrated`. My prior
+"already migrated?" early check read from `Store.get()`, so the
+second same-tab hydration returned `ok:true / already-migrated`
+without touching disk — permanent false success.
+
+*Remediation.* The early check now reads the PERSISTED wrapper
+directly from `localStorage` via `_readPersistedWrapper()` and
+validates its schema-14 shape independently. Optimistic
+in-memory state is never a source of truth for the completion
+decision. If the on-disk marker is `migrated` AND the shape is
+canonical, hydration returns success; otherwise it proceeds
+with the migration and re-verifies durability post-commit. Any
+optimistic in-memory drift is reconciled by re-writing the
+persisted-authoritative marker so a subsequent save cannot leak
+stale intent.
+
+**P1-2 — partial schema-14 migrated wrappers accepted.**
+`processImport()` accepted a schema-14 wrapper claiming
+`status:'migrated'` but with `records.goals` absent. Hydration
+then skipped permanently on the "already migrated" fast path.
+
+*Remediation.* Introduced a canonical shape validator,
+`_isSchema14CanonicalMigratedShape(data)`, requiring:
+`data.records` is a plain object; each of `.deadlines`,
+`.claims`, `.risks`, `.goals` is an array; `data.meta.recordsMigration`
+is a plain object with `status` ∈ {`migrated`, `unmigrated`}.
+Enforced at THREE boundaries:
+
+1. `processImport()` (app.js) — rejects any candidate that
+   claims migrated but fails shape validation, BEFORE
+   `commitFullStateWrapper` overwrites good current state.
+   Throws `IMPORT_SCHEMA14_MIGRATED_SHAPE_INVALID`; existing
+   rollback-of-auxiliaries path fires. Error toast surfaced via
+   the existing import-error path.
+2. `Store.validate()` (core.js) — snapshot restore and load-time
+   validation now reject a schema-14 wrapper that claims
+   migrated without the canonical records shape. Every valid
+   production data path (`defaultState()`, `migrateUp` v13→v14)
+   already emits the canonical shape, so only corrupt/malformed
+   inputs fail.
+3. `hydratePreservationRecordsOnce()` early check — a wrapper
+   that claims migrated but fails shape validation is treated
+   as NOT migrated; hydration proceeds and heals the partial
+   state.
+
+**P1-3 — simultaneous hydration leaves losing tab conflict-blocked.**
+Two tabs hydrating the same settled v13 state simultaneously
+each generated a different `at` timestamp for the marker; Tab A
+committed, Tab B's CAS-marker-op stayed non-idempotent (its
+before-value diverged from the freshly-committed state) and Tab
+B was left with an unresolved pending op on
+`meta.recordsMigration` that blocked subsequent ordinary user
+edits from persisting.
+
+*Remediation.* Wrapped `hydratePreservationRecordsOnce()`'s
+body in `navigator.locks.request('lifeos-prv05-migrate',
+{mode:'exclusive'}, …)`. Cross-tab hydration now serializes:
+the second tab acquires the lock only after the first releases,
+re-reads the persisted wrapper (already migrated + shape-valid
+by then), and early-returns via the disk-authoritative check —
+without ever enqueuing a marker CAS op. If in-memory shows a
+divergent pending marker, the early-return code re-writes the
+persisted-authoritative marker to reconcile. No orphaned pending
+op remains, and later ordinary user edits from the losing tab
+persist normally. Falls back to same-tab-only dedupe when
+`navigator.locks` is absent.
+
+**P2 test claim discipline.** Every test now proves the exact
+property claimed. Regressions added for each Codex reproduction:
+
+- `PRV-R3-REAL-DURABLE-FAILURE-P1-1` — patches
+  `Storage.prototype.setItem` to fail on `dune_state_v4` writes.
+  First hydration returns `{ok:false, reason:'durability-verification-failed'}`;
+  optimistic memory shows `migrated` but persisted disk stays
+  `unmigrated`; SAME-TAB retry after removing the injection
+  detects the disk-vs-memory drift and completes the migration.
+- `PRV-R3-PARTIAL-MIGRATED-IMPORT-P1-2` — imports a hand-crafted
+  schema-14 wrapper with `status:'migrated'` + `records.goals`
+  missing via production `window.processImport()`. Import is
+  rejected without overwriting the current good state.
+- `PRV-R3-PARTIAL-MIGRATED-BOOT` — persists a hand-crafted
+  partial-migrated wrapper before boot. Hydration detects the
+  malformed shape, treats it as unmigrated, and heals it.
+- `PRV-R3-SIMULTANEOUS-TABS-P1-3` — both tabs alive; both
+  invoke hydration via `Promise.all`. Final disk is migrated +
+  shape-valid; NEITHER tab retains a pending marker CAS op; a
+  subsequent ordinary Store edit from the LOSING tab persists.
+
+Sequential close-A / start-B is no longer used as a concurrency
+proxy.
+
+**Production import trigger.** `processImport()` completes by
+committing the imported wrapper and then schedules
+`location.reload()` at ~1.2 s. On reload, boot-time hydration
+runs from persisted state. The `onSave` re-invocation is a
+best-effort fast path (no manual reload) but the reload is
+always the ultimate backstop — no import path depends on
+`onSave` alone.
+
+**No re-broadening.** ADR-014's per-domain end-state framing
+still governs; PRV-1 personal-data sanitization is still out of
+scope for this remediation. `_migration-legacy-records.js`
+remains present until an explicitly-approved cleanup step.
+
+**Date:** 2026-08-29 (PRV-0.5 R3 remediation on branch
+`claude/prv-0-5-preservation-migration`).

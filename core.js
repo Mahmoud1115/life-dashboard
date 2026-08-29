@@ -947,6 +947,11 @@
       normalizeLogbookDomain(migrated);
     } catch (e) { return { ok: false }; }
     if (!validate(migrated)) return { ok: false };
+    // PRV-0.5 R3: snapshot restore is a DESTRUCTIVE boundary — reject
+    // records-migration-shape-unsafe candidates before they overwrite
+    // good current state. Boot-time load intentionally uses the softer
+    // `validate()` gate; the snapshot restore path is stricter.
+    if (!isRecordsMigrationShapeSafe(migrated)) return { ok: false };
     return { ok: true, data: migrated };
   }
   // Retained alias — existing callers went through the shape-only gate.
@@ -974,6 +979,25 @@
     if (!data || typeof data !== 'object') return false;
     if (!data.money || typeof data.money.salary_net !== 'number') return false;
     if (!data.qatarVisit) return false;
+    return true;
+  }
+  // PRV-0.5 R3 (ADR-015 addendum #2 / Codex Round-3 P1-2): a supplementary
+  // shape guard used by DESTRUCTIVE boundaries only (snapshot restore,
+  // import). Rejects wrappers that CLAIM records-migration completion
+  // but lack the canonical records shape. Load-time uses the softer
+  // `validate()` above so a stale-shape wrapper still loads and can be
+  // healed by app.js hydration rather than being rejected into a
+  // stranded disk-vs-memory revision divergence.
+  function isRecordsMigrationShapeSafe(data) {
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
+    const rm = data.meta && data.meta.recordsMigration;
+    if (!rm || typeof rm !== 'object' || Array.isArray(rm)) return true; // no claim, no check
+    if (rm.status !== 'migrated') return true; // unmigrated claim is not shape-authoritative
+    const r = data.records;
+    if (!r || typeof r !== 'object' || Array.isArray(r)) return false;
+    for (const d of ['deadlines', 'claims', 'risks', 'goals']) {
+      if (!Array.isArray(r[d])) return false;
+    }
     return true;
   }
   function normalizeLogbookDomain(data) {

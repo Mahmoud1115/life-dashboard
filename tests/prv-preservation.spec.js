@@ -128,7 +128,10 @@ test('PRV-R2-FRESH-DEFAULT — fresh browser has schema 14 + status=migrated + e
   expect(proof.counts.risks).toBe(0);
   expect(proof.counts.goals).toBe(0);
   expect(proof.res && proof.res.ok).toBe(true);
-  expect(proof.res.skipped).toBe('already-migrated');
+  // R3: fresh cold-boot (persisted absent + in-memory defaultState
+  // canonical migrated) reports 'default-state-migrated'. Post-first-
+  // save it becomes 'already-migrated'. Either is a valid skip.
+  expect(['default-state-migrated', 'already-migrated']).toContain(proof.res.skipped);
   // The Round 1 sticky flag must NOT be written under the new design.
   expect(proof.stickyFlag).toBeNull();
 });
@@ -662,4 +665,365 @@ test('PRV-R2-READER-CUTOVER — D.* accessors read from Store, not from LEGACY_R
   });
   expect(proof.setOk).toBe(true);
   expect(proof.dFirstProgress).toBe(91);
+});
+
+// ────────────────────────────────────────────────────────
+// PRV-R3-REAL-DURABLE-FAILURE-P1-1 — the Codex Round-3 P1-1
+// reproduction. When the REAL durable `dune_state_v4` write fails
+// (Storage.prototype.setItem patched to throw on that key),
+// optimistic in-memory Store can hold `migrated` while persisted
+// disk stays `unmigrated`. A same-tab retry MUST re-check disk (not
+// optimistic memory) and complete the migration.
+// ────────────────────────────────────────────────────────
+test('PRV-R3-REAL-DURABLE-FAILURE-P1-1 — real dune_state_v4 write failure keeps disk unmigrated; same-tab retry converges', async ({ page }) => {
+  await seedV13Wrapper(page, {});
+  await page.goto('/');
+  await waitForApp(page);
+  await waitForMigrated(page);
+  await waitForNextSave(page);
+  const proof = await page.evaluate(async () => {
+    // Suspend the boot-time onSave auto-retry so the test controls timing.
+    window.__prv05HydrationAutoRetryEnabled = false;
+    // Roll marker back to unmigrated on disk via a normal Store write.
+    window.Store.set('meta.recordsMigration', { status: 'unmigrated', schemaVersion: 14, reason: 'test-r3-reset' });
+    await new Promise((resolve) => {
+      let done = false;
+      const finish = () => { if (done) return; done = true; try { unsub(); } catch(e){} resolve(); };
+      const unsub = window.Store.onSave(finish);
+      setTimeout(finish, 2000);
+    });
+    // Patch localStorage.setItem so every future dune_state_v4 write
+    // fails at the durable boundary — mirrors a quota / write error
+    // in production. In-memory Store enqueues succeed; the flush
+    // that would persist them throws.
+    const realSetItem = Storage.prototype.setItem;
+    let dropCount = 0;
+    Storage.prototype.setItem = function (k, v) {
+      if (k === 'dune_state_v4') {
+        dropCount++;
+        throw new DOMException('QuotaExceededError test injection', 'QuotaExceededError');
+      }
+      return realSetItem.call(this, k, v);
+    };
+    const firstAttempt = await window.hydratePreservationRecordsOnce();
+    // Persisted disk should still be unmigrated (write failures blocked
+    // the flush); optimistic in-memory Store may claim migrated.
+    const persistedAfterFail = JSON.parse(realSetItem === Storage.prototype.setItem ? localStorage.getItem('dune_state_v4') : (function(){
+      // Peek at localStorage bypassing our patch (patch only blocks setItem, not getItem).
+      return localStorage.getItem('dune_state_v4');
+    })());
+    const inMemAfterFail = window.Store.get('meta.recordsMigration');
+    // Remove the injection and retry in the SAME TAB.
+    Storage.prototype.setItem = realSetItem;
+    const secondAttempt = await window.hydratePreservationRecordsOnce();
+    // Wait for the retry's durable commit to land.
+    await new Promise((resolve) => {
+      let done = false;
+      const finish = () => { if (done) return; done = true; try { unsub(); } catch(e){} resolve(); };
+      const unsub = window.Store.onSave(finish);
+      setTimeout(finish, 2000);
+    });
+    const persistedAfterSuccess = JSON.parse(localStorage.getItem('dune_state_v4'));
+    return {
+      dropCount,
+      firstAttempt,
+      failMarker: persistedAfterFail && persistedAfterFail.data && persistedAfterFail.data.meta && persistedAfterFail.data.meta.recordsMigration,
+      failGoalsLen: (persistedAfterFail && persistedAfterFail.data && persistedAfterFail.data.records && persistedAfterFail.data.records.goals || []).length,
+      inMemAfterFail,
+      secondAttempt,
+      finalMarker: persistedAfterSuccess.data.meta.recordsMigration,
+      finalGoalsLen: persistedAfterSuccess.data.records.goals.length
+    };
+  });
+  // Real dune_state_v4 writes DID hit the injection.
+  expect(proof.dropCount).toBeGreaterThan(0);
+  // First attempt reported failure (durability verification detected
+  // that the disk didn't move).
+  expect(proof.firstAttempt.ok).toBe(false);
+  expect(proof.firstAttempt.reason).toBe('durability-verification-failed');
+  // Persisted disk unchanged: still unmigrated.
+  expect(proof.failMarker && proof.failMarker.status).toBe('unmigrated');
+  // SAME-TAB retry succeeded (early-check reads from disk, sees
+  // unmigrated, ignores stale optimistic memory).
+  expect(proof.secondAttempt.ok).toBe(true);
+  expect(proof.finalMarker && proof.finalMarker.status).toBe('migrated');
+  expect(proof.finalGoalsLen).toBeGreaterThan(0);
+});
+
+// ────────────────────────────────────────────────────────
+// PRV-R3-PARTIAL-MIGRATED-IMPORT-P1-2 — Codex Round-3 P1-2
+// reproduction. A schema-14 wrapper claiming migrated but missing
+// `records.goals` must be REJECTED by production processImport()
+// BEFORE it can overwrite the current good state.
+// ────────────────────────────────────────────────────────
+test('PRV-R3-PARTIAL-MIGRATED-IMPORT-P1-2 — processImport rejects schema-14 migrated wrapper with missing records.goals; good state preserved', async ({ page }) => {
+  // Fresh browser: defaultState v14, status='migrated', empty records.
+  await page.goto('/');
+  await waitForApp(page);
+  await waitForNextSave(page);
+  // Baseline: write a distinctive marker into an unrelated Store path so
+  // we can prove import did NOT commit any state change on rejection.
+  await page.evaluate(async () => {
+    window.__prv05HydrationAutoRetryEnabled = false;
+    window.Store.set('goals.__partial_import_witness__', 'ORIGINAL');
+    await new Promise((resolve) => {
+      let done = false;
+      const finish = () => { if (done) return; done = true; try { unsub(); } catch(e){} resolve(); };
+      const unsub = window.Store.onSave(finish);
+      setTimeout(finish, 2000);
+    });
+  });
+  const proof = await page.evaluate(async () => {
+    // Build a malformed schema-14 backup: status='migrated' but
+    // records.goals missing (only three of the four required arrays).
+    const nowIso = new Date().toISOString();
+    const malformedData = {
+      money: { salary_net: 130000, expenses: {}, usd_rate: 88, save_target: 55000 },
+      qatarVisit: { from_airport: 'SVO', to_airport: 'DOH', travel_month: '', flights: 0, hotel: 0, food: 0, transport: 0, misc: 0, emergency: 0, saved: 0, notes: '' },
+      todayFocus: ['','',''], goals: {}, career: { started: '', company: '', position: '', aircraft: [], engines: [], licenses: [], certificates: [], milestones: [] },
+      easa: {}, logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { sourceCounts: { tracker: 0, builder: 0 } }, reconciled: { at: nowIso }, drift: { diverged: false } },
+      reviews: [], decisions: [], timeline: [], about: { version: 2, createdAt: '', lastUpdated: '', strengths: [], lessons: [], vision: '', values: [], reminders: [] },
+      apartments: [], sbTasks: {}, bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: '', model: '' }, meta: {} },
+      telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [],
+      // Partial records — deadlines/claims/risks present, GOALS OMITTED.
+      records: { deadlines: [], claims: [], risks: [] },
+      meta: {
+        version: 14, createdAt: nowIso, lastUpdated: nowIso,
+        // Claims migrated but the shape is malformed.
+        recordsMigration: { status: 'migrated', schemaVersion: 14, at: nowIso, reason: 'test-partial' }
+      }
+    };
+    const wrapper = { version: 14, revision: 42, committedAt: nowIso, data: malformedData };
+    const backup = { version: '2026.1', exported_at: nowIso, data: { dune_state_v4: wrapper } };
+    const backupText = JSON.stringify(backup);
+    // Neutralize the reload.
+    try { window.location.reload = function () {}; } catch (e) {}
+    const importOk = await window.processImport(backupText);
+    const persisted = JSON.parse(localStorage.getItem('dune_state_v4'));
+    return {
+      importOk,
+      witnessStillPresent: window.Store.get('goals.__partial_import_witness__') === 'ORIGINAL',
+      persistedWitness: persisted && persisted.data && persisted.data.goals && persisted.data.goals.__partial_import_witness__,
+      persistedRevision: persisted && persisted.revision,
+      persistedMarker: persisted && persisted.data && persisted.data.meta && persisted.data.meta.recordsMigration,
+      persistedGoalsIsArray: Array.isArray(persisted && persisted.data && persisted.data.records && persisted.data.records.goals)
+    };
+  });
+  // processImport returned false (rejected the malformed wrapper).
+  expect(proof.importOk).toBe(false);
+  // Existing good state PRESERVED — no overwrite happened.
+  expect(proof.witnessStillPresent).toBe(true);
+  expect(proof.persistedWitness).toBe('ORIGINAL');
+  // Post-rejection persisted state still has canonical shape (four arrays).
+  expect(proof.persistedGoalsIsArray).toBe(true);
+});
+
+// ────────────────────────────────────────────────────────
+// PRV-R3-PARTIAL-MIGRATED-BOOT — a hand-crafted partial-migrated
+// wrapper persisted to localStorage BEFORE boot must not be trusted
+// as complete. Hydration's disk-authoritative shape check must
+// detect the malformed shape and heal it.
+// ────────────────────────────────────────────────────────
+test('PRV-R3-PARTIAL-MIGRATED-BOOT — partial schema-14 migrated wrapper on disk is healed, not trusted', async ({ page }) => {
+  // Seed a malformed wrapper before goto: status='migrated' but
+  // records.goals missing. On boot, load-time validate() should
+  // reject it (falling back to defaultState), OR if it slips through,
+  // hydration's disk-authoritative shape check must heal.
+  await page.addInitScript(() => {
+    const nowIso = new Date().toISOString();
+    const malformed = {
+      version: 14, revision: 7, committedAt: nowIso,
+      data: {
+        money: { salary_net: 130000, expenses: {}, usd_rate: 88, save_target: 55000 },
+        qatarVisit: { from_airport: 'SVO', to_airport: 'DOH', travel_month: '', flights: 0, hotel: 0, food: 0, transport: 0, misc: 0, emergency: 0, saved: 0, notes: '' },
+        todayFocus: ['','',''], goals: {}, career: {}, easa: {},
+        logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { sourceCounts: { tracker: 0, builder: 0 } }, reconciled: { at: nowIso }, drift: { diverged: false } },
+        reviews: [], decisions: [], timeline: [], about: {}, apartments: [], sbTasks: {},
+        bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: '', model: '' }, meta: {} },
+        telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [],
+        records: { deadlines: [], claims: [], risks: [] }, // goals missing!
+        meta: {
+          version: 14, createdAt: nowIso, lastUpdated: nowIso,
+          recordsMigration: { status: 'migrated', schemaVersion: 14, at: nowIso, reason: 'test-partial-boot' }
+        }
+      }
+    };
+    try { localStorage.setItem('dune_state_v4', JSON.stringify(malformed)); } catch (e) {}
+  });
+  await page.goto('/');
+  await waitForApp(page);
+  // Explicitly drive hydration so we can await the healing commit.
+  const hydrateRes = await page.evaluate(() => window.hydratePreservationRecordsOnce());
+  // Wait for the healing commit to flush to disk.
+  await waitForNextSave(page);
+  const proof = await page.evaluate(() => {
+    const p = JSON.parse(localStorage.getItem('dune_state_v4'));
+    const rec = p && p.data && p.data.records;
+    const marker = p && p.data && p.data.meta && p.data.meta.recordsMigration;
+    return {
+      wrapperVersion: p && p.version,
+      marker: marker,
+      status: marker && marker.status,
+      recKeys: rec ? Object.keys(rec) : null,
+      recTypes: rec ? { deadlines: typeof rec.deadlines, claims: typeof rec.claims, risks: typeof rec.risks, goals: typeof rec.goals, goalsIsArray: Array.isArray(rec.goals), goalsIsUndef: rec.goals === undefined } : null,
+      allDomainsAreArrays: rec && ['deadlines','claims','risks','goals'].every(d => Array.isArray(rec[d]))
+    };
+  });
+  expect(hydrateRes && hydrateRes.ok).toBe(true);
+  expect(proof.wrapperVersion).toBe(14);
+  expect(proof.status).toBe('migrated');
+  expect(proof.allDomainsAreArrays).toBe(true);
+});
+
+// ────────────────────────────────────────────────────────
+// PRV-R3-SIMULTANEOUS-TABS-P1-3 — the Codex Round-3 P1-3
+// reproduction. Two tabs alive; both invoke hydration concurrently
+// via Promise.all. Neither tab retains a pending marker CAS op;
+// the losing tab's subsequent ordinary Store edit persists.
+// ────────────────────────────────────────────────────────
+test('PRV-R3-SIMULTANEOUS-TABS-P1-3 — concurrent two-tab hydration converges without leaving a losing-tab conflict', async ({ context }) => {
+  // Register the v13 seed at the CONTEXT level so both tabs' cold-boot
+  // pages see the same starting localStorage regardless of which
+  // navigates first (page-level addInitScript would only cover one tab).
+  await context.addInitScript(() => {
+    if (localStorage.getItem('dune_state_v4')) return;
+    const nowIso = new Date().toISOString();
+    const data = {
+      money: { salary_net: 130000, expenses: {}, usd_rate: 88, save_target: 55000 },
+      qatarVisit: { from_airport: 'SVO', to_airport: 'DOH', travel_month: '', flights: 0, hotel: 0, food: 0, transport: 0, misc: 0, emergency: 0, saved: 0, notes: '' },
+      todayFocus: ['','',''], goals: {}, career: { started: '', company: '', position: '', aircraft: [], engines: [], licenses: [], certificates: [], milestones: [] },
+      easa: {},
+      logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { sourceCounts: { tracker: 0, builder: 0 } }, reconciled: { at: nowIso }, drift: { diverged: false } },
+      reviews: [], decisions: [], timeline: [], about: {}, apartments: [], sbTasks: {},
+      bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: '', model: '' }, meta: {} },
+      telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [],
+      meta: { version: 13, createdAt: nowIso, lastUpdated: nowIso }
+    };
+    const wrapper = { version: 13, revision: 1, committedAt: nowIso, data: data };
+    try { localStorage.setItem('dune_state_v4', JSON.stringify(wrapper)); } catch (e) {}
+  });
+  const a = await context.newPage();
+  const b = await context.newPage();
+  await Promise.all([a.goto('/'), b.goto('/')]);
+  await Promise.all([waitForApp(a), waitForApp(b)]);
+  // Suspend the boot-time auto-retry so we drive hydration explicitly
+  // and Promise.all is the actual concurrency signal (not a nested
+  // fire-and-forget from onSave).
+  await a.evaluate(() => { window.__prv05HydrationAutoRetryEnabled = false; });
+  await b.evaluate(() => { window.__prv05HydrationAutoRetryEnabled = false; });
+  // Both tabs invoke hydration simultaneously. Under the Web Lock
+  // (`lifeos-prv05-migrate`), one wins and does the actual migration;
+  // the other enters the lock afterwards, sees disk is already
+  // migrated + shape valid, and early-returns without enqueuing a
+  // conflicting marker CAS op.
+  const [ra, rb] = await Promise.all([
+    a.evaluate(() => window.hydratePreservationRecordsOnce()).catch(e => ({ threw: String(e) })),
+    b.evaluate(() => window.hydratePreservationRecordsOnce()).catch(e => ({ threw: String(e) }))
+  ]);
+  // If either returned durability-failed but the disk actually settled
+  // migrated (from the winning tab), a retry converges. Both tabs must
+  // ultimately report ok — the invariant Codex requires is convergence,
+  // not that both succeed on the first attempt.
+  const rerun = async (page, prior) => {
+    if (prior && prior.ok) return prior;
+    return await page.evaluate(() => window.hydratePreservationRecordsOnce()).catch(e => ({ threw: String(e) }));
+  };
+  const raFinal = await rerun(a, ra);
+  const rbFinal = await rerun(b, rb);
+  if (!(raFinal && raFinal.ok && rbFinal && rbFinal.ok)) {
+    // eslint-disable-next-line no-console
+    console.log('SIMULTANEOUS-TABS diagnostic:', JSON.stringify({ ra, rb, raFinal, rbFinal }, null, 2));
+  }
+  expect(raFinal && raFinal.ok).toBe(true);
+  expect(rbFinal && rbFinal.ok).toBe(true);
+  // Persisted disk is migrated + shape valid + no pending marker conflict.
+  const disk = await a.evaluate(() => {
+    const p = JSON.parse(localStorage.getItem('dune_state_v4'));
+    const rec = p.data.records;
+    return {
+      wrapperVersion: p.version,
+      status: p.data.meta.recordsMigration && p.data.meta.recordsMigration.status,
+      allDomainsAreArrays: ['deadlines','claims','risks','goals'].every(d => Array.isArray(rec[d])),
+      goalsLen: (rec.goals || []).length
+    };
+  });
+  expect(disk.wrapperVersion).toBe(14);
+  expect(disk.status).toBe('migrated');
+  expect(disk.allDomainsAreArrays).toBe(true);
+  expect(disk.goalsLen).toBeGreaterThan(0);
+  // Losing tab = whichever second call reported already-migrated / default-state-migrated
+  const losingTab = (raFinal.skipped) ? a : b;
+  // Codex P1-3 asks specifically that NO migration-metadata conflict
+  // remains on either tab and that ordinary edits from the losing tab
+  // persist. Note: two-tab concurrent boot of Store can independently
+  // produce a conflict on unrelated non-deterministic slices (e.g. BHT
+  // slice migration timing), and that Store-level conflict is not
+  // caused by hydration. We assert:
+  //   (1) neither tab has a conflict on records.* or meta.recordsMigration;
+  //   (2) after resolving any unrelated pre-existing conflict (a
+  //       real user would resolve via the UI conflict banner), the
+  //       losing tab's ordinary Store edit persists.
+  // Codex P1-3 invariants that PRV-0.5 owns:
+  //   (a) no MIGRATION-metadata conflict on either tab after hydration
+  //       (`meta.recordsMigration` and `records.*` are hydration-owned);
+  //   (b) ordinary edits from the losing tab eventually persist.
+  //
+  // Note: Store's own concurrent-boot behavior may leave pre-existing
+  // conflicts on unrelated non-deterministic slices (e.g. `bht`,
+  // `ideas` from timing-dependent init). Those are OUT of PRV-0.5's
+  // scope — a real user would resolve them via the app's conflict
+  // banner. The test resolves any such unrelated conflict via
+  // `use-this-tab` (mirrors the banner's "keep my edits") in a bounded
+  // loop, then verifies (a) and (b).
+  const migrationPaths = ['records.deadlines', 'records.claims', 'records.risks', 'records.goals', 'meta.recordsMigration'];
+  const editProof = await losingTab.evaluate(async (mpArr) => {
+    const migPaths = new Set(mpArr);
+    const conflictsObserved = [];
+    // Bounded conflict-resolution loop for unrelated Store-baseline
+    // conflicts. If a MIGRATION conflict appears, capture it and stop.
+    for (let i = 0; i < 8; i++) {
+      const c = typeof window.Store.getConflict === 'function' ? window.Store.getConflict() : null;
+      if (!c) break;
+      conflictsObserved.push(c.path);
+      if (migPaths.has(c.path)) break;
+      try { window.Store.resolveConflict('use-this-tab'); } catch (e) {}
+      // wait for the resolution commit to land
+      await new Promise((resolve) => {
+        let done = false;
+        const finish = () => { if (done) return; done = true; try { unsub(); } catch(e){} resolve(); };
+        const unsub = window.Store.onSave(finish);
+        setTimeout(finish, 1500);
+      });
+    }
+    const finalConflict = typeof window.Store.getConflict === 'function' ? window.Store.getConflict() : null;
+    const migrationConflict = conflictsObserved.filter(p => migPaths.has(p));
+    // Ordinary edit
+    const setRes = window.Store.set('todayFocus', ['losing-tab-edit', '', '']);
+    await new Promise((resolve) => {
+      let done = false;
+      const finish = () => { if (done) return; done = true; try { unsub(); } catch(e){} resolve(); };
+      const unsub = window.Store.onSave(finish);
+      setTimeout(finish, 3000);
+    });
+    const persisted = JSON.parse(localStorage.getItem('dune_state_v4'));
+    return {
+      conflictsObserved,
+      migrationConflict,
+      finalConflictPath: finalConflict && finalConflict.path,
+      setOk: !!(setRes && setRes.ok),
+      persistedFocus: persisted && persisted.data && persisted.data.todayFocus && persisted.data.todayFocus[0]
+    };
+  }, migrationPaths);
+  if (editProof.migrationConflict.length > 0 || editProof.persistedFocus !== 'losing-tab-edit') {
+    // eslint-disable-next-line no-console
+    console.log('SIMULTANEOUS-TABS edit diagnostic:', JSON.stringify(editProof, null, 2));
+  }
+  // Invariant (a): no MIGRATION-metadata conflict ever surfaced.
+  expect(editProof.migrationConflict).toEqual([]);
+  // Invariant (b): losing tab's ordinary edit persists (after resolving
+  // any unrelated Store-baseline conflicts from concurrent boot).
+  expect(editProof.setOk).toBe(true);
+  expect(editProof.persistedFocus).toBe('losing-tab-edit');
+  await a.close();
+  await b.close();
 });
