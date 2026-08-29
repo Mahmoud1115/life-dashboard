@@ -1,0 +1,156 @@
+# Deterministic CI for Life OS 2.0. See docs/lifeos/DECISIONS.md ADR-012.
+# Ships as WF-GATE part of the AI Council V1 foundation (2026-08-28).
+#
+# What this workflow enforces:
+#   - JavaScript syntax on every tracked .js file (node --check).
+#   - git diff --check (no whitespace debt, no unresolved merge markers).
+#   - Playwright full suite (isolated synthetic contexts only; no real
+#     user data can be touched because the harness has none).
+#
+# Privacy properties:
+#   - Runs against isolated in-page synthetic localStorage per test
+#     (see docs/lifeos/TESTING.md and existing spec files).
+#   - No secrets required for the deterministic path.
+#   - Failure artifacts (Playwright HTML report + traces) are uploaded
+#     ONLY on failure and contain only synthetic seeded data because
+#     the tests never touch a real profile.
+#
+# What this workflow does NOT do:
+#   - No AI review as a required status check.
+#   - No third-party scanners (CodeRabbit / GitLeaks / Semgrep /
+#     Sentry). Those are out of scope for V1 per ADR-012.
+#   - No deployment automation.
+
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+# workflow_dispatch removed 2026-08-29 per Codex Round 2 P1-1 remediation.
+# Reason: this workflow's job publishes the required "deterministic
+# evidence" status context on the main-protection ruleset. A manual
+# dispatch on any ref could satisfy that required context with weaker
+# working-tree-only `git diff --check` evidence (no PR-range diff),
+# reintroducing the event-substitution flaw closed in Round 1 P1-1.
+# GitHub Actions' built-in "Re-run failed jobs" / "Re-run all jobs"
+# UI already covers the manual-rerun use case for push and pull_request
+# runs, so removing workflow_dispatch loses no operational capability.
+
+# One CI run at a time per ref. Cancels superseded runs on the same PR.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  deterministic:
+    name: deterministic evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history so 'git diff --check' can inspect the diff
+          # against the base branch on pull_request events.
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browser (chromium only)
+        # playwright.config.js pins chromium as the sole project.
+        run: npx playwright install --with-deps chromium
+
+      # ── Deterministic gate 1: JavaScript syntax ────────────────────
+      - name: JavaScript syntax check
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail=0
+          while IFS= read -r f; do
+            if ! node --check "$f"; then
+              echo "SYNTAX FAIL: $f"
+              fail=1
+            fi
+          done < <(git ls-files '*.js')
+          if [ "$fail" -ne 0 ]; then
+            exit 1
+          fi
+          echo "syntax: PASS"
+
+      # ── Deterministic gate 2: git diff --check ─────────────────────
+      # PR events check the merge base against HEAD.
+      # Push events (only ever "main" per the workflow triggers) check
+      # the pushed commit range github.event.before...github.sha, so a
+      # bad merge landing directly on main is still caught. The
+      # all-zero SHA that GitHub sends for branch-creation and
+      # branch-delete events is handled by falling back to a no-op:
+      # branch creation has no "prior" state to diff against.
+      - name: git diff --check
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base_sha='${{ github.event.pull_request.base.sha }}'
+            git diff --check "${base_sha}"...HEAD
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            before_sha='${{ github.event.before }}'
+            head_sha='${{ github.sha }}'
+            zero_sha='0000000000000000000000000000000000000000'
+            if [ "${before_sha}" = "${zero_sha}" ] || [ -z "${before_sha}" ]; then
+              echo "diff --check: SKIPPED (branch creation event — no prior SHA to diff)"
+            else
+              git diff --check "${before_sha}"..."${head_sha}"
+            fi
+          else
+            # No other trigger publishes this required context. The
+            # workflow_dispatch trigger was removed in Round 2 P1-1
+            # remediation; if this branch is reached under a new trigger
+            # in future, fail closed rather than passing with weaker
+            # evidence than a PR run.
+            echo "diff --check: UNEXPECTED trigger '${{ github.event_name }}' — failing closed"
+            exit 1
+          fi
+          echo "diff --check: PASS"
+
+      # ── Deterministic gate 3: Playwright full suite ────────────────
+      - name: Playwright
+        env:
+          CI: 'true'
+        run: |
+          set -euo pipefail
+          npx playwright test
+          echo "playwright: PASS"
+
+      # ── Failure artifacts (only on failure; synthetic data only) ───
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload Playwright test-results on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-test-results
+          path: test-results
+          if-no-files-found: ignore
+          retention-days: 14
