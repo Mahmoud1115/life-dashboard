@@ -1233,3 +1233,151 @@ are all still out of scope for this remediation.
 **Date:** 2026-09-01 (PRV-0.5 R4 remediation on branch
 `claude/prv-0-5-r4-remediation`; base commit
 `6022c0b0b58f1e7b8e43f27d3d0b6577a384503f`).
+
+### ADR-015 addendum #4 (2026-09-01) — Codex PRV-0.5 R5 remediation
+
+Codex Round-4 review of R4 exact SHA
+`8efafc7f4e3ce2b658fc74cdf6b3cbaab0414011` returned FAIL — NOT
+SAFE, MERGE BLOCKED. Independent production-path probes
+reproduced five HIGH-risk defects: (P1-1) ambiguous schema-14
+states still resurrected legacy, (P1-2) missing/malformed
+migrated domains were silently converted to `[]` (invented
+deletion intent), (P1-3) hydration fast-path was not equivalent
+to Store authority — equal-revision divergent bytes and active
+durability blockers still returned `already-migrated`, (P1-4)
+corrupt-wrapper limitation could lose preserved records and
+export invalid authority as a normal backup, (P1-5) unsupported
+future wrapper versions (`version > SCHEMA_VERSION`) were
+silently downgraded through `migrateUp` at import / snapshot /
+boot boundaries. Plus P2: marker schema was not canonical
+(`schemaVersion` could be absent or `99`).
+
+The architectural lesson: parallel authority predicates in
+`app.js` and `core.js` diverged under adversarial input. R4 had
+its own destructive-boundary shape guard (`app.js`) alongside
+`core.js:isRecordsMigrationShapeSafe` and a fast-path shallower
+than `Store.parseWrapper`. Every reproduced defect traced back
+to one of those parallel checks missing what another already
+enforced. R5 collapses every wrapper-authority decision into a
+**single Store-owned evaluator**.
+
+**One evaluator, one contract.**
+`Store.evaluatePersistedAuthority(raw?)` in `core.js` is the
+single source of authority truth. It returns one of six
+classifications and a set of consumer decision booleans. Its
+counterpart for external wrapper objects is
+`Store.evaluateCandidateWrapper(input)` (parses raw or accepts a
+pre-parsed object, runs `migrateUp` internally when the source
+is a legacy version); for a bare `data` object (post-migrateUp
+candidate) callers use `Store.evaluateCandidateData(data)`.
+Every previous callsite — hydration fast-path (`app.js`),
+production import (`app.js:processImport`), snapshot restore
+(`core.js:validateSnapshotWrapperFull`), backup export
+(`app.js:exportBackup / copyBackupToClipboard / saveToGist`),
+and boot recovery (`core.js:initialLoad`) — now consults the
+evaluator instead of a local predicate.
+
+**Six classifications:**
+
+1. **AUTHORITATIVE_MIGRATED** — current version, valid revision,
+   canonical marker (`status='migrated'`,
+   `schemaVersion===SCHEMA_VERSION`), all four record arrays. A
+   sub-flag `allEmpty:true` calls out the intentionally-empty
+   subset (Codex's class B) and the explicit-reset subset (class
+   G) — both behave identically. Only this class produces
+   `acceptFastPathMigrated:true`, and only when the Store has no
+   active durability blocker AND the raw bytes match the Store's
+   accepted `baseWrapperRaw` (no equal-revision divergent-bytes
+   attack).
+2. **VERIFIED_LEGACY_TRANSITION** — either a wrapper
+   `version < SCHEMA_VERSION` from a supported legacy schema, OR
+   a schema-14 wrapper whose marker is `status='unmigrated'` with
+   a provable v13→v14 provenance:
+   `schemaVersion===SCHEMA_VERSION`, `priorSchemaVersion` in
+   `[0..SCHEMA_VERSION-1]`, `reason` matching
+   `migrateUp-from-v<priorSchemaVersion>`. This is the ONLY class
+   that authorises `LEGACY_RECORDS` seeding (`seedLegacy:true`).
+3. **MALFORMED_CURRENT_SCHEMA** — schema-14 wrapper with a valid
+   outer envelope but a non-canonical marker (missing / of
+   unknown status / wrong `schemaVersion` / unmigrated without
+   provenance / unmigrated with wrong `reason`) OR non-canonical
+   `records.*` (missing object, missing domain, non-array
+   domain). Recovery required. Hydration MUST NOT synthesize
+   `[]` for a missing/non-array required domain (P1-2); MUST NOT
+   seed `LEGACY_RECORDS`.
+4. **CORRUPT_STALE_COLLIDING** — corrupt outer JSON, invalid
+   revision, stale revision (< `Store.currentKnownRevision`),
+   equal-revision + divergent raw bytes vs. Store's baseline
+   (P1-3 attack), OR an active Store durability blocker while
+   looking at otherwise canonical bytes. Recovery required.
+   Normal backup refused.
+5. **UNSUPPORTED_FUTURE_SCHEMA** — outer wrapper
+   `version > SCHEMA_VERSION`. Rejected at every load / import /
+   snapshot boundary (P1-5). `parseWrapperRaw` treats this as
+   `corrupt:true`, so hydration / storage-event rebase /
+   `commitFullStateWrapper` / `endFullStateTransaction` all
+   propagate the rejection uniformly. `migrateUp` is never
+   invoked on an unknown future version.
+6. **ABSENT** — no `dune_state_v4` on disk (fresh browser).
+   Hydration fast-path B evaluates Store's in-memory data via
+   `evaluateCandidateData()` to distinguish fresh-cold-boot
+   canonical from a legacy-transition-in-memory state.
+
+**Recovery semantics (P1-4).** When `initialLoad` reads a raw
+wrapper that Store's own parse / migrate / validate rejects, R5
+now preserves the corrupt bytes as `baseWrapperRaw = raw`
+(evidence) AND stages a pending `STORE_CORRUPT_AUTHORITATIVE_STATE`
+durability blocker so ordinary `Store.set/update` refuse until
+recovery lands through an approved full-state transaction
+(snapshot restore, import, or reset — all of which clear the
+blocker via `commitFullStateWrapper`). Snapshot fallback still
+runs when a valid rolling snapshot exists so the app can render;
+the blocker still fires so writes must go through recovery. The
+corrupt bytes never round-trip as a normal backup — `exportBackup`,
+`copyBackupToClipboard`, and `saveToGist` all consult
+`evaluateBackupAuthority()`. A quarantine path,
+`window.exportRecoveryEvidence()`, packages the invalid wrapper as
+`{version:'2026.1-quarantine', quarantined:true, reason}` which
+`processImport` refuses on the way back in.
+
+**Canonical marker schema (P2).** Every canonical marker MUST
+carry `schemaVersion === SCHEMA_VERSION`. Fresh cold-boot / Reset
+uses `{ status:'migrated', schemaVersion, reason:'default-state' }`.
+Post-migrateUp uses
+`{ status:'unmigrated', schemaVersion, priorSchemaVersion,
+   reason:'migrateUp-from-v<priorSchemaVersion>' }`. Post-hydration
+uses `{ status:'migrated', schemaVersion,
+   reason:'hydration-complete' }`. Any deviation — missing
+`schemaVersion`, `schemaVersion:99`, arbitrary `unmigrated`
+without provenance — is `MALFORMED_CURRENT_SCHEMA` at every
+boundary.
+
+**Provenance requirement (P1-1).** Legacy seeding is
+authorised ONLY by `VERIFIED_LEGACY_TRANSITION`. An arbitrary
+schema-14 `unmigrated` marker (no `priorSchemaVersion`, wrong
+`reason`, or fabricated by an external actor) fails the
+canonical marker check and lands in
+`MALFORMED_CURRENT_SCHEMA` — no seed, no synthetic deletion,
+no silent success.
+
+**Concurrency (unchanged from R3).** The hydration Web Lock
+(`lifeos-prv05-migrate`) + deterministic marker content
+mechanism is preserved verbatim. Simultaneous-tab hydration
+still converges without a losing-tab conflict; the no-Web-Locks
+fallback still uses same-tab `_hydrationInFlight` dedupe.
+
+**Legacy corpus lifecycle unchanged.** R5 does NOT remove or
+sanitize `_migration-legacy-records.js`. That step remains
+PRV-1's responsibility. R5's job is only to make every
+authority decision routed through one Store-owned contract so
+PRV-1 can proceed on a durable foundation.
+
+**No re-broadening.** ADR-014's per-domain end-state framing
+still governs; BHT / Ideas concurrency, personal-data
+sanitization, Pages, repository visibility, Aviation, and B1.5
+are all still out of scope for this remediation. Backup gating
+and quarantine cover only the PRV-0.5 authority contract.
+
+**Date:** 2026-09-01 (PRV-0.5 R5 remediation on branch
+`claude/prv-0-5-r5-authority-recovery`; base commit
+`8efafc7f4e3ce2b658fc74cdf6b3cbaab0414011`).

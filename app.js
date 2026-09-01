@@ -67,113 +67,57 @@ const MIGRATION_MIGRATED = 'migrated';
 const MIGRATION_UNMIGRATED = 'unmigrated';
 const PRV05_MIGRATE_LOCK = 'lifeos-prv05-migrate';
 
-// PRV-0.5 R4 (Codex Round-3 P1-A): "already migrated" must be judged from
-// the PERSISTED wrapper in localStorage, and BOTH the outer wrapper AND
-// the inner data must satisfy the Store's own authority rules — never
-// only the inner shape. R3 shipped an inner-only check, and Codex R3
-// showed that a wrapper with revision=-1 or version=13 carrying
-// canonical schema-14 inner data still fast-path-returned migrated.
-// This helper now delegates the outer wrapper check to Store's own
-// parseWrapper/isValidRevision (single source of authority) and
-// additionally requires:
-//   - version === SCHEMA_VERSION (14) — no old-schema wrapper enters
-//     the "already migrated" fast path merely because its inner data
-//     happens to resemble schema 14;
-//   - revision satisfies Store's isValidRevision predicate;
-//   - revision is not stale relative to the Store's accepted disk
-//     revision (Store.currentKnownRevision).
-// Any deviation returns ok:false, so hydration falls through to the
-// heal/migrate path instead of trusting the wrapper.
+// PRV-0.5 R5 (Codex Round-4 P1-1..P1-5 + P2): every authority decision
+// now routes through the ONE Store-owned evaluator
+// `Store.evaluatePersistedAuthority` (see core.js block comment above
+// `evaluatePersistedAuthority`). No app.js-local wrapper predicate
+// exists any more — Codex Round-4 traced the R4 defects to parallel
+// core.js and app.js predicates diverging under adversarial input, so
+// R5 removes the duplication.
+//
+// Thin authority-facade helpers preserved for tests that read them
+// directly (previously `window._readPersistedRecordsWrapper`,
+// `window._isSchema14CanonicalMigratedShape`,
+// `window._isSchema14CanonicalDestructiveShape`). All three now
+// delegate to the Store evaluator so their meaning cannot drift.
 function _readPersistedWrapper() {
-  let raw;
-  try { raw = localStorage.getItem('dune_state_v4'); } catch (e) { return { ok: false, reason: 'read-error' }; }
-  if (raw === null || raw === undefined) return { ok: false, reason: 'absent' };
-  // Prefer Store's own wrapper parser so the fast path cannot accept a
-  // wrapper Store would reject at initialLoad/setWrapperFromOps.
-  const storeHasParser = !!(window.Store && typeof window.Store.parseWrapper === 'function');
-  if (storeHasParser) {
-    const parsed = window.Store.parseWrapper(raw);
-    if (!parsed) return { ok: false, reason: 'parse-error' };
-    if (parsed.corrupt) return { ok: false, reason: 'wrapper-corrupt' };
-    // Wrapper version MUST be the current schema. An older-version
-    // wrapper (even one whose inner records happen to look canonical
-    // schema-14) is not authoritative for the schema-14 fast path.
-    if (parsed.version !== 14) return { ok: false, reason: 'wrapper-version-invalid', version: parsed.version };
-    // Revision MUST satisfy Store's own validity predicate.
-    const isValidRev = (typeof window.Store.isValidRevision === 'function')
-      ? window.Store.isValidRevision
-      : (n) => (typeof n === 'number' && Number.isFinite(n) && Number.isInteger(n) && n >= 0);
-    if (!isValidRev(parsed.revision)) return { ok: false, reason: 'wrapper-revision-invalid', revision: parsed.revision };
-    // Revision MUST NOT be stale relative to Store's accepted disk revision.
-    // A regressed wrapper (e.g. someone rewrote the wrapper with an older
-    // revision) is a Store-durability concern; the migration fast path must
-    // not silently bless it.
-    if (typeof window.Store.currentKnownRevision === 'function') {
-      const known = window.Store.currentKnownRevision();
-      if (typeof known === 'number' && Number.isInteger(known) && parsed.revision < known) {
-        return { ok: false, reason: 'wrapper-revision-stale', revision: parsed.revision, known };
-      }
-    }
-    if (!parsed.data || typeof parsed.data !== 'object' || Array.isArray(parsed.data)) {
-      return { ok: false, reason: 'data-shape-invalid' };
-    }
-    return { ok: true, wrapper: parsed, data: parsed.data, version: parsed.version, revision: parsed.revision };
+  const evalRes = (window.Store && typeof window.Store.evaluatePersistedAuthority === 'function')
+    ? window.Store.evaluatePersistedAuthority()
+    : { classification: 'ABSENT', data: null, wrapper: null };
+  if (evalRes.classification === 'ABSENT') return { ok: false, reason: 'absent', eval: evalRes };
+  if (!evalRes.canonical) return { ok: false, reason: evalRes.classification, eval: evalRes };
+  if (!evalRes.data || typeof evalRes.data !== 'object' || Array.isArray(evalRes.data)) {
+    return { ok: false, reason: 'data-shape-invalid', eval: evalRes };
   }
-  // Fallback (Store not yet loaded / test harness) — apply the same
-  // authority checks locally. Keeps hydration safe even under partial
-  // page loads.
-  let parsed;
-  try { parsed = JSON.parse(raw); } catch (e) { return { ok: false, reason: 'parse-error' }; }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { ok: false, reason: 'shape-invalid' };
-  if (parsed.version !== 14) return { ok: false, reason: 'wrapper-version-invalid', version: parsed.version };
-  const rev = parsed.revision;
-  if (!(typeof rev === 'number' && Number.isFinite(rev) && Number.isInteger(rev) && rev >= 0 && rev <= Number.MAX_SAFE_INTEGER)) {
-    return { ok: false, reason: 'wrapper-revision-invalid', revision: rev };
-  }
-  if (!parsed.data || typeof parsed.data !== 'object' || Array.isArray(parsed.data)) return { ok: false, reason: 'data-shape-invalid' };
-  return { ok: true, wrapper: parsed, data: parsed.data, version: parsed.version, revision: parsed.revision };
+  return {
+    ok: true,
+    wrapper: evalRes.wrapper,
+    data: evalRes.data,
+    version: evalRes.wrapper && evalRes.wrapper.version,
+    revision: evalRes.wrapper && evalRes.wrapper.revision,
+    eval: evalRes
+  };
 }
-
-// PRV-0.5 R3 (P1-2): schema-14 canonical migrated-shape validator.
-// A persisted wrapper is considered a valid current-schema migrated
-// state ONLY when all four required record domains are present as
-// arrays AND the marker exists AND status has a recognized value.
-// Any deviation is malformed — hydration MUST NOT trust it, and
-// processImport MUST NOT overwrite good state with it.
+// PRV-0.5 R5: schema-14 canonical shape check delegates to Store's
+// evaluateCandidateData. Retained for test-harness visibility only.
 function isSchema14CanonicalMigratedShape(data) {
-  if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
-  const r = data.records;
-  if (!r || typeof r !== 'object' || Array.isArray(r)) return false;
-  for (const d of ['deadlines', 'claims', 'risks', 'goals']) {
-    if (!Array.isArray(r[d])) return false;
-  }
-  const m = data.meta && data.meta.recordsMigration;
-  if (!m || typeof m !== 'object' || Array.isArray(m)) return false;
-  if (m.status !== MIGRATION_MIGRATED && m.status !== MIGRATION_UNMIGRATED) return false;
-  return true;
+  if (!(window.Store && typeof window.Store.evaluateCandidateData === 'function')) return false;
+  const inner = window.Store.evaluateCandidateData(data);
+  return inner.canonical && inner.classification === 'AUTHORITATIVE_MIGRATED';
 }
-// PRV-0.5 R4 (Codex Round-3 P1-B): the DESTRUCTIVE-boundary
-// canonical-shape predicate. Applies the same rules to both migrated
-// and unmigrated schema-14 candidates: marker MUST exist with a
-// recognized status AND records MUST be an object with all four
-// domain arrays. Codex R3 showed that gating only on
-// `status === 'migrated'` let malformed backups (missing marker,
-// bogus status, missing records) bypass the guard and overwrite good
-// current state; hydration then seeded from LEGACY_RECORDS,
-// inventing intent. Every schema-14 candidate — migrated or
-// unmigrated — must carry the canonical shape or be rejected before
-// it can replace live state.
+// PRV-0.5 R5: destructive-boundary canonical check now accepts either
+// AUTHORITATIVE_MIGRATED or VERIFIED_LEGACY_TRANSITION (the two
+// canonical schema-14 candidate classes). MALFORMED_CURRENT_SCHEMA is
+// rejected — that includes the R3-style missing/bogus marker, missing
+// records, missing domain, and R5-style unmigrated-without-provenance
+// or wrong marker.schemaVersion.
 function isSchema14CanonicalDestructiveShape(data) {
-  if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
-  const m = data.meta && data.meta.recordsMigration;
-  if (!m || typeof m !== 'object' || Array.isArray(m)) return false;
-  if (m.status !== MIGRATION_MIGRATED && m.status !== MIGRATION_UNMIGRATED) return false;
-  const r = data.records;
-  if (!r || typeof r !== 'object' || Array.isArray(r)) return false;
-  for (const d of ['deadlines', 'claims', 'risks', 'goals']) {
-    if (!Array.isArray(r[d])) return false;
-  }
-  return true;
+  if (!(window.Store && typeof window.Store.evaluateCandidateData === 'function')) return false;
+  const inner = window.Store.evaluateCandidateData(data);
+  return inner.canonical && (
+    inner.classification === 'AUTHORITATIVE_MIGRATED' ||
+    inner.classification === 'VERIFIED_LEGACY_TRANSITION'
+  );
 }
 window._isSchema14CanonicalMigratedShape = isSchema14CanonicalMigratedShape;
 window._isSchema14CanonicalDestructiveShape = isSchema14CanonicalDestructiveShape;
@@ -233,47 +177,41 @@ async function _hydratePreservationRecordsOnceImpl() {
 
 async function _hydrateUnderLock() {
   const domains = ['deadlines', 'claims', 'risks', 'goals'];
+  if (!(window.Store && typeof window.Store.evaluatePersistedAuthority === 'function')) {
+    return { ok: false, reason: 'no-store-evaluator' };
+  }
 
-  // PRV-0.5 R3 (P1-1): DISK-authoritative "already migrated?" check.
-  // Optimistic in-memory Store.get() can carry a stale 'migrated'
-  // marker after a durable-write failure, so we ignore it and read
-  // the persisted wrapper directly. A wrapper that CLAIMS migrated
-  // but fails schema-14 shape validation (P1-2) is treated as NOT
-  // migrated — hydration proceeds to overwrite the partial state.
-  const persistedNow = _readPersistedWrapper();
-  if (persistedNow.ok) {
-    const marker = persistedNow.data.meta && persistedNow.data.meta.recordsMigration;
-    if (marker && marker.status === MIGRATION_MIGRATED && isSchema14CanonicalMigratedShape(persistedNow.data)) {
-      // Persisted disk is authoritatively migrated + shape-valid.
-      // If in-memory Store somehow has a divergent pending marker op
-      // (e.g. from a prior optimistic write that never landed), drop
-      // it by re-writing the persisted-authoritative marker so future
-      // save flushes cannot leak a stale intent to disk.
-      // Reconcile every path this migration owns to the disk-authoritative
-      // values. Store.set is a noop when the in-memory value already
-      // matches; when it differs (e.g. a stale optimistic marker or a
-      // pending records op enqueued before storage-event rebase caught
-      // up), the write drains the pending op via the optimistic-replay's
-      // `opAppliesCleanlyToBase(cur, after)` idempotent-satisfied path.
-      // This is the mechanism that clears the losing-tab conflict Codex
-      // P1-3 called out: no `at` timestamp in the marker + matching
-      // records content → op silently dropped → no orphaned pending op
-      // blocks subsequent ordinary edits.
-      try {
-        for (const d of ['deadlines', 'claims', 'risks', 'goals']) {
-          const diskDomain = persistedNow.data.records && persistedNow.data.records[d];
-          if (Array.isArray(diskDomain)) window.Store.set('records.' + d, diskDomain);
-        }
-        window.Store.set('meta.recordsMigration', marker);
-      } catch (e) { /* best-effort reconcile */ }
-      return { ok: true, skipped: 'already-migrated', marker: marker };
-    }
-  } else if (persistedNow.reason === 'absent') {
-    // Fresh cold-boot: no dune_state_v4 has ever been persisted. The
-    // in-memory Store IS the truth here — it holds a freshly-minted
-    // defaultState from core.js's initialLoad, and defaultState v14
-    // is canonical migrated + empty records by design. Skip hydration
-    // so fresh browsers do NOT get seeded from LEGACY_RECORDS.
+  // PRV-0.5 R5 (Codex Round-4): ONE authority read — the Store-owned
+  // evaluator. See core.js `evaluatePersistedAuthority` block comment
+  // for the six-class contract. The classification alone drives every
+  // subsequent branch; no parallel local predicate is consulted.
+  const persistedEval = window.Store.evaluatePersistedAuthority();
+
+  // Fast path A: AUTHORITATIVE_MIGRATED + acceptFastPathMigrated=true
+  // (no active blocker, no equal-revision divergent bytes, raw bytes
+  // match Store's accepted baseline).
+  if (persistedEval.classification === 'AUTHORITATIVE_MIGRATED'
+      && persistedEval.acceptFastPathMigrated === true) {
+    // Reconcile in-memory Store to disk-authoritative values so any
+    // stale optimistic op drains (Codex R3 P1-3 mechanism).
+    try {
+      const diskRecs = persistedEval.data && persistedEval.data.records;
+      for (const d of domains) {
+        const arr = diskRecs && diskRecs[d];
+        if (Array.isArray(arr)) window.Store.set('records.' + d, arr);
+      }
+      if (persistedEval.marker) window.Store.set('meta.recordsMigration', persistedEval.marker);
+    } catch (e) { /* best-effort reconcile */ }
+    return { ok: true, skipped: 'already-migrated', marker: persistedEval.marker, classification: persistedEval.classification };
+  }
+
+  // Fast path B: fresh cold-boot (ABSENT persisted wrapper). The
+  // in-memory Store IS the truth (freshly-minted defaultState =
+  // canonical migrated + empty records); do NOT seed legacy on a fresh
+  // browser. Codex Round-4 P1-1: seeding requires
+  // VERIFIED_LEGACY_TRANSITION — an in-memory 'unmigrated' with no
+  // provenance is NOT enough.
+  if (persistedEval.classification === 'ABSENT') {
     try {
       const inMemMarker = window.Store.get('meta.recordsMigration');
       const inMemData = {
@@ -285,111 +223,88 @@ async function _hydrateUnderLock() {
           goals: window.Store.get('records.goals')
         }
       };
-      if (inMemMarker && inMemMarker.status === MIGRATION_MIGRATED
-          && isSchema14CanonicalMigratedShape(inMemData)) {
-        return { ok: true, skipped: 'default-state-migrated', marker: inMemMarker };
+      const inMemEval = window.Store.evaluateCandidateData(inMemData);
+      if (inMemEval.canonical && inMemEval.classification === 'AUTHORITATIVE_MIGRATED') {
+        return { ok: true, skipped: 'default-state-migrated', marker: inMemMarker, classification: 'AUTHORITATIVE_MIGRATED' };
       }
-    } catch (e) { /* fall through to normal migration path */ }
+      // If Store in-memory holds a canonical unmigrated-with-provenance
+      // marker (v13 wrapper just migrated up in memory but not yet
+      // committed) proceed to the legacy-seed path below; otherwise
+      // fail closed.
+      if (!(inMemEval.canonical && inMemEval.classification === 'VERIFIED_LEGACY_TRANSITION')) {
+        return { ok: false, reason: 'recovery-required', classification: 'ABSENT', inMemClassification: inMemEval.classification };
+      }
+    } catch (e) { /* fall through */ }
   }
 
-  // Read any surviving legacy per-id override keys (pre-PRV browsers).
+  // Recovery-required states — MALFORMED_CURRENT_SCHEMA /
+  // CORRUPT_STALE_COLLIDING / UNSUPPORTED_FUTURE_SCHEMA. Hydration
+  // MUST NOT invent state, MUST NOT seed legacy, MUST NOT commit `[]`
+  // as deletion intent. Fail closed so the user recovers via snapshot /
+  // import / reset (Codex Round-4 P1-2, P1-4, P1-5).
+  if (persistedEval.classification === 'MALFORMED_CURRENT_SCHEMA'
+      || persistedEval.classification === 'CORRUPT_STALE_COLLIDING'
+      || persistedEval.classification === 'UNSUPPORTED_FUTURE_SCHEMA') {
+    return {
+      ok: false,
+      reason: 'recovery-required',
+      classification: persistedEval.classification,
+      blocker: persistedEval.blocker || null,
+      evalReasons: persistedEval.reasons
+    };
+  }
+
+  // VERIFIED_LEGACY_TRANSITION with an active blocker → recovery required.
+  if (persistedEval.classification === 'VERIFIED_LEGACY_TRANSITION' && persistedEval.seedLegacy === false) {
+    return {
+      ok: false,
+      reason: 'recovery-required',
+      classification: persistedEval.classification,
+      blocker: persistedEval.blocker || null
+    };
+  }
+
+  // ── Legacy-transition seed path ─────────────────────────────────
+  // Reached only when classification is VERIFIED_LEGACY_TRANSITION
+  // (either on disk or in-memory-only via the ABSENT fall-through). This
+  // is the ONE class that authorises LEGACY_RECORDS seeding.
   let goalsOv = {};
   try { const v = localStorage.getItem('dune_goals_v1'); if (v) goalsOv = JSON.parse(v) || {}; } catch (e) {}
   let claimsOv = {};
   try { const v = localStorage.getItem('dune_claims_v1'); if (v) claimsOv = JSON.parse(v) || {}; } catch (e) {}
-
+  if (!window.LEGACY_RECORDS) return { ok: false, reason: 'no-seed' };
   const legacySeed = _buildHydratedRecords(window.LEGACY_RECORDS, goalsOv, claimsOv);
 
-  // PRV-0.5 R4 (Codex Round-3 P1-C): distinguish "user's records intent
-  // has already been established" from "user's records intent has not
-  // yet been established" via the migration marker, and apply
-  // different intent-preservation rules to each state class.
-  //
-  // MIGRATED-claimed state (persisted disk or Store in-memory says
-  // status='migrated'): the user's records intent HAS been established.
-  // A present valid empty `[]` domain is meaningful state (intentionally
-  // empty) and MUST be preserved verbatim. An absent/malformed domain
-  // MUST be canonicalised to `[]` (a lossless representation of the
-  // migrated claim) — NEVER seeded from LEGACY_RECORDS, because doing
-  // so would invent intent the user may have deliberately deleted.
-  // (Codex R3 reproduced this by omitting only `records.goals` and
-  // watching all four sibling domains repopulate from legacy.)
-  //
-  // UNMIGRATED / no-marker state (v13→v14 preservation transition,
-  // absent wrapper, malformed marker with unknown status): the user's
-  // records intent has NOT been established — this state class exists
-  // precisely to trigger the LEGACY_RECORDS seeding. The empty arrays
-  // present in Store's in-memory state came from migrateUp's bootstrap,
-  // not from user intent, and must be OVERWRITTEN by the legacy seed.
-  // A pre-existing non-empty array (from a partial prior migration
-  // attempt) is preserved.
-  const persistedMarker = persistedNow.ok
-    ? (persistedNow.data.meta && persistedNow.data.meta.recordsMigration)
-    : null;
-  let inMemMarker = null;
-  try { inMemMarker = window.Store.get('meta.recordsMigration'); } catch (e) { /* ignore */ }
-  const markerClaimsMigrated = (
-    (persistedMarker && persistedMarker.status === MIGRATION_MIGRATED)
-    || (!persistedMarker && inMemMarker && inMemMarker.status === MIGRATION_MIGRATED)
-  );
-
-  const readForDomain = (d) => {
-    if (persistedNow.ok && persistedNow.data.records && Array.isArray(persistedNow.data.records[d])) {
-      return persistedNow.data.records[d];
-    }
-    const v = window.Store.get('records.' + d);
-    return Array.isArray(v) ? v : null;
-  };
   const merged = { deadlines: null, claims: null, risks: null, goals: null };
   for (const d of domains) {
-    const cur = readForDomain(d);
-    if (markerClaimsMigrated) {
-      // Migrated intent already established. Preserve present arrays
-      // verbatim — including `[]`. Canonicalise absent/malformed
-      // domains to `[]`. NEVER seed from LEGACY_RECORDS in this state
-      // class (Codex Round-3 P1-C invariant).
-      merged[d] = Array.isArray(cur) ? cur : [];
-    } else {
-      // Unmigrated / absent-marker preservation flow. Empty arrays in
-      // Store's in-memory state are migrateUp bootstrap, not user
-      // intent — the legacy seed overwrites them. A pre-existing
-      // non-empty array (from a partial prior migration attempt) is
-      // authoritative user data and is preserved.
-      merged[d] = (Array.isArray(cur) && cur.length > 0) ? cur : legacySeed[d];
-    }
+    const cur = window.Store.get('records.' + d);
+    // A pre-existing non-empty array from a partial prior migration
+    // attempt is authoritative user data and is preserved. Empty
+    // arrays from migrateUp's bootstrap are overwritten by the seed.
+    merged[d] = (Array.isArray(cur) && cur.length > 0) ? cur : legacySeed[d];
   }
 
-  // Enqueue all writes. Store's debounced flush emits ONE coordinated
-  // wrapper commit that includes every enqueued op.
   for (const d of domains) {
     const r = window.Store.set('records.' + d, merged[d]);
     if (!r || r.ok !== true) {
-      try { console.warn('[PRV-0.5 R3 hydrate] set failed for ' + d, r); } catch (e) {}
+      try { console.warn('[PRV-0.5 R5 hydrate] set failed for ' + d, r); } catch (e) {}
       return { ok: false, reason: 'set-failed', domain: d, res: r };
     }
   }
-  // PRV-0.5 R3 (P1-3): DETERMINISTIC marker content so simultaneous
-  // tabs converge on the SAME value. A wall-clock `at` timestamp
-  // would make each tab's marker CAS-non-idempotent — the losing tab
-  // would retain a pending marker op that blocks future ordinary
-  // Store edits. Two tabs that both complete the migration produce
-  // the same {status, schemaVersion, reason} triple, so the second
-  // Store.set returns `{ok:true, noop:true}` and no orphaned pending
-  // op remains. (Wall-clock provenance for a completed migration
-  // lives in the wrapper's own committedAt field.)
+  // R3 (P1-3) deterministic marker content; R5 (P2) requires exact
+  // canonical marker.schemaVersion.
   const nextMarker = {
     status: MIGRATION_MIGRATED,
-    schemaVersion: 14,
+    schemaVersion: window.Store.SCHEMA_VERSION,
     reason: 'hydration-complete'
   };
   const mRes = window.Store.set('meta.recordsMigration', nextMarker);
   if (!mRes || mRes.ok !== true) {
-    try { console.warn('[PRV-0.5 R3 hydrate] set failed for meta.recordsMigration', mRes); } catch (e) {}
+    try { console.warn('[PRV-0.5 R5 hydrate] set failed for meta.recordsMigration', mRes); } catch (e) {}
     return { ok: false, reason: 'set-marker-failed', res: mRes };
   }
 
-  // Await durable commit. Store fires onSave listeners only after the
-  // wrapper write lands under the coordinator lock.
+  // Await durable commit.
   await new Promise((resolve) => {
     let done = false;
     const unsub = window.Store.onSave(() => {
@@ -398,9 +313,6 @@ async function _hydrateUnderLock() {
       try { unsub(); } catch (e) {}
       resolve();
     });
-    // Safety timeout — if no save fires (paused / durability-blocked),
-    // fall through to the verification step below, which will report
-    // a durability failure and leave the marker unmigrated.
     setTimeout(() => {
       if (done) return;
       done = true;
@@ -409,35 +321,30 @@ async function _hydrateUnderLock() {
     }, 5000);
   });
 
-  // Re-read the persisted wrapper from localStorage to prove durability.
-  // Under a real primary-write failure (quota, etc.), the wrapper on
-  // disk stays at the pre-hydration state; that failure surfaces here
-  // and returns {ok:false} — the marker stays 'unmigrated' on disk
-  // even though optimistic Store memory shows 'migrated'.
-  const verified = _readPersistedWrapper();
-  if (!verified.ok) {
-    return { ok: false, reason: 'persisted-wrapper-missing', detail: verified.reason };
-  }
-  const pData = verified.data;
-  const pMarker = pData.meta && pData.meta.recordsMigration;
-  if (!pMarker || pMarker.status !== MIGRATION_MIGRATED || !isSchema14CanonicalMigratedShape(pData)) {
+  // Verify durability by re-evaluating persisted authority. A successful
+  // hydration means disk classifies as AUTHORITATIVE_MIGRATED (Codex
+  // P1-A export/reload invariant).
+  const verifiedEval = window.Store.evaluatePersistedAuthority();
+  if (verifiedEval.classification !== 'AUTHORITATIVE_MIGRATED') {
     return {
       ok: false,
       reason: 'durability-verification-failed',
       persisted: {
-        wrapperVersion: verified.version,
-        marker: pMarker || null,
-        shapeValid: isSchema14CanonicalMigratedShape(pData)
+        classification: verifiedEval.classification,
+        marker: verifiedEval.marker || null,
+        wrapperVersion: verifiedEval.wrapper && verifiedEval.wrapper.version,
+        reasons: verifiedEval.reasons
       }
     };
   }
   return {
     ok: true,
     hydrated: true,
-    persistedVersion: verified.version,
-    committedAt: verified.wrapper && verified.wrapper.committedAt
+    persistedVersion: verifiedEval.wrapper && verifiedEval.wrapper.version,
+    committedAt: verifiedEval.wrapper && verifiedEval.wrapper.committedAt
   };
 }
+
 window.hydratePreservationRecordsOnce = hydratePreservationRecordsOnce;
 
 // Boot invocation + import/reset-aware re-invocation.
@@ -2204,6 +2111,52 @@ function getAllBackupData(){
   });
   return out;
 }
+// PRV-0.5 R5 (Codex Round-4 P1-4): normal backup MUST NOT export a
+// primary wrapper whose Store-owned authority is invalid (corrupt /
+// stale / malformed / future / active durability blocker). Returns
+// { acceptForBackup, classification, blocker, reasons } derived from
+// Store.evaluatePersistedAuthority — the SAME evaluator hydration and
+// import consult. A refused export can be captured as recovery
+// evidence via exportRecoveryEvidence(); it is never packaged as a
+// normal restorable backup.
+function evaluateBackupAuthority(){
+  if(!(window.Store && typeof window.Store.evaluatePersistedAuthority === 'function')){
+    return { acceptForBackup: false, classification: 'STORE_UNAVAILABLE', blocker: null, reasons: ['no-evaluator'] };
+  }
+  const ev = window.Store.evaluatePersistedAuthority();
+  return {
+    acceptForBackup: ev.acceptForBackup === true,
+    classification: ev.classification,
+    blocker: ev.blocker || null,
+    reasons: ev.reasons || []
+  };
+}
+window._evaluateBackupAuthority = evaluateBackupAuthority;
+// PRV-0.5 R5: quarantine export path. A wrapper whose authority is
+// invalid is preserved as evidence but is NEVER labelled as a normal
+// backup. The quarantine envelope carries an explicit `quarantined:true`
+// marker and cannot be imported by processImport (which routes through
+// evaluateCandidateWrapper and refuses non-canonical schema-14).
+function buildQuarantineEnvelope(reason){
+  const data = getAllBackupData();
+  return {
+    version: '2026.1-quarantine',
+    exported_at: new Date().toISOString(),
+    quarantined: true,
+    reason: reason || 'invalid-authority',
+    data
+  };
+}
+window.exportRecoveryEvidence = function(){
+  const auth = evaluateBackupAuthority();
+  const envelope = buildQuarantineEnvelope(auth.classification);
+  const blob = new Blob([JSON.stringify(envelope,null,2)],{type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'dune-recovery-evidence-'+new Date().toISOString().slice(0,10)+'.json';
+  a.click(); URL.revokeObjectURL(url);
+  showBackupToast('⚠ Recovery evidence exported (NOT a normal backup)');
+};
 function bumpChangeCount(){
   const c=(parseInt(localStorage.getItem('dune_change_count_v1')||'0'))+1;
   localStorage.setItem('dune_change_count_v1',c);
@@ -2251,6 +2204,15 @@ window.closeBackupPanel=function(){
   if(panel) panel.style.display='none';
 };
 window.exportBackup=function(){
+  // PRV-0.5 R5 (Codex Round-4 P1-4): refuse to export an invalid
+  // primary authority. Use exportRecoveryEvidence() when the user
+  // deliberately wants to capture the invalid wrapper as evidence for
+  // recovery workflows.
+  const auth=evaluateBackupAuthority();
+  if(!auth.acceptForBackup){
+    showBackupToast('⚠ Cannot export backup — primary storage is not authoritative ('+auth.classification+'). Use recovery evidence export.');
+    return;
+  }
   const data=getAllBackupData();
   const backup={version:'2026.1',exported_at:new Date().toISOString(),data};
   const blob=new Blob([JSON.stringify(backup,null,2)],{type:'application/json'});
@@ -2266,6 +2228,11 @@ window.exportBackup=function(){
   showBackupToast('✓ Backup downloaded');
 };
 window.copyBackupToClipboard=async function(){
+  const auth=evaluateBackupAuthority();
+  if(!auth.acceptForBackup){
+    showBackupToast('⚠ Cannot copy backup — primary storage is not authoritative ('+auth.classification+').');
+    return;
+  }
   const data=getAllBackupData();
   const json=JSON.stringify({version:'2026.1',exported_at:new Date().toISOString(),data},null,2);
   try{
@@ -2421,28 +2388,32 @@ async function processImport(text){
         }
       }
 
-      // 2. Derive candidate data. Legacy-only backups (no dune_state_v4) use
-      //    the pure Store.deriveStateFromLegacy(reader) reading ONLY from the
-      //    just-staged auxiliary keys.
+      // 2. Derive candidate data. PRV-0.5 R5 (Codex Round-4): route the
+      //    ENTIRE source-wrapper authority decision through
+      //    Store.evaluateCandidateWrapper — single source of truth. It
+      //    rejects future versions (P1-5), invalid revisions, and any
+      //    schema-14 wrapper whose canonical marker/records shape or
+      //    provenance is malformed (P1-1, P1-B, P2). Legacy-only
+      //    backups (no dune_state_v4) still derive from staged
+      //    auxiliary keys.
       let candidate;
       if(STATE_KEY_NAME in backup.data){
         const wrapperOrBare=backup.data[STATE_KEY_NAME];
-        // Reject malformed schema-13+ source wrappers up front. Any wrapper
-        // claiming schema-13 or newer MUST carry a valid revision — a
-        // negative / non-integer / out-of-range revision is a hard
-        // corruption signal, not something to fall back to zero on.
-        // (Codex Round-3 P1-A: revision=-1 fast-pathed as migrated.)
-        if(wrapperOrBare && typeof wrapperOrBare === 'object'
-           && typeof wrapperOrBare.version === 'number'
-           && wrapperOrBare.version >= 13){
-          const rev=wrapperOrBare.revision;
-          if(!(typeof rev==='number' && Number.isFinite(rev) && Number.isInteger(rev) && rev>=0 && rev<=Number.MAX_SAFE_INTEGER)){
-            throw new Error('IMPORT_SOURCE_WRAPPER_INVALID_REVISION');
-          }
+        const srcEval=window.Store.evaluateCandidateWrapper(wrapperOrBare);
+        if(srcEval.classification==='UNSUPPORTED_FUTURE_SCHEMA'){
+          throw new Error('IMPORT_UNSUPPORTED_FUTURE_SCHEMA');
         }
-        const ver=(wrapperOrBare&&typeof wrapperOrBare.version==='number')?wrapperOrBare.version:0;
-        const rawData=(wrapperOrBare&&'data' in wrapperOrBare)?wrapperOrBare.data:wrapperOrBare;
-        candidate=window.Store.migrateData(rawData,ver);
+        if(srcEval.classification==='CORRUPT_STALE_COLLIDING'){
+          throw new Error('IMPORT_SOURCE_WRAPPER_INVALID_REVISION');
+        }
+        if(!srcEval.canonical){
+          // Any other non-canonical classification is malformed —
+          // MALFORMED_CURRENT_SCHEMA (missing marker, bogus status,
+          // non-canonical marker schemaVersion, missing records,
+          // missing domain, unmigrated-without-provenance).
+          throw new Error('IMPORT_SCHEMA14_CANONICAL_SHAPE_INVALID');
+        }
+        candidate=srcEval.data;
       } else {
         const stagedReader=(k)=>{ try{ return JSON.parse(localStorage.getItem(k)||'null'); }catch(e){ return null; } };
         candidate=window.Store.deriveStateFromLegacy(stagedReader);
@@ -2452,20 +2423,12 @@ async function processImport(text){
         throw new Error('IMPORT_VALIDATION_FAILED');
       }
 
-      // PRV-0.5 R4 (Codex Round-3 P1-B): DESTRUCTIVE-boundary shape guard
-      // for EVERY schema-14 import candidate — regardless of marker
-      // status. R3 gated only on `status === 'migrated'`; Codex R3 then
-      // bypassed the guard with (a) a missing marker + four empty
-      // records arrays, (b) a bogus marker status, and (c) missing
-      // records + missing marker. All three were accepted, replaced
-      // good current state, and hydration then re-seeded from
-      // LEGACY_RECORDS — inventing user intent. Reject any schema-14
-      // candidate whose migration marker is missing/invalid/unknown-
-      // status OR whose records shape lacks the four canonical arrays,
-      // BEFORE commitFullStateWrapper touches disk.
-      if (typeof window._isSchema14CanonicalDestructiveShape === 'function'
-          ? !window._isSchema14CanonicalDestructiveShape(candidate)
-          : !isSchema14CanonicalDestructiveShape(candidate)) {
+      // PRV-0.5 R5 (Codex Round-4 P1-1..P1-B + P2): every candidate
+      // must ALSO pass the destructive-boundary canonical check on the
+      // materialised candidate data (marker + records + canonical
+      // marker schemaVersion + provenance).
+      const candEval=window.Store.evaluateCandidateData(candidate);
+      if(!candEval.canonical){
         throw new Error('IMPORT_SCHEMA14_CANONICAL_SHAPE_INVALID');
       }
 
@@ -2490,6 +2453,7 @@ async function processImport(text){
     if(topErr && topErr.message==='CAPSULE_WRITE_FAILED'){ toastMsg='⚠ Could not save pre-import backup — aborting'; }
     else if(topErr && topErr.message==='RAWBEFORE_READ_FAILED'){ toastMsg='⚠ Cannot read current storage — aborting'; }
     else if(topErr && topErr.message==='IMPORT_SOURCE_WRAPPER_INVALID_REVISION'){ toastMsg='⚠ Backup source wrapper has an invalid revision — aborting'; }
+    else if(topErr && topErr.message==='IMPORT_UNSUPPORTED_FUTURE_SCHEMA'){ toastMsg='⚠ Backup is from a newer schema version — aborting'; }
     else if(topErr && topErr.message==='IMPORT_SCHEMA14_CANONICAL_SHAPE_INVALID'){ toastMsg='⚠ Backup is malformed (missing records or migration marker) — aborting'; }
     else if(rollbackFailures.length){ toastMsg='⚠ Restore failed and rollback incomplete: '+rollbackFailures.join(', '); }
     else{ toastMsg='⚠ Restore failed — '+((topErr&&topErr.message)||'unknown'); }
@@ -2631,6 +2595,13 @@ window.saveToGist=async function(isRetry){
     }
 
     setGistStatus('Saving…');
+    // PRV-0.5 R5: gist backup MUST refuse invalid primary authority.
+    const authGist=evaluateBackupAuthority();
+    if(!authGist.acceptForBackup){
+      setGistStatus('⚠ Cannot save — primary storage is not authoritative ('+authGist.classification+')','error');
+      showBackupToast('⚠ Cannot save to Gist — primary storage is not authoritative');
+      return;
+    }
     const data=getAllBackupData();
     const backup={version:'2026.1',exported_at:new Date().toISOString(),data};
     const content=JSON.stringify(backup,null,2);

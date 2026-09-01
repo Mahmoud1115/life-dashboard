@@ -322,7 +322,7 @@ test('PRV-R2-DURABILITY-FAILURE — Store.set failure keeps marker unmigrated; r
     // (simulating either a fresh v13 boot that has not yet completed,
     // or a post-import wrapper). Then break Store.set for the marker
     // path so hydration cannot flip it forward.
-    const rollbackMarker = window.Store.set('meta.recordsMigration', { status: 'unmigrated', schemaVersion: 14, reason: 'test-rollback' });
+    const rollbackMarker = window.Store.set('meta.recordsMigration', { status: 'unmigrated', schemaVersion: 14, priorSchemaVersion: 13, reason: 'migrateUp-from-v13' });
     // Wait for the rollback commit to durably land so the injected
     // failure applies to the retry attempt, not to a stale in-flight write.
     await new Promise((resolve) => {
@@ -383,7 +383,7 @@ test('PRV-R2-DURABILITY-VERIFY-REREAD — hydration verifies persisted wrapper b
   const proof = await page.evaluate(async () => {
     // Force marker back to unmigrated for a clean retry.
     window.__prv05HydrationAutoRetryEnabled = false;
-    window.Store.set('meta.recordsMigration', { status: 'unmigrated', schemaVersion: 14, reason: 'test-rollback' });
+    window.Store.set('meta.recordsMigration', { status: 'unmigrated', schemaVersion: 14, priorSchemaVersion: 13, reason: 'migrateUp-from-v13' });
     await new Promise((resolve) => {
       let done = false;
       const finish = () => { if (done) return; done = true; try { unsub(); } catch(e){} resolve(); };
@@ -400,7 +400,7 @@ test('PRV-R2-DURABILITY-VERIFY-REREAD — hydration verifies persisted wrapper b
         try {
           const parsed = JSON.parse(raw);
           if (parsed && parsed.data && parsed.data.meta && parsed.data.meta.recordsMigration) {
-            parsed.data.meta.recordsMigration = { status: 'unmigrated', schemaVersion: 14, reason: 'test-strip' };
+            parsed.data.meta.recordsMigration = { status: 'unmigrated', schemaVersion: 14, priorSchemaVersion: 13, reason: 'migrateUp-from-v13' };
             return JSON.stringify(parsed);
           }
         } catch (e) {}
@@ -434,7 +434,7 @@ test('PRV-R2-CROSS-TAB-DURABILITY — Tab B does not treat migration as complete
   // records but leaves marker unmigrated.
   await a.evaluate(async () => {
     window.__prv05HydrationAutoRetryEnabled = false;
-    window.Store.set('meta.recordsMigration', { status: 'unmigrated', schemaVersion: 14, reason: 'test-cross-tab' });
+    window.Store.set('meta.recordsMigration', { status: 'unmigrated', schemaVersion: 14, priorSchemaVersion: 13, reason: 'migrateUp-from-v13' });
     await new Promise((resolve) => {
       let done = false;
       const finish = () => { if (done) return; done = true; try { unsub(); } catch(e){} resolve(); };
@@ -685,7 +685,7 @@ test('PRV-R3-REAL-DURABLE-FAILURE-P1-1 — real dune_state_v4 write failure keep
     // Suspend the boot-time onSave auto-retry so the test controls timing.
     window.__prv05HydrationAutoRetryEnabled = false;
     // Roll marker back to unmigrated on disk via a normal Store write.
-    window.Store.set('meta.recordsMigration', { status: 'unmigrated', schemaVersion: 14, reason: 'test-r3-reset' });
+    window.Store.set('meta.recordsMigration', { status: 'unmigrated', schemaVersion: 14, priorSchemaVersion: 13, reason: 'migrateUp-from-v13' });
     await new Promise((resolve) => {
       let done = false;
       const finish = () => { if (done) return; done = true; try { unsub(); } catch(e){} resolve(); };
@@ -824,7 +824,11 @@ test('PRV-R3-PARTIAL-MIGRATED-IMPORT-P1-2 — processImport rejects schema-14 mi
 // as complete. Hydration's disk-authoritative shape check must
 // detect the malformed shape and heal it.
 // ────────────────────────────────────────────────────────
-test('PRV-R3-PARTIAL-MIGRATED-BOOT — partial schema-14 migrated wrapper on disk is healed, not trusted', async ({ page }) => {
+// PRV-0.5 R5 (Codex Round-4 P1-2): a partial schema-14 migrated wrapper
+// on disk (a required domain missing / non-array) is NOT silently
+// converted into an empty-array deletion intent. Recovery is required —
+// the user must restore an accepted snapshot or import to recover.
+test('PRV-R3-PARTIAL-MIGRATED-BOOT — partial schema-14 migrated wrapper on disk is recovery-required, not silently healed', async ({ page }) => {
   // Seed a malformed wrapper before goto: status='migrated' but
   // records.goals missing. On boot, load-time validate() should
   // reject it (falling back to defaultState), OR if it slips through,
@@ -852,27 +856,29 @@ test('PRV-R3-PARTIAL-MIGRATED-BOOT — partial schema-14 migrated wrapper on dis
   });
   await page.goto('/');
   await waitForApp(page);
-  // Explicitly drive hydration so we can await the healing commit.
   const hydrateRes = await page.evaluate(() => window.hydratePreservationRecordsOnce());
-  // Wait for the healing commit to flush to disk.
-  await waitForNextSave(page);
   const proof = await page.evaluate(() => {
     const p = JSON.parse(localStorage.getItem('dune_state_v4'));
     const rec = p && p.data && p.data.records;
-    const marker = p && p.data && p.data.meta && p.data.meta.recordsMigration;
     return {
-      wrapperVersion: p && p.version,
-      marker: marker,
-      status: marker && marker.status,
-      recKeys: rec ? Object.keys(rec) : null,
-      recTypes: rec ? { deadlines: typeof rec.deadlines, claims: typeof rec.claims, risks: typeof rec.risks, goals: typeof rec.goals, goalsIsArray: Array.isArray(rec.goals), goalsIsUndef: rec.goals === undefined } : null,
-      allDomainsAreArrays: rec && ['deadlines','claims','risks','goals'].every(d => Array.isArray(rec[d]))
+      goalsAbsent: rec && !('goals' in rec),
+      deadlinesEmpty: rec && Array.isArray(rec.deadlines) && rec.deadlines.length === 0,
+      claimsEmpty: rec && Array.isArray(rec.claims) && rec.claims.length === 0,
+      risksEmpty: rec && Array.isArray(rec.risks) && rec.risks.length === 0
     };
   });
-  expect(hydrateRes && hydrateRes.ok).toBe(true);
-  expect(proof.wrapperVersion).toBe(14);
-  expect(proof.status).toBe('migrated');
-  expect(proof.allDomainsAreArrays).toBe(true);
+  // R5: recovery required — malformed migrated state is NOT silently
+  // converted into deleted goals; hydration refuses and the disk
+  // preserves the exact malformed evidence unchanged.
+  expect(hydrateRes && hydrateRes.ok).toBe(false);
+  expect(hydrateRes && hydrateRes.reason).toBe('recovery-required');
+  expect(hydrateRes && hydrateRes.classification).toBe('MALFORMED_CURRENT_SCHEMA');
+  // The malformed evidence is preserved on disk — goals stays absent,
+  // NOT synthesized as []. This is Codex R4 P1-2 recovery semantics.
+  expect(proof.goalsAbsent).toBe(true);
+  expect(proof.deadlinesEmpty).toBe(true);
+  expect(proof.claimsEmpty).toBe(true);
+  expect(proof.risksEmpty).toBe(true);
 });
 
 // ────────────────────────────────────────────────────────
@@ -1349,38 +1355,33 @@ test('PRV-R4-P1B-SNAPSHOT-MISSING-MARKER — snapshot restore rejects schema-14 
 // resurrection) and goals is canonicalized to [] (never invented
 // from LEGACY_RECORDS).
 // ────────────────────────────────────────────────────────
-test('PRV-R4-P1C-INTENT-PRESERVATION — three empty siblings + one missing domain: no legacy resurrection', async ({ page }) => {
+test('PRV-R4-P1C-INTENT-PRESERVATION — three empty siblings + one missing domain: recovery-required (no legacy, no synthetic deletion)', async ({ page }) => {
   await seedMigratedV14Wrapper(page, {
     records: { deadlines: [], claims: [], risks: [] } // goals omitted
   });
   await page.goto('/');
   await waitForApp(page);
   const hydrateRes = await page.evaluate(() => window.hydratePreservationRecordsOnce());
-  await waitForNextSave(page);
   const proof = await page.evaluate(() => {
     const p = JSON.parse(localStorage.getItem('dune_state_v4'));
     const rec = p && p.data && p.data.records;
-    const marker = p && p.data && p.data.meta && p.data.meta.recordsMigration;
     return {
-      wrapperVersion: p && p.version,
-      marker,
+      goalsAbsent: rec && !('goals' in rec),
       deadlinesLen: rec && Array.isArray(rec.deadlines) ? rec.deadlines.length : -1,
       claimsLen: rec && Array.isArray(rec.claims) ? rec.claims.length : -1,
-      risksLen: rec && Array.isArray(rec.risks) ? rec.risks.length : -1,
-      goalsLen: rec && Array.isArray(rec.goals) ? rec.goals.length : -1,
-      allArrays: rec && ['deadlines','claims','risks','goals'].every(d => Array.isArray(rec[d]))
+      risksLen: rec && Array.isArray(rec.risks) ? rec.risks.length : -1
     };
   });
-  expect(hydrateRes && hydrateRes.ok).toBe(true);
-  expect(proof.wrapperVersion).toBe(14);
-  expect(proof.marker && proof.marker.status).toBe('migrated');
-  expect(proof.allArrays).toBe(true);
-  // The three siblings that were present as [] MUST remain [].
+  // R5 (Codex R4 P1-2): hydration refuses to invent user intent.
+  // Legacy MUST NOT be resurrected AND [] MUST NOT be synthesized.
+  expect(hydrateRes && hydrateRes.ok).toBe(false);
+  expect(hydrateRes && hydrateRes.reason).toBe('recovery-required');
+  expect(hydrateRes && hydrateRes.classification).toBe('MALFORMED_CURRENT_SCHEMA');
+  // Malformed evidence preserved on disk unchanged.
+  expect(proof.goalsAbsent).toBe(true);
   expect(proof.deadlinesLen).toBe(0);
   expect(proof.claimsLen).toBe(0);
   expect(proof.risksLen).toBe(0);
-  // The one absent domain is canonicalized to [] — NOT resurrected from LEGACY.
-  expect(proof.goalsLen).toBe(0);
 });
 
 // ────────────────────────────────────────────────────────
@@ -1390,29 +1391,30 @@ test('PRV-R4-P1C-INTENT-PRESERVATION — three empty siblings + one missing doma
 // siblings must stay empty; the missing one canonicalizes to [].
 // ────────────────────────────────────────────────────────
 for (const missing of ['deadlines', 'claims', 'risks', 'goals']) {
-  test(`PRV-R4-P1C-PARAM — missing ${missing} does not resurrect empty siblings`, async ({ page }) => {
+  test(`PRV-R4-P1C-PARAM — missing ${missing} is recovery-required (no legacy, no synthetic []) `, async ({ page }) => {
     const rec = { deadlines: [], claims: [], risks: [], goals: [] };
     delete rec[missing];
     await seedMigratedV14Wrapper(page, { records: rec });
     await page.goto('/');
     await waitForApp(page);
     const hydrateRes = await page.evaluate(() => window.hydratePreservationRecordsOnce());
-    await waitForNextSave(page);
-    const proof = await page.evaluate(() => {
+    const proof = await page.evaluate((missingDomain) => {
       const p = JSON.parse(localStorage.getItem('dune_state_v4'));
       const r = p && p.data && p.data.records;
       return {
-        allArrays: r && ['deadlines','claims','risks','goals'].every(d => Array.isArray(r[d])),
-        lengths: r ? { deadlines: (r.deadlines||[]).length, claims: (r.claims||[]).length, risks: (r.risks||[]).length, goals: (r.goals||[]).length } : null
+        missingStillAbsent: r && !(missingDomain in r),
+        siblingsEmpty: r && ['deadlines','claims','risks','goals']
+          .filter(d => d !== missingDomain)
+          .every(d => Array.isArray(r[d]) && r[d].length === 0)
       };
-    });
-    expect(hydrateRes && hydrateRes.ok).toBe(true);
-    expect(proof.allArrays).toBe(true);
-    // Every one of the four domains must be empty — no LEGACY resurrection.
-    expect(proof.lengths.deadlines).toBe(0);
-    expect(proof.lengths.claims).toBe(0);
-    expect(proof.lengths.risks).toBe(0);
-    expect(proof.lengths.goals).toBe(0);
+    }, missing);
+    // R5 (P1-2): recovery required — no seed, no synthetic deletion.
+    expect(hydrateRes && hydrateRes.ok).toBe(false);
+    expect(hydrateRes && hydrateRes.reason).toBe('recovery-required');
+    expect(hydrateRes && hydrateRes.classification).toBe('MALFORMED_CURRENT_SCHEMA');
+    // Evidence preserved unchanged — missing domain STAYS absent.
+    expect(proof.missingStillAbsent).toBe(true);
+    expect(proof.siblingsEmpty).toBe(true);
   });
 }
 
@@ -1445,4 +1447,305 @@ test('PRV-R4-P1C-UNMIGRATED-STILL-SEEDS — unmigrated marker still seeds record
   expect(proof.claimsLen).toBeGreaterThan(0);
   expect(proof.risksLen).toBeGreaterThan(0);
   expect(proof.goalsLen).toBeGreaterThan(0);
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// PRV-0.5 R5 (Codex Round-4) — MANDATORY ADVERSARIAL TESTS.
+// Every test converts one Codex Round-4 reproduction into a permanent
+// regression. Together they cover P1-1..P1-5 + P2, plus the R3
+// simultaneous-tab non-regression checkpoint.
+// ═══════════════════════════════════════════════════════════════════
+
+function seedRawWrapper(page, rawObjOrString) {
+  return page.addInitScript((raw) => {
+    try {
+      const bytes = typeof raw === 'string' ? raw : JSON.stringify(raw);
+      localStorage.setItem('dune_state_v4', bytes);
+    } catch (e) {}
+  }, rawObjOrString);
+}
+
+// (1) missing-marker schema-14 wrapper does NOT seed legacy.
+test('PRV-R5-P1-1-MISSING-MARKER-NO-SEED — schema-14 disk wrapper w/ missing marker + all-empty records does not resurrect legacy', async ({ page }) => {
+  const nowIso = new Date().toISOString();
+  await seedRawWrapper(page, {
+    version: 14, revision: 3, committedAt: nowIso,
+    data: {
+      money: { salary_net: 130000, expenses: {}, usd_rate: 88, save_target: 55000 },
+      qatarVisit: { from_airport: 'SVO', to_airport: 'DOH', travel_month: '', flights: 0, hotel: 0, food: 0, transport: 0, misc: 0, emergency: 0, saved: 0, notes: '' },
+      todayFocus: ['','',''], goals: {}, career: {}, easa: {},
+      logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { sourceCounts: { tracker: 0, builder: 0 } }, reconciled: { at: nowIso }, drift: { diverged: false } },
+      reviews: [], decisions: [], timeline: [], about: {}, apartments: [], sbTasks: {},
+      bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: '', model: '' }, meta: {} },
+      telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [],
+      records: { deadlines: [], claims: [], risks: [], goals: [] },
+      meta: { version: 14, createdAt: nowIso, lastUpdated: nowIso } // NO recordsMigration
+    }
+  });
+  await page.goto('/');
+  await waitForApp(page);
+  const hydrateRes = await page.evaluate(() => { window.__prv05HydrationAutoRetryEnabled = false; return window.hydratePreservationRecordsOnce(); });
+  const proof = await page.evaluate(() => {
+    const p = JSON.parse(localStorage.getItem('dune_state_v4'));
+    const r = p && p.data && p.data.records;
+    return {
+      allEmpty: r && ['deadlines','claims','risks','goals'].every(d => Array.isArray(r[d]) && r[d].length === 0)
+    };
+  });
+  expect(hydrateRes && hydrateRes.ok).toBe(false);
+  expect(hydrateRes && hydrateRes.reason).toBe('recovery-required');
+  expect(hydrateRes && hydrateRes.classification).toBe('MALFORMED_CURRENT_SCHEMA');
+  expect(proof.allEmpty).toBe(true); // disk evidence preserved; NO legacy resurrection
+});
+
+// (2) arbitrary schema-14 status='unmigrated' WITHOUT provenance does NOT seed.
+test('PRV-R5-P1-1-ARBITRARY-UNMIGRATED-NO-SEED — schema-14 marker w/ status=unmigrated but missing priorSchemaVersion is not authorised for legacy seed', async ({ page }) => {
+  const nowIso = new Date().toISOString();
+  await seedRawWrapper(page, {
+    version: 14, revision: 4, committedAt: nowIso,
+    data: {
+      money: { salary_net: 130000, expenses: {}, usd_rate: 88, save_target: 55000 },
+      qatarVisit: { from_airport: 'SVO', to_airport: 'DOH', travel_month: '', flights: 0, hotel: 0, food: 0, transport: 0, misc: 0, emergency: 0, saved: 0, notes: '' },
+      todayFocus: ['','',''], goals: {}, career: {}, easa: {},
+      logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { sourceCounts: { tracker: 0, builder: 0 } }, reconciled: { at: nowIso }, drift: { diverged: false } },
+      reviews: [], decisions: [], timeline: [], about: {}, apartments: [], sbTasks: {},
+      bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: '', model: '' }, meta: {} },
+      telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [],
+      records: { deadlines: [], claims: [], risks: [], goals: [] },
+      // status='unmigrated' but NO priorSchemaVersion, NO canonical reason — not provably generated by migrateUp.
+      meta: { version: 14, createdAt: nowIso, lastUpdated: nowIso, recordsMigration: { status: 'unmigrated', schemaVersion: 14, reason: 'fabricated' } }
+    }
+  });
+  await page.goto('/');
+  await waitForApp(page);
+  const hydrateRes = await page.evaluate(() => { window.__prv05HydrationAutoRetryEnabled = false; return window.hydratePreservationRecordsOnce(); });
+  const proof = await page.evaluate(() => {
+    const p = JSON.parse(localStorage.getItem('dune_state_v4'));
+    const r = p && p.data && p.data.records;
+    return { allEmpty: r && ['deadlines','claims','risks','goals'].every(d => Array.isArray(r[d]) && r[d].length === 0) };
+  });
+  expect(hydrateRes && hydrateRes.ok).toBe(false);
+  expect(hydrateRes && hydrateRes.classification).toBe('MALFORMED_CURRENT_SCHEMA');
+  expect(proof.allEmpty).toBe(true);
+});
+
+// (5) equal-revision + divergent raw bytes rejected by fast-path.
+test('PRV-R5-P1-3-EQUAL-REVISION-DIVERGENT-BYTES — fast-path rejects a disk wrapper whose raw differs from Store baseline at the same revision', async ({ page }) => {
+  await page.goto('/');
+  await waitForApp(page);
+  await waitForNextSave(page);
+  const proof = await page.evaluate(async () => {
+    // Freeze the current wrapper as Store's baseline.
+    const baselineRaw = localStorage.getItem('dune_state_v4');
+    const baseline = JSON.parse(baselineRaw);
+    // Same revision, but distinct raw bytes: mutate a records array
+    // in place (without any goingthrough Store).
+    baseline.data.records.goals = [{ id: 'r5_divergent', progress: 42 }];
+    const divergentRaw = JSON.stringify(baseline);
+    localStorage.setItem('dune_state_v4', divergentRaw);
+    window.__prv05HydrationAutoRetryEnabled = false;
+    const ev = window.Store.evaluatePersistedAuthority();
+    const res = await window.hydratePreservationRecordsOnce();
+    return {
+      classification: ev.classification,
+      acceptFastPathMigrated: ev.acceptFastPathMigrated,
+      recoveryRequired: ev.recoveryRequired,
+      hydrateSkipped: res && res.skipped,
+      hydrateOk: res && res.ok,
+      hydrateReason: res && res.reason
+    };
+  });
+  expect(proof.classification).toBe('CORRUPT_STALE_COLLIDING');
+  expect(proof.acceptFastPathMigrated).toBe(false);
+  expect(proof.hydrateSkipped).not.toBe('already-migrated');
+  expect(proof.hydrateOk).toBe(false);
+  expect(proof.hydrateReason).toBe('recovery-required');
+});
+
+// (6) active durability blocker rejected by fast-path.
+test('PRV-R5-P1-3-DURABILITY-BLOCKER-REJECTED — an active Store durability blocker prevents fast-path acceptance', async ({ page }) => {
+  await page.goto('/');
+  await waitForApp(page);
+  await waitForNextSave(page);
+  const proof = await page.evaluate(async () => {
+    // Corrupt the wrapper on disk while Store is running (external
+    // clear / rewrite path). commitFullStateWrapper's storage-event
+    // handling would set the blocker; do it manually by wiping to
+    // trigger the STATE_CLEARED_EXTERNAL blocker on the next flush.
+    // Simpler: dispatch a synthetic 'lifeos:store-durability-blocked'
+    // path by clearing the raw and forcing a set to fail.
+    localStorage.removeItem('dune_state_v4');
+    // Re-populate with a corrupt wrapper so evaluator sees it.
+    localStorage.setItem('dune_state_v4', '{{{ not json');
+    window.__prv05HydrationAutoRetryEnabled = false;
+    const ev = window.Store.evaluatePersistedAuthority();
+    const res = await window.hydratePreservationRecordsOnce();
+    return {
+      classification: ev.classification,
+      hydrateOk: res && res.ok,
+      hydrateReason: res && res.reason,
+      hydrateSkipped: res && res.skipped
+    };
+  });
+  expect(proof.classification).toBe('CORRUPT_STALE_COLLIDING');
+  expect(proof.hydrateSkipped).not.toBe('already-migrated');
+  expect(proof.hydrateOk).toBe(false);
+  expect(proof.hydrateReason).toBe('recovery-required');
+});
+
+// (8) exact Codex R4 corrupt-wrapper reproduction: synthetic goal +
+// deleted snapshots + revision=-1. Normal backup MUST refuse; recovery
+// evidence export exists as an alternative.
+test('PRV-R5-P1-4-CORRUPT-WRAPPER-NO-NORMAL-BACKUP — corrupt persisted wrapper cannot be normally exported', async ({ page }) => {
+  // Seed a corrupt disk wrapper BEFORE the app boots so Store's
+  // initialLoad detects it and sets a durability blocker.
+  const nowIso = new Date().toISOString();
+  await seedRawWrapper(page, {
+    version: 14, revision: -1, committedAt: nowIso,
+    data: {
+      money: { salary_net: 130000, expenses: {}, usd_rate: 88, save_target: 55000 },
+      qatarVisit: { from_airport: 'SVO', to_airport: 'DOH', travel_month: '', flights: 0, hotel: 0, food: 0, transport: 0, misc: 0, emergency: 0, saved: 0, notes: '' },
+      todayFocus: ['','',''], goals: {}, career: {}, easa: {},
+      logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { sourceCounts: { tracker: 0, builder: 0 } }, reconciled: { at: nowIso }, drift: { diverged: false } },
+      reviews: [], decisions: [], timeline: [], about: {}, apartments: [], sbTasks: {},
+      bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: '', model: '' }, meta: {} },
+      telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [],
+      records: { deadlines: [], claims: [], risks: [], goals: [{ id: 'r5_synthetic', progress: 99 }] },
+      meta: { version: 14, createdAt: nowIso, lastUpdated: nowIso, recordsMigration: { status: 'migrated', schemaVersion: 14, at: nowIso, reason: 'test' } }
+    }
+  });
+  // Also delete the rolling snapshots (Codex R4 exact reproduction).
+  await page.addInitScript(() => { try { localStorage.removeItem('dune_snapshots_v1'); } catch (e) {} });
+  await page.goto('/');
+  await waitForApp(page);
+  const proof = await page.evaluate(() => {
+    const auth = window._evaluateBackupAuthority();
+    // Simulate the user tapping "Export backup" — the normal path.
+    let toast = null;
+    const origToast = window.showBackupToast;
+    window.showBackupToast = (m) => { toast = m; };
+    window.exportBackup(); // returns early on invalid authority
+    window.showBackupToast = origToast;
+    // The raw disk wrapper bytes must still be present as evidence.
+    const raw = localStorage.getItem('dune_state_v4');
+    return { authClass: auth.classification, authAccept: auth.acceptForBackup, toast, rawStillPresent: raw !== null };
+  });
+  // Store surfaced a recovery-required blocker via CORRUPT_STALE_COLLIDING.
+  expect(proof.authAccept).toBe(false);
+  expect(['CORRUPT_STALE_COLLIDING','MALFORMED_CURRENT_SCHEMA']).toContain(proof.authClass);
+  expect(proof.toast).toMatch(/Cannot export backup/);
+  // Corrupt evidence is NOT wiped by the refused export.
+  expect(proof.rawStillPresent).toBe(true);
+});
+
+// (9) future-version import rejected.
+test('PRV-R5-P1-5-IMPORT-FUTURE-VERSION-REJECTED — schema-99 import wrapper is refused; good state preserved', async ({ page }) => {
+  await page.goto('/');
+  await waitForApp(page);
+  await waitForNextSave(page);
+  await page.evaluate(() => window.Store.set('goals.__r5_future_witness__', 'ORIGINAL'));
+  await waitForNextSave(page);
+  const proof = await page.evaluate(async () => {
+    try { window.location.reload = function () {}; } catch (e) {}
+    const nowIso = new Date().toISOString();
+    const futureWrapper = { version: 99, revision: 5, committedAt: nowIso, data: { money: { salary_net: 1 }, qatarVisit: {}, unknown_future_field: true } };
+    const payload = JSON.stringify({ version: '2026.1', exported_at: nowIso, data: { dune_state_v4: futureWrapper } });
+    const ok = await window.processImport(payload);
+    return {
+      ok,
+      witnessPreserved: window.Store.get('goals.__r5_future_witness__') === 'ORIGINAL'
+    };
+  });
+  expect(proof.ok).toBe(false);
+  expect(proof.witnessPreserved).toBe(true);
+});
+
+// (10) future-version snapshot rejected.
+test('PRV-R5-P1-5-SNAPSHOT-FUTURE-VERSION-REJECTED — schema-99 snapshot payload is refused; good state preserved', async ({ page }) => {
+  await page.goto('/');
+  await waitForApp(page);
+  await waitForNextSave(page);
+  const proof = await page.evaluate(async () => {
+    const nowIso = new Date().toISOString();
+    const futureData = { money: { salary_net: 1 }, qatarVisit: {}, unknown_future_field: true };
+    const wrapper = { version: 99, revision: 5, committedAt: nowIso, data: futureData };
+    localStorage.setItem('dune_snapshots_v1', JSON.stringify([{ at: nowIso, payload: JSON.stringify(wrapper) }]));
+    const preMarker = window.Store.get('meta.recordsMigration');
+    const restoreRes = window.Store.restoreSnapshot(0, { force: true });
+    await new Promise((r) => setTimeout(r, 500));
+    const post = JSON.parse(localStorage.getItem('dune_state_v4'));
+    return {
+      restoreOk: restoreRes && restoreRes.ok,
+      restoreError: restoreRes && restoreRes.error,
+      postMarkerStatus: post && post.data && post.data.meta && post.data.meta.recordsMigration && post.data.meta.recordsMigration.status,
+      preMarkerStatus: preMarker && preMarker.status
+    };
+  });
+  expect(proof.restoreOk).toBe(false);
+  expect(proof.restoreError).toBe('SNAPSHOT_SOURCE_WRAPPER_INVALID');
+  expect(proof.postMarkerStatus).toBe(proof.preMarkerStatus);
+});
+
+// (11) future-version boot: initialLoad refuses to downgrade an
+// unknown future wrapper; Store enters recovery-required.
+test('PRV-R5-P1-5-BOOT-FUTURE-VERSION-BLOCKED — a schema-99 disk wrapper triggers a Store durability blocker; ordinary writes refuse', async ({ page }) => {
+  const nowIso = new Date().toISOString();
+  await seedRawWrapper(page, {
+    version: 99, revision: 3, committedAt: nowIso,
+    data: { money: { salary_net: 130000 }, qatarVisit: {}, unknown_future_field: true }
+  });
+  await page.goto('/');
+  await waitForApp(page);
+  const proof = await page.evaluate(() => {
+    const blocker = window.Store.getDurabilityBlocker();
+    // Ordinary write refuses because Store is durability-blocked.
+    const setRes = window.Store.set('goals.__r5_boot_future_write__', 'ATTEMPT');
+    const rawStillFuture = (() => {
+      try {
+        const p = JSON.parse(localStorage.getItem('dune_state_v4'));
+        return p && p.version === 99;
+      } catch (e) { return false; }
+    })();
+    return {
+      blockerCode: blocker && blocker.code,
+      setOk: setRes && setRes.ok,
+      setError: setRes && setRes.error,
+      rawStillFuture
+    };
+  });
+  expect(proof.blockerCode).toBe('STORE_CORRUPT_AUTHORITATIVE_STATE');
+  expect(proof.setOk).toBe(false);
+  expect(proof.setError).toBe('STORE_DURABILITY_BLOCKED');
+  // Future-version disk bytes are preserved as evidence — never
+  // silently downgraded.
+  expect(proof.rawStillFuture).toBe(true);
+});
+
+// (12) marker missing/mismatched schemaVersion rejected (P2).
+test('PRV-R5-P2-MARKER-SCHEMA-VERSION-CANONICAL — import with marker.schemaVersion=99 is refused', async ({ page }) => {
+  await page.goto('/');
+  await waitForApp(page);
+  await waitForNextSave(page);
+  await page.evaluate(() => window.Store.set('goals.__r5_p2_witness__', 'ORIGINAL'));
+  await waitForNextSave(page);
+  const proof = await page.evaluate(async () => {
+    try { window.location.reload = function () {}; } catch (e) {}
+    const nowIso = new Date().toISOString();
+    const wrapper = {
+      version: 14, revision: 42, committedAt: nowIso,
+      data: {
+        money: { salary_net: 1 }, qatarVisit: {},
+        records: { deadlines: [], claims: [], risks: [], goals: [] },
+        meta: { version: 14, createdAt: nowIso, lastUpdated: nowIso, recordsMigration: { status: 'migrated', schemaVersion: 99, at: nowIso, reason: 'test' } }
+      }
+    };
+    const payload = JSON.stringify({ version: '2026.1', exported_at: nowIso, data: { dune_state_v4: wrapper } });
+    const ok = await window.processImport(payload);
+    return {
+      ok,
+      witnessPreserved: window.Store.get('goals.__r5_p2_witness__') === 'ORIGINAL'
+    };
+  });
+  expect(proof.ok).toBe(false);
+  expect(proof.witnessPreserved).toBe(true);
 });

@@ -923,9 +923,14 @@
   }
   // Wrapper-only structural gate. Used by both snapshot paths; data-level
   // validation is performed separately (see validateSnapshotWrapperFull).
+  //
+  // PRV-0.5 R5 (Codex Round-4 P1-5): reject wrappers whose version is
+  // strictly greater than SCHEMA_VERSION. Unknown future semantics MUST
+  // NOT be silently downgraded by migrateUp; the wrapper is quarantined.
   function isValidSnapshotWrapperShape(parsed) {
     if (!parsed || typeof parsed !== 'object') return false;
     if (typeof parsed.version !== 'number' || !Number.isInteger(parsed.version)) return false;
+    if (parsed.version > SCHEMA_VERSION) return false;
     if (parsed.version === 13) {
       const rev = parsed.revision;
       if (!(typeof rev === 'number' && Number.isFinite(rev) && Number.isInteger(rev) && rev >= 0 && rev <= Number.MAX_SAFE_INTEGER)) {
@@ -937,21 +942,25 @@
   // Full snapshot wrapper validation: structural gate + migrate + Store data
   // validation. Never mutates Store. Returns { ok, data? }; on ok:true, data
   // is the migrated candidate suitable for commitFullStateWrapper.
+  //
+  // PRV-0.5 R5: routes through the Store-owned authority evaluator so the
+  // snapshot-restore boundary applies the same canonical marker + records +
+  // future-version rules used by hydration and import.
   function validateSnapshotWrapperFull(parsed) {
-    if (!isValidSnapshotWrapperShape(parsed)) return { ok: false };
+    if (!isValidSnapshotWrapperShape(parsed)) return { ok: false, reason: 'SNAPSHOT_WRAPPER_SHAPE_INVALID' };
     let migrated;
     try {
       migrated = (parsed.version === SCHEMA_VERSION && parsed.data)
         ? parsed.data
         : migrateUp(parsed.data || {}, parsed.version || 0);
       normalizeLogbookDomain(migrated);
-    } catch (e) { return { ok: false }; }
-    if (!validate(migrated)) return { ok: false };
-    // PRV-0.5 R3: snapshot restore is a DESTRUCTIVE boundary — reject
-    // records-migration-shape-unsafe candidates before they overwrite
-    // good current state. Boot-time load intentionally uses the softer
-    // `validate()` gate; the snapshot restore path is stricter.
-    if (!isRecordsMigrationShapeSafe(migrated)) return { ok: false };
+    } catch (e) { return { ok: false, reason: 'SNAPSHOT_MIGRATE_THREW' }; }
+    if (!validate(migrated)) return { ok: false, reason: 'SNAPSHOT_DATA_INVALID' };
+    // PRV-0.5 R5: candidate-shape authority — canonical marker (status +
+    // exact schemaVersion) AND canonical four-array records. Rejection
+    // preserves current state; no destructive commit occurs.
+    const evalRes = evaluateCandidateData(migrated);
+    if (!evalRes.canonical) return { ok: false, reason: 'SNAPSHOT_CANDIDATE_' + evalRes.classification };
     return { ok: true, data: migrated };
   }
   // Retained alias — existing callers went through the shape-only gate.
@@ -1010,6 +1019,387 @@
     }
     return true;
   }
+  // ══════════════════════════════════════════════════════════════
+  // PRV-0.5 R5 (ADR-015 addendum #4): STORE-OWNED AUTHORITY EVALUATOR.
+  //
+  // Codex Round-4 identified five HIGH-risk defects rooted in the SAME
+  // architectural cause: parallel authority predicates in app.js and
+  // core.js diverged and let ambiguous / stale / corrupt / future
+  // wrappers pass one path while the other rejected them. R5 collapses
+  // every wrapper-authority decision into this single evaluator.
+  //
+  // Consumers:
+  //   - hydration fast-path (app.js) → evaluatePersistedAuthority()
+  //   - production import (app.js processImport) → evaluateCandidateWrapper()
+  //   - snapshot restore (validateSnapshotWrapperFull) → evaluateCandidateData()
+  //   - backup/export (app.js exportBackup / copyBackupToClipboard) →
+  //         evaluatePersistedAuthority() then checks acceptForBackup
+  //   - boot recovery (initialLoad) → applies same classification to
+  //         decide durability blocker vs. legacy fallback
+  //
+  // Classifications (six behavioural classes; A/B/G share behaviour and
+  // return AUTHORITATIVE_MIGRATED with sub-flags):
+  //   AUTHORITATIVE_MIGRATED     (A / B / G)
+  //   VERIFIED_LEGACY_TRANSITION (C — the ONLY class that authorises
+  //                                    LEGACY_RECORDS seeding)
+  //   MALFORMED_CURRENT_SCHEMA   (D — invalid marker / non-canonical
+  //                                    records / non-canonical marker
+  //                                    schemaVersion / unmigrated w/o
+  //                                    supported provenance)
+  //   CORRUPT_STALE_COLLIDING    (E — invalid wrapper JSON, invalid
+  //                                    revision, stale revision, equal
+  //                                    revision divergent bytes, active
+  //                                    Store durability blocker)
+  //   UNSUPPORTED_FUTURE_SCHEMA  (F — version > SCHEMA_VERSION)
+  //   ABSENT                     (no wrapper on disk / no candidate)
+  //
+  // Only VERIFIED_LEGACY_TRANSITION authorises LEGACY_RECORDS seeding.
+  // Only AUTHORITATIVE_MIGRATED authorises the hydration fast-path
+  // "already-migrated" skip AND normal backup export.
+  // MALFORMED / CORRUPT / FUTURE always require explicit recovery
+  // (accepted snapshot / import / reset) — never a synthesized `[]`,
+  // never a silent seed, never a normal backup.
+  // ══════════════════════════════════════════════════════════════
+
+  const MARKER_STATUS_MIGRATED = 'migrated';
+  const MARKER_STATUS_UNMIGRATED = 'unmigrated';
+  const REQUIRED_RECORD_DOMAINS = ['deadlines', 'claims', 'risks', 'goals'];
+  // Legacy transition source versions. migrateUp only understands
+  // wrappers whose version is strictly less than SCHEMA_VERSION; higher
+  // versions are UNSUPPORTED_FUTURE_SCHEMA.
+  function isSupportedLegacySourceVersion(v) {
+    return typeof v === 'number' && Number.isInteger(v) && v >= 0 && v < SCHEMA_VERSION;
+  }
+  // Canonical marker predicate. A schema-14 marker MUST carry:
+  //   - status ∈ { 'migrated', 'unmigrated' }
+  //   - schemaVersion === SCHEMA_VERSION (exact — future/older not accepted)
+  //   - for 'unmigrated': priorSchemaVersion in [0..SCHEMA_VERSION-1] AND
+  //     reason string matching migrateUp's provenance format
+  //     ('migrateUp-from-vN' where N === priorSchemaVersion).
+  // The provenance requirement is what makes an 'unmigrated' marker
+  // PROVABLE — an arbitrary caller cannot fabricate a marker that
+  // passes this check without also claiming a supported priorSchema.
+  function classifyMarker(marker) {
+    if (!marker || typeof marker !== 'object' || Array.isArray(marker)) {
+      return { canonical: false, kind: 'missing' };
+    }
+    if (marker.schemaVersion !== SCHEMA_VERSION) {
+      return { canonical: false, kind: 'wrong-schema-version' };
+    }
+    if (marker.status === MARKER_STATUS_MIGRATED) {
+      return { canonical: true, kind: 'migrated' };
+    }
+    if (marker.status === MARKER_STATUS_UNMIGRATED) {
+      if (!isSupportedLegacySourceVersion(marker.priorSchemaVersion)) {
+        return { canonical: false, kind: 'unmigrated-no-provenance' };
+      }
+      const expectedReason = 'migrateUp-from-v' + marker.priorSchemaVersion;
+      if (marker.reason !== expectedReason) {
+        return { canonical: false, kind: 'unmigrated-reason-mismatch' };
+      }
+      return { canonical: true, kind: 'unmigrated' };
+    }
+    return { canonical: false, kind: 'unknown-status' };
+  }
+  // Canonical records-domain predicate. All four required domains must
+  // be present as arrays. Absent / non-array / non-object = malformed.
+  // Used identically at every destructive boundary; there is NO length
+  // inference, and a missing domain is NEVER synthesized to [].
+  function classifyRecords(records) {
+    if (!records || typeof records !== 'object' || Array.isArray(records)) {
+      return { canonical: false, kind: 'missing-or-shape-invalid', missing: REQUIRED_RECORD_DOMAINS.slice() };
+    }
+    const missing = [];
+    for (const d of REQUIRED_RECORD_DOMAINS) {
+      if (!Array.isArray(records[d])) missing.push(d);
+    }
+    if (missing.length) return { canonical: false, kind: 'missing-domain', missing };
+    let allEmpty = true;
+    for (const d of REQUIRED_RECORD_DOMAINS) {
+      if (records[d].length > 0) { allEmpty = false; break; }
+    }
+    return { canonical: true, kind: allEmpty ? 'all-empty' : 'populated', allEmpty };
+  }
+  // Evaluate a bare `data` object (post-migrateUp when needed). Used by
+  // snapshot restore, import candidate validation, and the boot-recovery
+  // path. Returns { canonical, classification, marker, records, reasons }.
+  function evaluateCandidateData(data) {
+    const reasons = [];
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      return { canonical: false, classification: 'MALFORMED_CURRENT_SCHEMA', reasons: ['data-shape-invalid'] };
+    }
+    const marker = data.meta && data.meta.recordsMigration;
+    const mk = classifyMarker(marker);
+    const rk = classifyRecords(data.records);
+    if (!mk.canonical) reasons.push('marker:' + mk.kind);
+    if (!rk.canonical) reasons.push('records:' + rk.kind + (rk.missing ? '[' + rk.missing.join(',') + ']' : ''));
+    if (mk.canonical && rk.canonical) {
+      if (mk.kind === 'migrated') {
+        return {
+          canonical: true,
+          classification: 'AUTHORITATIVE_MIGRATED',
+          allEmpty: rk.allEmpty === true,
+          marker: marker, records: data.records, reasons
+        };
+      }
+      // unmigrated + canonical provenance + canonical records (four
+      // arrays present) → VERIFIED_LEGACY_TRANSITION.
+      //
+      // Records are permitted to be non-empty here: a partial prior
+      // migration attempt may have persisted some records BEFORE the
+      // marker flip. The R5 authority contract keys off provenance
+      // alone (priorSchemaVersion + canonical reason) — a fabricated
+      // 'unmigrated' marker cannot pass classifyMarker regardless of
+      // records emptiness.
+      return {
+        canonical: true,
+        classification: 'VERIFIED_LEGACY_TRANSITION',
+        marker: marker, records: data.records, reasons
+      };
+    }
+    return { canonical: false, classification: 'MALFORMED_CURRENT_SCHEMA', marker, records: data.records, reasons };
+  }
+  // Evaluate an external candidate WRAPPER (parsed JSON object OR raw
+  // JSON string) for destructive boundaries (import, snapshot restore).
+  // Does NOT consider Store's live baseWrapperRaw / durabilityBlocker
+  // (those belong to evaluatePersistedAuthority — the live-disk view).
+  function evaluateCandidateWrapper(input) {
+    if (input === null || input === undefined) {
+      return { classification: 'ABSENT', canonical: false, reasons: ['absent'] };
+    }
+    let parsed;
+    if (typeof input === 'string') {
+      const p = parseWrapperRaw(input);
+      if (!p) return { classification: 'ABSENT', canonical: false, reasons: ['null-parse'] };
+      if (p.corrupt) return { classification: 'CORRUPT_STALE_COLLIDING', canonical: false, reasons: ['wrapper-corrupt'] };
+      parsed = p;
+    } else if (typeof input === 'object' && !Array.isArray(input)) {
+      // Bare candidate wrapper object (from JSON.parse in caller).
+      const v = (typeof input.version === 'number' && Number.isInteger(input.version)) ? input.version : null;
+      if (v === null) return { classification: 'CORRUPT_STALE_COLLIDING', canonical: false, reasons: ['wrapper-version-invalid'] };
+      if (v > SCHEMA_VERSION) {
+        return { classification: 'UNSUPPORTED_FUTURE_SCHEMA', canonical: false, reasons: ['version>' + SCHEMA_VERSION], wrapperVersion: v };
+      }
+      if (v >= 13) {
+        if (!isValidRevision(input.revision)) {
+          return { classification: 'CORRUPT_STALE_COLLIDING', canonical: false, reasons: ['revision-invalid'], wrapperVersion: v };
+        }
+      }
+      parsed = { version: v, revision: isValidRevision(input.revision) ? input.revision : 0, committedAt: input.committedAt || null, data: input.data || null, corrupt: false };
+    } else {
+      return { classification: 'CORRUPT_STALE_COLLIDING', canonical: false, reasons: ['wrapper-shape-invalid'] };
+    }
+    if (parsed.version > SCHEMA_VERSION) {
+      return { classification: 'UNSUPPORTED_FUTURE_SCHEMA', canonical: false, reasons: ['version>' + SCHEMA_VERSION], wrapperVersion: parsed.version };
+    }
+    // Migrate the inner data up if the wrapper is a legacy source.
+    let migrated;
+    try {
+      migrated = (parsed.version === SCHEMA_VERSION && parsed.data)
+        ? parsed.data
+        : migrateUp(parsed.data || {}, parsed.version || 0);
+      normalizeLogbookDomain(migrated);
+    } catch (e) {
+      return { classification: 'MALFORMED_CURRENT_SCHEMA', canonical: false, reasons: ['migrateUp-threw'], wrapperVersion: parsed.version };
+    }
+    if (!validate(migrated)) {
+      return { classification: 'MALFORMED_CURRENT_SCHEMA', canonical: false, reasons: ['validate-failed'], wrapperVersion: parsed.version, data: migrated };
+    }
+    const inner = evaluateCandidateData(migrated);
+    inner.wrapperVersion = parsed.version;
+    inner.wrapperRevision = parsed.revision;
+    inner.data = migrated;
+    return inner;
+  }
+  // Evaluate the CURRENTLY PERSISTED authority (raw wrapper bytes on
+  // disk, considered against the Store's live baseWrapperRaw,
+  // knownRevision, and durabilityBlocker). Consumers: hydration
+  // fast-path, backup/export gate, boot-recovery classification.
+  //
+  // `raw` (optional):
+  //   - undefined  → read localStorage[STATE_KEY] internally.
+  //   - null       → treat as ABSENT.
+  //   - string     → treat as the raw persisted bytes.
+  //
+  // Returned booleans (consumer decisions):
+  //   acceptFastPathMigrated → true iff AUTHORITATIVE_MIGRATED, no active
+  //     durability blocker, raw bytes match Store's accepted baseline (no
+  //     equal-revision divergent-bytes attack).
+  //   authoritative         → true for AUTHORITATIVE_MIGRATED and
+  //     VERIFIED_LEGACY_TRANSITION.
+  //   seedLegacy            → true ONLY for VERIFIED_LEGACY_TRANSITION.
+  //   acceptForBackup       → true iff authoritative AND no active
+  //     durability blocker AND (for AUTHORITATIVE_MIGRATED) the raw
+  //     matches the Store baseline. Malformed/corrupt/future/stale
+  //     wrappers refuse normal backup and require quarantine.
+  //   recoveryRequired      → true for MALFORMED, CORRUPT_STALE_COLLIDING,
+  //     UNSUPPORTED_FUTURE_SCHEMA (with data on disk).
+  function evaluatePersistedAuthority(raw) {
+    // Read raw from disk when caller passes undefined; a null caller
+    // request stays ABSENT.
+    let rawEffective;
+    if (raw === undefined) {
+      try { rawEffective = localStorage.getItem(STATE_KEY); }
+      catch (e) { rawEffective = null; }
+    } else {
+      rawEffective = raw;
+    }
+    const blocker = durabilityBlocker ? Object.assign({}, durabilityBlocker) : null;
+    const reasons = [];
+    if (rawEffective === null || rawEffective === undefined) {
+      return {
+        classification: 'ABSENT', canonical: false,
+        acceptFastPathMigrated: false, authoritative: false, seedLegacy: false,
+        acceptForBackup: false, recoveryRequired: false, blocker,
+        rawIdentityMatchesStore: baseWrapperRaw === null,
+        wrapper: null, data: null, marker: null, reasons: ['absent']
+      };
+    }
+    // Parse wrapper via Store's own rules — single source of truth.
+    const parsed = parseWrapperRaw(rawEffective);
+    if (!parsed) {
+      return {
+        classification: 'CORRUPT_STALE_COLLIDING', canonical: false,
+        acceptFastPathMigrated: false, authoritative: false, seedLegacy: false,
+        acceptForBackup: false, recoveryRequired: true, blocker,
+        rawIdentityMatchesStore: rawEffective === baseWrapperRaw,
+        wrapper: null, data: null, marker: null, reasons: ['null-parse']
+      };
+    }
+    if (parsed.corrupt) {
+      return {
+        classification: 'CORRUPT_STALE_COLLIDING', canonical: false,
+        acceptFastPathMigrated: false, authoritative: false, seedLegacy: false,
+        acceptForBackup: false, recoveryRequired: true, blocker,
+        rawIdentityMatchesStore: rawEffective === baseWrapperRaw,
+        wrapper: null, data: null, marker: null, reasons: ['wrapper-corrupt']
+      };
+    }
+    if (parsed.version > SCHEMA_VERSION) {
+      return {
+        classification: 'UNSUPPORTED_FUTURE_SCHEMA', canonical: false,
+        acceptFastPathMigrated: false, authoritative: false, seedLegacy: false,
+        acceptForBackup: false, recoveryRequired: true, blocker,
+        rawIdentityMatchesStore: rawEffective === baseWrapperRaw,
+        wrapper: { version: parsed.version, revision: parsed.revision, committedAt: parsed.committedAt },
+        data: null, marker: null, reasons: ['version>' + SCHEMA_VERSION]
+      };
+    }
+    if (!isValidRevision(parsed.revision)) {
+      return {
+        classification: 'CORRUPT_STALE_COLLIDING', canonical: false,
+        acceptFastPathMigrated: false, authoritative: false, seedLegacy: false,
+        acceptForBackup: false, recoveryRequired: true, blocker,
+        rawIdentityMatchesStore: rawEffective === baseWrapperRaw,
+        wrapper: { version: parsed.version, revision: parsed.revision, committedAt: parsed.committedAt },
+        data: null, marker: null, reasons: ['revision-invalid']
+      };
+    }
+    // Stale relative to Store's accepted disk revision.
+    if (typeof knownRevision === 'number' && parsed.revision < knownRevision) {
+      return {
+        classification: 'CORRUPT_STALE_COLLIDING', canonical: false,
+        acceptFastPathMigrated: false, authoritative: false, seedLegacy: false,
+        acceptForBackup: false, recoveryRequired: true, blocker,
+        rawIdentityMatchesStore: rawEffective === baseWrapperRaw,
+        wrapper: { version: parsed.version, revision: parsed.revision, committedAt: parsed.committedAt },
+        data: null, marker: null, reasons: ['revision-stale', 'known=' + knownRevision]
+      };
+    }
+    // At this point outer wrapper metadata is well-formed. Now evaluate
+    // inner authority (marker + records) via evaluateCandidateData.
+    // For version < SCHEMA_VERSION we treat this as a legacy source
+    // wrapper — always VERIFIED_LEGACY_TRANSITION (post-migrateUp the
+    // marker will read as 'unmigrated' with valid provenance).
+    if (parsed.version < SCHEMA_VERSION) {
+      if (!isSupportedLegacySourceVersion(parsed.version)) {
+        // Non-integer or out-of-range legacy version — malformed.
+        return {
+          classification: 'MALFORMED_CURRENT_SCHEMA', canonical: false,
+          acceptFastPathMigrated: false, authoritative: false, seedLegacy: false,
+          acceptForBackup: false, recoveryRequired: true, blocker,
+          rawIdentityMatchesStore: rawEffective === baseWrapperRaw,
+          wrapper: { version: parsed.version, revision: parsed.revision, committedAt: parsed.committedAt },
+          data: null, marker: null, reasons: ['legacy-version-invalid']
+        };
+      }
+      return {
+        classification: 'VERIFIED_LEGACY_TRANSITION', canonical: true,
+        acceptFastPathMigrated: false,
+        authoritative: true,
+        seedLegacy: !blocker,
+        acceptForBackup: !blocker && rawEffective === baseWrapperRaw,
+        recoveryRequired: false, blocker,
+        rawIdentityMatchesStore: rawEffective === baseWrapperRaw,
+        wrapper: { version: parsed.version, revision: parsed.revision, committedAt: parsed.committedAt },
+        data: parsed.data, marker: null,
+        reasons: ['legacy-source-v' + parsed.version]
+      };
+    }
+    // parsed.version === SCHEMA_VERSION — canonical marker + records
+    // required.
+    const inner = evaluateCandidateData(parsed.data);
+    if (inner.classification === 'AUTHORITATIVE_MIGRATED') {
+      const rawIdentityMatchesStore = rawEffective === baseWrapperRaw;
+      const equalRevisionDivergentBytes =
+        baseWrapperRaw !== null &&
+        parsed.revision === knownRevision &&
+        !rawIdentityMatchesStore;
+      const acceptFastPathMigrated = !blocker && rawIdentityMatchesStore;
+      const reasonsOut = inner.reasons.slice();
+      if (blocker) reasonsOut.push('durability-blocker:' + blocker.code);
+      if (equalRevisionDivergentBytes) reasonsOut.push('equal-revision-divergent-bytes');
+      if (!rawIdentityMatchesStore) reasonsOut.push('raw-identity-mismatch');
+      // Equal-revision divergent bytes OR an active blocker demote
+      // AUTHORITATIVE_MIGRATED into CORRUPT_STALE_COLLIDING for the
+      // fast-path/backup consumers.
+      if (equalRevisionDivergentBytes || blocker) {
+        return {
+          classification: 'CORRUPT_STALE_COLLIDING', canonical: false,
+          acceptFastPathMigrated: false, authoritative: false, seedLegacy: false,
+          acceptForBackup: false, recoveryRequired: true, blocker,
+          rawIdentityMatchesStore,
+          wrapper: { version: parsed.version, revision: parsed.revision, committedAt: parsed.committedAt },
+          data: parsed.data, marker: inner.marker, reasons: reasonsOut
+        };
+      }
+      return {
+        classification: 'AUTHORITATIVE_MIGRATED', canonical: true,
+        allEmpty: inner.allEmpty === true,
+        acceptFastPathMigrated,
+        authoritative: true, seedLegacy: false,
+        acceptForBackup: acceptFastPathMigrated,
+        recoveryRequired: false, blocker,
+        rawIdentityMatchesStore,
+        wrapper: { version: parsed.version, revision: parsed.revision, committedAt: parsed.committedAt },
+        data: parsed.data, marker: inner.marker, reasons: reasonsOut
+      };
+    }
+    if (inner.classification === 'VERIFIED_LEGACY_TRANSITION') {
+      const rawIdentityMatchesStore = rawEffective === baseWrapperRaw;
+      return {
+        classification: 'VERIFIED_LEGACY_TRANSITION', canonical: true,
+        acceptFastPathMigrated: false,
+        authoritative: true,
+        seedLegacy: !blocker,
+        acceptForBackup: !blocker && rawIdentityMatchesStore,
+        recoveryRequired: false, blocker,
+        rawIdentityMatchesStore,
+        wrapper: { version: parsed.version, revision: parsed.revision, committedAt: parsed.committedAt },
+        data: parsed.data, marker: inner.marker, reasons: inner.reasons
+      };
+    }
+    // inner === MALFORMED_CURRENT_SCHEMA
+    return {
+      classification: 'MALFORMED_CURRENT_SCHEMA', canonical: false,
+      acceptFastPathMigrated: false, authoritative: false, seedLegacy: false,
+      acceptForBackup: false, recoveryRequired: true, blocker,
+      rawIdentityMatchesStore: rawEffective === baseWrapperRaw,
+      wrapper: { version: parsed.version, revision: parsed.revision, committedAt: parsed.committedAt },
+      data: parsed.data, marker: inner.marker || null, reasons: inner.reasons
+    };
+  }
+
   function normalizeLogbookDomain(data) {
     if (!data || typeof data !== 'object') return;
     if (Array.isArray(data.logbook)) {
@@ -1037,20 +1427,31 @@
   function parseWrapperRaw(raw) {
     if (raw === null || raw === undefined) return null;
     let parsed;
-    try { parsed = JSON.parse(raw); } catch (e) { return { corrupt: true }; }
-    if (!parsed || typeof parsed !== 'object') return { corrupt: true };
+    try { parsed = JSON.parse(raw); } catch (e) { return { corrupt: true, reason: 'json-parse-failed' }; }
+    if (!parsed || typeof parsed !== 'object') return { corrupt: true, reason: 'wrapper-shape-invalid' };
     const version = (typeof parsed.version === 'number') ? parsed.version : 0;
+    // PRV-0.5 R5 (Codex Round-4 P1-5): reject versions strictly greater
+    // than the current SCHEMA_VERSION. Unknown future semantics MUST NOT
+    // be silently downgraded by migrateUp. Every consumer of
+    // parseWrapperRaw treats a `corrupt:true` return as a durability
+    // invariant break, so this rejection propagates uniformly to
+    // hydration, import, snapshot restore, storage-event rebase,
+    // commitFullStateWrapper, and endFullStateTransaction without any
+    // caller needing its own future-version check.
+    if (typeof parsed.version === 'number' && (!Number.isInteger(parsed.version) || parsed.version > SCHEMA_VERSION)) {
+      return { corrupt: true, reason: 'wrapper-version-unsupported', version: parsed.version };
+    }
     // Schema-13 wrappers MUST carry an integer revision in range.
     // Any other numeric shape (1.5, NaN, Infinity, negative, string) is a
     // hard corruption signal, not a fall-back-to-zero.
     let revision = 0;
     if (version >= 13) {
-      if (!isValidRevision(parsed.revision)) return { corrupt: true };
+      if (!isValidRevision(parsed.revision)) return { corrupt: true, reason: 'revision-invalid' };
       revision = parsed.revision;
     } else if ('revision' in parsed) {
       // Older versions never wrote revision; if present but invalid, corrupt.
       if (parsed.revision !== undefined && parsed.revision !== null && !isValidRevision(parsed.revision)) {
-        return { corrupt: true };
+        return { corrupt: true, reason: 'revision-invalid-legacy' };
       }
       if (isValidRevision(parsed.revision)) revision = parsed.revision;
     }
@@ -1082,14 +1483,47 @@
       const parsed = parseWrapperRaw(raw);
       const m = migrateAndValidate(parsed);
       if (m.ok) return { data: m.data, revision: parsed.revision, committedAt: parsed.committedAt, rawWrapper: raw };
-      // Corrupt / invalid — fall through to snapshot then legacy.
+      // PRV-0.5 R5 (Codex Round-4 P1-4): a raw persisted wrapper exists
+      // but Store's own parse/migrate/validate rejects it. That is a
+      // durability invariant break — NOT an invitation to silently
+      // reconstruct from legacy defaults. Preserve the raw bytes as
+      // evidence (baseWrapperRaw = raw) and stage a pending durability
+      // blocker so subsequent writes cannot overwrite the corrupt
+      // wrapper. Recovery MUST go through an approved full-state
+      // transaction (snapshot restore / import / reset).
+      //
+      // Snapshot fallback still runs when a valid snapshot exists so a
+      // recoverable rolling snapshot lets the user keep going — but the
+      // durability blocker still fires (the disk itself is corrupt and
+      // ordinary writes must not blindly overwrite it before the user
+      // acknowledges recovery). The blocker is cleared automatically by
+      // any accepted full-state transaction (commitFullStateWrapper).
+      const pendingReason = (parsed && parsed.reason) ||
+        (parsed && parsed.corrupt ? 'wrapper-corrupt' : 'validate-failed');
       let snap = null;
       try { snap = restoreFromSnapshot(); } catch (e) { snap = null; }
       if (snap && validate(snap)) {
-        try { return { data: clonePersistable(snap), revision: 0, committedAt: null, rawWrapper: null }; }
-        catch (e) { /* snap clone failed — fall through */ }
+        try {
+          return {
+            data: clonePersistable(snap), revision: 0, committedAt: null,
+            rawWrapper: raw,
+            pendingBlocker: { code: 'STORE_CORRUPT_AUTHORITATIVE_STATE', detail: { reason: pendingReason, recoveredFromSnapshot: true } }
+          };
+        } catch (e) { /* snap clone failed — fall through */ }
       }
-      return { data: clonePersistable(migrateFromLegacy()), revision: 0, committedAt: null, rawWrapper: null };
+      // No valid snapshot either — surface recovery-required. Return
+      // the legacy-derived baseline in memory (so the app can render),
+      // but preserve the corrupt raw as baseWrapperRaw evidence, and
+      // stage the durability blocker so writes / backup / export refuse
+      // until an approved recovery lands. This is the exact scenario
+      // Codex reproduced (corrupt revision + no snapshot); the user's
+      // previously durable data is not silently invented as [], and
+      // backup will refuse to export the corrupt bytes as if valid.
+      return {
+        data: clonePersistable(migrateFromLegacy()), revision: 0, committedAt: null,
+        rawWrapper: raw,
+        pendingBlocker: { code: 'STORE_CORRUPT_AUTHORITATIVE_STATE', detail: { reason: pendingReason, recoveredFromSnapshot: false } }
+      };
     }
     return { data: clonePersistable(migrateFromLegacy()), revision: 0, committedAt: null, rawWrapper: null };
   }
@@ -1116,6 +1550,17 @@
   let durabilityBlocker = null;
   const saveListeners = new Set();
   const errorListeners = new Set();
+  // PRV-0.5 R5 (Codex Round-4 P1-4): honour any pending durability
+  // blocker that boot detected. `nowISO()` is not required in the record
+  // returned by initialLoad — set it here so the blocker follows the
+  // same shape as setDurabilityBlocker's records.
+  if (_boot.pendingBlocker) {
+    durabilityBlocker = {
+      code: _boot.pendingBlocker.code,
+      since: nowISO(),
+      detail: _boot.pendingBlocker.detail || null
+    };
+  }
 
   // Backward-compat pause flag: legacy import code (b4083a8) calls
   // pausePersistence/resumePersistence and relies on scheduleSave being a
@@ -1882,6 +2327,17 @@
       return parseWrapperRaw(raw);
     },
     isValidRevision,
+    // PRV-0.5 R5 (ADR-015 addendum #4): the ONE Store-owned authority
+    // evaluator all consumers must route through. See the block-comment
+    // above evaluatePersistedAuthority in this file for the six-class
+    // contract and each consumer's decision rule.
+    evaluatePersistedAuthority: function (raw) { return evaluatePersistedAuthority(raw); },
+    evaluateCandidateWrapper: function (input) { return evaluateCandidateWrapper(input); },
+    evaluateCandidateData: function (data) { return evaluateCandidateData(data); },
+    // Raised for tests / documentation of the canonical marker contract.
+    MARKER_STATUS: { MIGRATED: MARKER_STATUS_MIGRATED, UNMIGRATED: MARKER_STATUS_UNMIGRATED },
+    REQUIRED_RECORD_DOMAINS: REQUIRED_RECORD_DOMAINS.slice(),
+    isSupportedLegacySourceVersion,
     // Read the Store's currently accepted disk revision (baseline for
     // regression detection). Used by the hydration fast path to reject a
     // persisted wrapper whose revision has regressed relative to what
