@@ -1087,3 +1087,149 @@ remains present until an explicitly-approved cleanup step.
 
 **Date:** 2026-08-29 (PRV-0.5 R3 remediation on branch
 `claude/prv-0-5-preservation-migration`).
+
+### ADR-015 addendum #3 (2026-09-01) — Codex PRV-0.5 R4 remediation
+
+Codex's HIGH-risk re-review of the PRV-0.5 R3 implementation
+(commit `6022c0b0b58f1e7b8e43f27d3d0b6577a384503f`) closed the
+R3 P1-1 (real durable-write authority) and P1-3
+(simultaneous-tab convergence) findings but returned three new
+HIGH-risk defects, all in the same authority-boundary class. R4
+addresses each in isolation without changing the accepted
+architecture.
+
+**One authority state machine for schema 14.** Every code path
+that decides whether a persisted / imported / snapshot-restored
+wrapper is authoritative for the four records domains now
+classifies the wrapper into exactly one of these states, using
+the SAME predicates:
+
+  A. **Canonical migrated** — outer wrapper is version 14 with a
+     valid non-negative integer revision, `records.*` is an
+     object with all four required domain arrays,
+     `meta.recordsMigration.status === 'migrated'` (recognized
+     status). Authoritative. Fast-path skip on hydration.
+
+  B. **Canonical intentionally-empty migrated** — same as A with
+     any/all `records.*` arrays as `[]`. Authoritative and MUST
+     stay empty; hydration NEVER seeds LEGACY_RECORDS into a
+     migrated-claimed empty domain.
+
+  C. **Canonical unmigrated legacy-transition state** — outer
+     wrapper valid current-schema (or accepted-and-migrated-up
+     v13 wrapper), `records.*` present as four empty arrays,
+     `meta.recordsMigration.status === 'unmigrated'`. Eligible
+     for preservation hydration — the four arrays are the
+     migrateUp bootstrap, not user intent, and are overwritten
+     from `LEGACY_RECORDS` + surviving Gen-1 override keys.
+
+  D. **Current-schema malformed / ambiguous** — outer wrapper is
+     valid version 14 but `records.*` is missing / non-object /
+     non-array-domain, or `meta.recordsMigration` is missing /
+     non-object / of unknown status. NOT authoritative. At
+     destructive boundaries (import, snapshot restore): REJECT
+     before any commit touches disk. At hydration: preserve
+     known-good present arrays exactly, and canonicalize any
+     absent domain to `[]` when the marker CLAIMS migrated
+     (fail-closed on inventing intent) — do NOT seed
+     LEGACY_RECORDS.
+
+  E. **Old schema** — outer wrapper is version <14 (or a
+     wrapper without a version). Must flow through the canonical
+     `migrateUp` chain at boot / snapshot / import. A version-13
+     wrapper NEVER enters the schema-14 "already migrated" fast
+     path in `_hydrateUnderLock`, even when its inner data
+     happens to resemble schema 14.
+
+  F. **Invalid / stale wrapper metadata** — negative /
+     non-integer / out-of-range revision, corrupt JSON, or a
+     revision that has regressed below the Store's accepted
+     `knownRevision`. NOT authoritative. Same treatment as D.
+
+**P1-A — persisted fast-path authority.** `app.js:_readPersistedWrapper()`
+no longer accepts a wrapper solely because its inner data is
+schema-14-shaped. It now delegates to `Store.parseWrapper` (the
+same predicate Store applies at `initialLoad` /
+`setWrapperFromOps`) and additionally requires the outer
+`version === 14`, an in-range non-negative integer revision, and
+a revision not stale relative to `Store.currentKnownRevision`.
+Regressions: `PRV-R4-P1A-NEGATIVE-REVISION`,
+`PRV-R4-P1A-OLD-VERSION`, `PRV-R4-P1A-EXPORT-RELOAD`.
+
+**P1-B — destructive-boundary migration metadata.**
+
+- `app.js:processImport()` now applies a NEW predicate,
+  `_isSchema14CanonicalDestructiveShape(candidate)`, to EVERY
+  schema-14 candidate — regardless of marker status. It rejects
+  candidates whose migration marker is missing / non-object / of
+  unknown status, OR whose `records.*` lacks any of the four
+  required domain arrays. R3 gated only on `status === 'migrated'`,
+  which Codex bypassed with missing marker / bogus status /
+  missing records. The source-wrapper revision-validity check
+  also extends from v13-only to any wrapper claiming
+  `version >= 13`.
+
+- `core.js:isRecordsMigrationShapeSafe()` (called from
+  `validateSnapshotWrapperFull`, the snapshot restore
+  destructive boundary) is tightened symmetrically: a schema-14
+  candidate MUST carry a marker with a recognized status AND a
+  canonical records shape. The R3 "no claim, no check" branch
+  is removed. Regressions:
+  `PRV-R4-P1B-IMPORT-MISSING-MARKER`,
+  `PRV-R4-P1B-IMPORT-BOGUS-STATUS`,
+  `PRV-R4-P1B-IMPORT-MISSING-RECORDS`,
+  `PRV-R4-P1B-SNAPSHOT-MISSING-MARKER`.
+
+**P1-C — no length-based intent inference for migrated state.**
+`app.js:_hydrateUnderLock()` no longer uses `cur.length > 0` to
+decide whether a present records domain is authoritative. The
+new rule keys off the migration marker (persisted-disk marker
+first, Store in-memory marker as fallback):
+
+- **Migrated intent already established** (marker claims migrated
+  in disk OR — when disk marker is unavailable — in Store
+  memory): preserve present arrays verbatim, INCLUDING `[]`
+  (an intentionally empty domain is meaningful state).
+  Canonicalize absent / malformed domains to `[]`. NEVER seed
+  LEGACY_RECORDS.
+
+- **Unmigrated / absent-marker state** (legitimate v13→v14
+  transition, fresh migrateUp bootstrap): the empty arrays came
+  from `migrateUp`, not user intent — seed from LEGACY_RECORDS.
+  A pre-existing non-empty array (from a partial prior
+  migration attempt) is preserved.
+
+Regressions: `PRV-R4-P1C-INTENT-PRESERVATION`, plus a
+parameterized suite `PRV-R4-P1C-PARAM — missing <domain>` for
+each of the four domains, and
+`PRV-R4-P1C-UNMIGRATED-STILL-SEEDS` which pins the v13
+preservation flow so the P1-C fix cannot regress it.
+
+**Exposed Store primitives.** `core.js` now publishes
+`Store.parseWrapper`, `Store.isValidRevision`, and
+`Store.currentKnownRevision` so `app.js` uses exactly the same
+authority rules Store itself applies — one source of truth for
+wrapper validity, no shadow validator to drift.
+
+**Documentation corrections.** `ARCHITECTURE.md` now names
+`validateSnapshotWrapperFull` / `isRecordsMigrationShapeSafe`
+as the snapshot-restore destructive guard (not `validate()`),
+and describes convergence for a `status='unmigrated'` import as
+the scheduled `location.reload()` (not an `onSave`
+re-invocation) — `commitFullStateWrapper` does not fire
+ordinary `Store.onSave` listeners for the committed wrapper.
+
+**Legacy corpus lifecycle unchanged.** R4 does NOT remove or
+sanitize `_migration-legacy-records.js`. That step remains
+PRV-1's responsibility. R4's job is only to make every
+accepted / restored / persisted state coherent enough that
+eventual PRV-1 removal is safe.
+
+**No re-broadening.** ADR-014's per-domain end-state framing
+still governs; BHT / Ideas concurrency, personal-data
+sanitization, Pages, repository visibility, Aviation, and B1.5
+are all still out of scope for this remediation.
+
+**Date:** 2026-09-01 (PRV-0.5 R4 remediation on branch
+`claude/prv-0-5-r4-remediation`; base commit
+`6022c0b0b58f1e7b8e43f27d3d0b6577a384503f`).

@@ -981,18 +981,28 @@
     if (!data.qatarVisit) return false;
     return true;
   }
-  // PRV-0.5 R3 (ADR-015 addendum #2 / Codex Round-3 P1-2): a supplementary
-  // shape guard used by DESTRUCTIVE boundaries only (snapshot restore,
-  // import). Rejects wrappers that CLAIM records-migration completion
-  // but lack the canonical records shape. Load-time uses the softer
-  // `validate()` above so a stale-shape wrapper still loads and can be
-  // healed by app.js hydration rather than being rejected into a
-  // stranded disk-vs-memory revision divergence.
+  // PRV-0.5 R4 (Codex Round-3 P1-B): a supplementary shape guard used by
+  // DESTRUCTIVE boundaries only (snapshot restore, import). Every
+  // schema-14 candidate MUST carry a canonical migration marker AND a
+  // canonical records shape — a missing/invalid marker or missing/
+  // non-array domain is REJECTED at the destructive boundary rather
+  // than silently accepted (which is the Codex Round-3 bypass that let
+  // a marker-less schema-14 backup overwrite good current state and
+  // trigger intent-inventing legacy resurrection). Load-time uses the
+  // softer `validate()` above so a stale-shape wrapper still loads and
+  // can be healed by app.js hydration rather than being rejected into
+  // a stranded disk-vs-memory revision divergence.
   function isRecordsMigrationShapeSafe(data) {
     if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
+    // A schema-14 candidate MUST carry a marker with a recognized status.
+    // Missing/invalid/unknown-status = REJECT at destructive boundary.
     const rm = data.meta && data.meta.recordsMigration;
-    if (!rm || typeof rm !== 'object' || Array.isArray(rm)) return true; // no claim, no check
-    if (rm.status !== 'migrated') return true; // unmigrated claim is not shape-authoritative
+    if (!rm || typeof rm !== 'object' || Array.isArray(rm)) return false;
+    if (rm.status !== 'migrated' && rm.status !== 'unmigrated') return false;
+    // Canonical records shape is REQUIRED regardless of marker status —
+    // both migrated and unmigrated schema-14 states carry all four
+    // arrays after migrateUp. A shape violation at destructive commit
+    // would replace good current state with malformed data.
     const r = data.records;
     if (!r || typeof r !== 'object' || Array.isArray(r)) return false;
     for (const d of ['deadlines', 'claims', 'risks', 'goals']) {
@@ -1861,6 +1871,23 @@
     },
     normalizeLogbookDomain,
     validateData: validate,
+    // PRV-0.5 R4 (Codex Round-3 P1-A): expose the SAME wrapper-parse and
+    // revision-validity rules the Store applies. app.js hydration MUST use
+    // these to judge persisted-wrapper authority instead of hand-rolling
+    // a shallower validator. A wrapper the Store would reject at
+    // parseWrapperRaw/initialLoad must NEVER be trusted as authoritative
+    // by the migration fast path (Codex R3 defect: revision=-1 and
+    // version=13 with schema-14 inner data both fast-pathed as migrated).
+    parseWrapper: function (raw) {
+      return parseWrapperRaw(raw);
+    },
+    isValidRevision,
+    // Read the Store's currently accepted disk revision (baseline for
+    // regression detection). Used by the hydration fast path to reject a
+    // persisted wrapper whose revision has regressed relative to what
+    // the Store already accepted — even if the wrapper's inner shape
+    // otherwise looks canonical.
+    currentKnownRevision: function () { return knownRevision; },
     snapshots: () => {
       try { return JSON.parse(localStorage.getItem(SNAPSHOTS_KEY) || '[]'); } catch (e) { return []; }
     },
