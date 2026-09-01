@@ -1381,3 +1381,138 @@ and quarantine cover only the PRV-0.5 authority contract.
 **Date:** 2026-09-01 (PRV-0.5 R5 remediation on branch
 `claude/prv-0-5-r5-authority-recovery`; base commit
 `8efafc7f4e3ce2b658fc74cdf6b3cbaab0414011`).
+
+### ADR-015 addendum #5 (2026-09-02) — Codex PRV-0.5 R6 remediation
+
+Codex Round-5 review of R5 exact SHA
+`df791627c0ec365261b0bed7518e0371a1accf38` returned **FAIL — NOT
+SAFE, MERGE BLOCKED**. Independent production-path probes
+reproduced five P1 blockers rooted in gaps between R5's new
+authority pieces: (P1-1) a schema-14 wrapper could forge the
+allegedly "provable" legacy-transition marker and resurrect all
+four `LEGACY_RECORDS` domains on cold reload; (P1-2) snapshot,
+import, and reset could NOT replace corrupt disk authority — the
+in-app recovery route was a dead end; (P1-3) public
+`commitFullStateWrapper()` bypassed the canonical authority
+evaluator and could mint malformed schema-14 state; (P1-4) a
+higher-revision raw mismatch fell through the hydration switch to
+legacy seed and false success; (P1-5) load-time snapshot recovery
+accepted a source-invalid snapshot after `migrateUp()` filled its
+missing required data with defaults. Plus P2-1 (raw-vs-object
+future classification inconsistency) and P2-2 (recovery UI /
+documentation claimed stronger guarantees than code).
+
+R6 closes each blocker architecturally, not by patching the
+submitted reproductions.
+
+**P1-1 — Transaction-scoped legacy-transition capability.** Legacy
+seeding no longer trusts marker text on a current-schema wrapper.
+Store now owns an internal boolean `_legacyTransitionCapability`
+set by `initialLoad` ONLY when the raw persisted wrapper this boot
+carried `version < SCHEMA_VERSION` (a supported outer legacy
+version), and consumed by any commit that lands
+`meta.recordsMigration.status='migrated'`. The evaluator's
+schema-14 `VERIFIED_LEGACY_TRANSITION` branch (inner marker
+canonical unmigrated + provenance) is DOWNGRADED to
+`MALFORMED_CURRENT_SCHEMA` when `_legacyTransitionCapability` is
+false. A cold-boot forgery attack — schema-14 wrapper with a
+syntactically-canonical `unmigrated` marker written directly at
+current schema — can no longer self-authorise seeding. `processImport`
+for a genuine v13 backup INLINES the legacy seed during the
+transaction so the committed wrapper is `status='migrated'` with
+populated records atomically, eliminating the post-reload
+schema-14 + `unmigrated` intermediate state that would otherwise
+have to be re-authorised.
+
+**P1-2 — Explicit recovery-mode full-state commit.**
+`commitFullStateWrapper(token, data, reason, {recovery: true})` is
+the ONLY path that can replace corrupt authority. In recovery
+mode, a corrupt disk read is QUARANTINED under a distinct key
+(`dune_state_v4_quarantine_<epoch-ms>`) as evidence, and the
+commit proceeds using `max(knownRevision, 0) + 1` for monotonicity
+(never trusting the corrupt revision). Post-write verification
+re-parses the committed payload via the evaluator; only
+`AUTHORITATIVE_MIGRATED` counts as durable success; on failure the
+blocker is NOT cleared and evidence is retained. `restoreSnapshot`
+and `reset` both pass `recovery: true` and now return a `settled`
+Promise (`Store._lastResetSettled()` for reset) so callers can
+await the truthful asynchronous outcome. Restore additionally
+rewrites the migrated candidate's marker to
+`{status:'migrated', schemaVersion, reason:'snapshot-restore'}`
+inline — the user's explicit choice of THIS generation as
+authoritative supersedes further legacy seeding.
+
+**P1-3 — Canonical evaluator gate at the lowest destructive
+boundary.** `commitFullStateWrapper` now runs
+`evaluateCandidateData(cloned)` under the coordinator BEFORE the
+write and BEFORE clearing the blocker. Any candidate that lacks
+canonical marker / records / marker `schemaVersion` is rejected
+with `FULL_STATE_CANDIDATE_NONCANONICAL` and the previous blocker
+stays intact. Post-write, the same evaluator re-parses the exact
+committed payload; a non-`AUTHORITATIVE_MIGRATED` result triggers
+`FULL_STATE_POST_WRITE_VERIFICATION_FAILED`. Direct malformed
+commits (missing `records.goals`, missing marker, etc.) can no
+longer mint invalid current authority.
+
+**P1-4 — Exhaustive hydration classification switch.** Hydration's
+top-level branch is now a proper switch with a
+default-fail-closed arm. `AUTHORITATIVE_MIGRATED` with
+`acceptFastPathMigrated:false` returns recovery-required — not a
+fallthrough to seed. The evaluator additionally demotes
+`AUTHORITATIVE_MIGRATED` to `CORRUPT_STALE_COLLIDING` when the raw
+bytes on disk are at a HIGHER revision than Store's baseline AND
+don't match `baseWrapperRaw` (the Codex reproduction that seeded
+legacy on a mismatched newer generation). Combined, the two
+changes remove every path by which legacy seeding could be reached
+without both `VERIFIED_LEGACY_TRANSITION` classification AND an
+active `_legacyTransitionCapability`.
+
+**P1-5 — Source validation before default-fill.**
+`validateLegacySourceRequiredFields(data, version)` runs BEFORE
+`migrateUp` on both snapshot restore
+(`validateSnapshotWrapperFull`) and external candidate evaluation
+(`evaluateCandidateWrapper`). A v12+ candidate whose source is
+missing `money.salary_net` or `qatarVisit` is rejected at the
+source stage — `migrateUp`'s default-fill can no longer convert
+source corruption into plausibility. Recovery selection now skips
+source-invalid snapshots and advances to the next independently
+valid generation. The mandatory failing test
+`T-snapshot-source-invalid-data-recovery` now genuinely passes:
+the first `{qatarVisit:{}}` snap is rejected at source
+validation, the second `salary=24680` snap wins.
+
+**P2-1 — Future classification preserves outer wrapper context.**
+`parseWrapperRaw` continues to mark `version > SCHEMA_VERSION` as
+`corrupt:true, reason:'wrapper-version-unsupported'` with the
+`version` field intact. Both `evaluatePersistedAuthority` and
+`evaluateCandidateWrapper` inspect that reason and return
+`UNSUPPORTED_FUTURE_SCHEMA` uniformly — live-raw and
+object-candidate paths no longer disagree.
+
+**P2-2 — Recovery UX correction.** The boot-time freeze banner
+now paints on `DOMContentLoaded` when `Store.getDurabilityBlocker()`
+is set (the blocker installed by `initialLoad` had no
+`lifeos:store-durability-blocked` listener wired yet). The banner
+message for `STORE_CORRUPT_AUTHORITATIVE_STATE` /
+`STORE_REVISION_REGRESSION` / `STORE_STATE_CLEARED_EXTERNAL`
+directs the user to Snapshot restore / Backup import / Reset via
+the Backup panel — NOT the deprecated "please export a backup"
+text (normal backup is refused while authority is corrupt).
+
+**Concurrency invariant preserved.** R3's simultaneous-tab
+migration Web Lock (`lifeos-prv05-migrate`) + deterministic marker
+mechanism is unchanged. `PRV-R3-SIMULTANEOUS-TABS-P1-3` remains
+green. The no-Web-Locks fallback continues to offer only same-tab
+`_hydrationInFlight` deduplication — cross-tab serialisation of
+hydration is NOT provided without Web Locks; this is documented
+truthfully.
+
+**Legacy corpus lifecycle unchanged.** R6 does NOT remove
+`_migration-legacy-records.js`. PRV-1 remains responsible for
+sanitising the tracked personal-looking source/defaults. R6 only
+tightens the authority/recovery contract so PRV-1 can proceed on a
+provably-safe foundation.
+
+**Date:** 2026-09-02 (PRV-0.5 R6 remediation on branch
+`claude/prv-0-5-r6-authority-recovery`; base commit
+`df791627c0ec365261b0bed7518e0371a1accf38`).

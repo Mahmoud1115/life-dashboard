@@ -673,7 +673,19 @@
     }
     function paintBlocker(code) {
       if (!freeze || !freezeMsg) return;
-      freezeMsg.textContent = 'Saving is blocked (' + code + '). Please export a backup before making changes.';
+      // PRV-0.5 R6 (Codex Round-5 P2-2): recovery-required guidance
+      // replaces the old "export a backup" text — normal backup export
+      // is refused while authority is corrupt/stale. The user's safe
+      // actions are: restore a snapshot, import a valid backup, or
+      // reset. Recovery evidence (quarantine) is a separate export.
+      var isRecovery = code === 'STORE_CORRUPT_AUTHORITATIVE_STATE'
+                    || code === 'STORE_REVISION_REGRESSION'
+                    || code === 'STORE_STATE_CLEARED_EXTERNAL';
+      if (isRecovery) {
+        freezeMsg.textContent = 'Storage authority is invalid (' + code + '). Normal backup export is refused. Recover via Snapshot restore, Backup import, or Reset — open the Backup panel.';
+      } else {
+        freezeMsg.textContent = 'Saving is blocked (' + code + ').';
+      }
       freeze.hidden = false;
       freeze.setAttribute('aria-hidden', 'false');
     }
@@ -700,6 +712,18 @@
     }
     if (useThis)  useThis.addEventListener('click', function () { try { window.Store.resolveConflict('use-this-tab'); } catch (e) {} hideConflict(); });
     if (useSaved) useSaved.addEventListener('click', function () { try { window.Store.resolveConflict('use-saved-version'); } catch (e) {} hideConflict(); });
+    // PRV-0.5 R6 (Codex Round-5 P2-2): initial paint. If Store's
+    // initialLoad set a durability blocker at boot (e.g. corrupt raw
+    // disk detected before any listener was wired) the banner would
+    // otherwise stay hidden until the next event fires. Paint the
+    // current state on DOMContentLoaded so the user sees the recovery
+    // guidance immediately.
+    (function initialPaint() {
+      try {
+        var blocker = currentBlocker();
+        if (blocker) paintBlocker(blocker.code || 'STORE_DURABILITY_BLOCKED');
+      } catch (e) {}
+    })();
     window.addEventListener('lifeos:store-conflict',           function (e) { var p = (e && e.detail && e.detail.path) || ''; showConflict(p); });
     window.addEventListener('lifeos:store-conflict-resolved',  hideConflict);
     window.addEventListener('lifeos:store-freeze-begin',       function (e) { var r = (e && e.detail && e.detail.reason) || 'full-state'; repaintFreezeState(true, r); });

@@ -181,37 +181,82 @@ async function _hydrateUnderLock() {
     return { ok: false, reason: 'no-store-evaluator' };
   }
 
-  // PRV-0.5 R5 (Codex Round-4): ONE authority read — the Store-owned
-  // evaluator. See core.js `evaluatePersistedAuthority` block comment
-  // for the six-class contract. The classification alone drives every
-  // subsequent branch; no parallel local predicate is consulted.
+  // PRV-0.5 R6 (Codex Round-5 P1-4): the classification switch below is
+  // exhaustive — every evaluator classification has exactly one action,
+  // and there is NO fallthrough to legacy seeding. The final `default`
+  // branch fails closed. Combined with R6's evaluator changes:
+  //   - AUTHORITATIVE_MIGRATED with divergent bytes / blocker /
+  //     higher-revision mismatch is DEMOTED at the evaluator to
+  //     CORRUPT_STALE_COLLIDING, so it never reaches hydration with
+  //     `acceptFastPathMigrated:false`.
+  //   - VERIFIED_LEGACY_TRANSITION on a schema-14 raw wrapper is
+  //     DEMOTED at the evaluator to MALFORMED_CURRENT_SCHEMA unless
+  //     Store.canAuthoriseLegacySeed() is true. Marker text alone
+  //     cannot self-authorise seeding.
+  // Legacy seeding is therefore reachable from exactly ONE code path:
+  // classification === VERIFIED_LEGACY_TRANSITION AND
+  // Store.canAuthoriseLegacySeed() === true.
   const persistedEval = window.Store.evaluatePersistedAuthority();
 
-  // Fast path A: AUTHORITATIVE_MIGRATED + acceptFastPathMigrated=true
-  // (no active blocker, no equal-revision divergent bytes, raw bytes
-  // match Store's accepted baseline).
-  if (persistedEval.classification === 'AUTHORITATIVE_MIGRATED'
-      && persistedEval.acceptFastPathMigrated === true) {
-    // Reconcile in-memory Store to disk-authoritative values so any
-    // stale optimistic op drains (Codex R3 P1-3 mechanism).
-    try {
-      const diskRecs = persistedEval.data && persistedEval.data.records;
-      for (const d of domains) {
-        const arr = diskRecs && diskRecs[d];
-        if (Array.isArray(arr)) window.Store.set('records.' + d, arr);
-      }
-      if (persistedEval.marker) window.Store.set('meta.recordsMigration', persistedEval.marker);
-    } catch (e) { /* best-effort reconcile */ }
-    return { ok: true, skipped: 'already-migrated', marker: persistedEval.marker, classification: persistedEval.classification };
+  const classification = persistedEval.classification;
+
+  // 1. AUTHORITATIVE_MIGRATED — normal fast-path skip on accept.
+  if (classification === 'AUTHORITATIVE_MIGRATED') {
+    if (persistedEval.acceptFastPathMigrated === true) {
+      try {
+        const diskRecs = persistedEval.data && persistedEval.data.records;
+        for (const d of domains) {
+          const arr = diskRecs && diskRecs[d];
+          if (Array.isArray(arr)) window.Store.set('records.' + d, arr);
+        }
+        if (persistedEval.marker) window.Store.set('meta.recordsMigration', persistedEval.marker);
+      } catch (e) { /* best-effort reconcile */ }
+      return { ok: true, skipped: 'already-migrated', marker: persistedEval.marker, classification: classification };
+    }
+    // Defensive: with R6 evaluator changes this branch is unreachable
+    // (evaluator demotes to CORRUPT_STALE_COLLIDING). Kept as a
+    // fail-closed handler so an exhaustive switch cannot fall through
+    // to legacy seed on a future evaluator refactor.
+    return {
+      ok: false,
+      reason: 'recovery-required',
+      classification: classification,
+      subclassification: 'AUTHORITATIVE_MIGRATED_NOT_ACCEPTED',
+      blocker: persistedEval.blocker || null,
+      evalReasons: persistedEval.reasons
+    };
   }
 
-  // Fast path B: fresh cold-boot (ABSENT persisted wrapper). The
-  // in-memory Store IS the truth (freshly-minted defaultState =
-  // canonical migrated + empty records); do NOT seed legacy on a fresh
-  // browser. Codex Round-4 P1-1: seeding requires
-  // VERIFIED_LEGACY_TRANSITION — an in-memory 'unmigrated' with no
-  // provenance is NOT enough.
-  if (persistedEval.classification === 'ABSENT') {
+  // 2. VERIFIED_LEGACY_TRANSITION — the ONLY legacy-seed-authorising
+  // classification. Requires BOTH the evaluator's `seedLegacy:true`
+  // (no blocker) AND Store.canAuthoriseLegacySeed() (transaction-scoped
+  // legacy-transition capability observed this boot).
+  if (classification === 'VERIFIED_LEGACY_TRANSITION') {
+    if (persistedEval.seedLegacy !== true) {
+      return {
+        ok: false,
+        reason: 'recovery-required',
+        classification: classification,
+        blocker: persistedEval.blocker || null
+      };
+    }
+    if (typeof window.Store.canAuthoriseLegacySeed === 'function'
+        && !window.Store.canAuthoriseLegacySeed()) {
+      return {
+        ok: false,
+        reason: 'recovery-required',
+        classification: classification,
+        subclassification: 'LEGACY_SEED_NOT_AUTHORISED_BY_STORE'
+      };
+    }
+    // Fall through to the seed block below.
+  }
+  // 3. ABSENT — fresh cold boot. In-memory defaultState is
+  //    AUTHORITATIVE_MIGRATED. No seed. If in-memory somehow shows a
+  //    canonical unmigrated shape (v13 wrapper migrated up in memory
+  //    but not yet committed to disk), authorise seeding ONLY when
+  //    Store.canAuthoriseLegacySeed() is true.
+  else if (classification === 'ABSENT') {
     try {
       const inMemMarker = window.Store.get('meta.recordsMigration');
       const inMemData = {
@@ -227,47 +272,44 @@ async function _hydrateUnderLock() {
       if (inMemEval.canonical && inMemEval.classification === 'AUTHORITATIVE_MIGRATED') {
         return { ok: true, skipped: 'default-state-migrated', marker: inMemMarker, classification: 'AUTHORITATIVE_MIGRATED' };
       }
-      // If Store in-memory holds a canonical unmigrated-with-provenance
-      // marker (v13 wrapper just migrated up in memory but not yet
-      // committed) proceed to the legacy-seed path below; otherwise
-      // fail closed.
-      if (!(inMemEval.canonical && inMemEval.classification === 'VERIFIED_LEGACY_TRANSITION')) {
-        return { ok: false, reason: 'recovery-required', classification: 'ABSENT', inMemClassification: inMemEval.classification };
+      if (inMemEval.canonical && inMemEval.classification === 'VERIFIED_LEGACY_TRANSITION'
+          && typeof window.Store.canAuthoriseLegacySeed === 'function'
+          && window.Store.canAuthoriseLegacySeed()) {
+        // Fall through to the seed block below.
+      } else {
+        return {
+          ok: false, reason: 'recovery-required', classification: 'ABSENT',
+          inMemClassification: inMemEval.classification
+        };
       }
-    } catch (e) { /* fall through */ }
+    } catch (e) {
+      return { ok: false, reason: 'recovery-required', classification: 'ABSENT', error: String(e) };
+    }
   }
-
-  // Recovery-required states — MALFORMED_CURRENT_SCHEMA /
-  // CORRUPT_STALE_COLLIDING / UNSUPPORTED_FUTURE_SCHEMA. Hydration
-  // MUST NOT invent state, MUST NOT seed legacy, MUST NOT commit `[]`
-  // as deletion intent. Fail closed so the user recovers via snapshot /
-  // import / reset (Codex Round-4 P1-2, P1-4, P1-5).
-  if (persistedEval.classification === 'MALFORMED_CURRENT_SCHEMA'
-      || persistedEval.classification === 'CORRUPT_STALE_COLLIDING'
-      || persistedEval.classification === 'UNSUPPORTED_FUTURE_SCHEMA') {
+  // 4. Recovery-required states — MALFORMED / CORRUPT / FUTURE.
+  else if (classification === 'MALFORMED_CURRENT_SCHEMA'
+        || classification === 'CORRUPT_STALE_COLLIDING'
+        || classification === 'UNSUPPORTED_FUTURE_SCHEMA') {
     return {
       ok: false,
       reason: 'recovery-required',
-      classification: persistedEval.classification,
+      classification: classification,
       blocker: persistedEval.blocker || null,
       evalReasons: persistedEval.reasons
     };
   }
-
-  // VERIFIED_LEGACY_TRANSITION with an active blocker → recovery required.
-  if (persistedEval.classification === 'VERIFIED_LEGACY_TRANSITION' && persistedEval.seedLegacy === false) {
+  // 5. Unknown classification — fail closed.
+  else {
     return {
-      ok: false,
-      reason: 'recovery-required',
-      classification: persistedEval.classification,
-      blocker: persistedEval.blocker || null
+      ok: false, reason: 'recovery-required', classification: classification || 'UNKNOWN',
+      evalReasons: persistedEval.reasons
     };
   }
 
   // ── Legacy-transition seed path ─────────────────────────────────
-  // Reached only when classification is VERIFIED_LEGACY_TRANSITION
-  // (either on disk or in-memory-only via the ABSENT fall-through). This
-  // is the ONE class that authorises LEGACY_RECORDS seeding.
+  // Reached only from VERIFIED_LEGACY_TRANSITION with authorised
+  // capability, or from ABSENT with in-memory VERIFIED_LEGACY_TRANSITION
+  // + authorised capability.
   let goalsOv = {};
   try { const v = localStorage.getItem('dune_goals_v1'); if (v) goalsOv = JSON.parse(v) || {}; } catch (e) {}
   let claimsOv = {};
@@ -367,9 +409,15 @@ if (window.Store && typeof window.Store.onSave === 'function') {
       }
     } catch (e) { /* onSave listeners must not throw */ }
   });
-  hydratePreservationRecordsOnce().catch((e) => {
-    try { console.warn('[PRV-0.5 R2 hydrate] boot init exception', e); } catch (_) {}
-  });
+  // PRV-0.5 R6: tests that install Store.set / durability injections
+  // BEFORE boot-time hydration runs can suppress the automatic boot
+  // invocation by setting `window.__prv05DisableBootHydration = true`
+  // in an `addInitScript`. Production runs never touch this global.
+  if (window.__prv05DisableBootHydration !== true) {
+    hydratePreservationRecordsOnce().catch((e) => {
+      try { console.warn('[PRV-0.5 R2 hydrate] boot init exception', e); } catch (_) {}
+    });
+  }
 }
 
 /* ═══════════════════════════════════════════
@@ -2397,6 +2445,8 @@ async function processImport(text){
       //    backups (no dune_state_v4) still derive from staged
       //    auxiliary keys.
       let candidate;
+      let importedFromLegacySource=false;
+      let sourceWrapperVersion=null;
       if(STATE_KEY_NAME in backup.data){
         const wrapperOrBare=backup.data[STATE_KEY_NAME];
         const srcEval=window.Store.evaluateCandidateWrapper(wrapperOrBare);
@@ -2407,33 +2457,72 @@ async function processImport(text){
           throw new Error('IMPORT_SOURCE_WRAPPER_INVALID_REVISION');
         }
         if(!srcEval.canonical){
-          // Any other non-canonical classification is malformed —
-          // MALFORMED_CURRENT_SCHEMA (missing marker, bogus status,
-          // non-canonical marker schemaVersion, missing records,
-          // missing domain, unmigrated-without-provenance).
           throw new Error('IMPORT_SCHEMA14_CANONICAL_SHAPE_INVALID');
         }
         candidate=srcEval.data;
+        sourceWrapperVersion=srcEval.wrapperVersion;
+        // PRV-0.5 R6 (Codex Round-5 P1-1): a genuine outer legacy
+        // wrapper (`version < SCHEMA_VERSION`) is an observed
+        // supported transition — this is the ONLY class of import
+        // that authorises `LEGACY_RECORDS` seeding. Marker text on a
+        // schema-14 source wrapper is NOT proof.
+        importedFromLegacySource = typeof sourceWrapperVersion === 'number'
+          && sourceWrapperVersion < window.Store.SCHEMA_VERSION;
       } else {
         const stagedReader=(k)=>{ try{ return JSON.parse(localStorage.getItem(k)||'null'); }catch(e){ return null; } };
         candidate=window.Store.deriveStateFromLegacy(stagedReader);
+        // Legacy-only backup: derivation is itself an observed legacy
+        // transition — records were reconstructed from the auxiliary
+        // Gen-1 keys and the preservation seed should apply INLINE
+        // (not via a post-reload hydration re-authorisation).
+        importedFromLegacySource=true;
       }
       if(typeof window.Store.normalizeLogbookDomain==='function') window.Store.normalizeLogbookDomain(candidate);
       if(typeof window.Store.validateData==='function' && !window.Store.validateData(candidate)){
         throw new Error('IMPORT_VALIDATION_FAILED');
       }
 
-      // PRV-0.5 R5 (Codex Round-4 P1-1..P1-B + P2): every candidate
-      // must ALSO pass the destructive-boundary canonical check on the
-      // materialised candidate data (marker + records + canonical
-      // marker schemaVersion + provenance).
+      // PRV-0.5 R6 (Codex Round-5 P1-1): when the source was a genuine
+      // outer legacy wrapper, inline the LEGACY_RECORDS seed into the
+      // candidate BEFORE commit so the committed wrapper carries
+      // `status='migrated'` + populated records atomically. This
+      // eliminates the schema-14 + status='unmigrated' intermediate
+      // state that a post-reload hydration would otherwise be asked
+      // to complete — closing the forgery attack that supplied a
+      // schema-14 wrapper with self-attested `unmigrated` provenance.
+      if (importedFromLegacySource && window.LEGACY_RECORDS && typeof _buildHydratedRecords === 'function') {
+        try {
+          let goalsOv={}; try{ const v=localStorage.getItem('dune_goals_v1'); if(v) goalsOv=JSON.parse(v)||{}; }catch(e){}
+          let claimsOv={}; try{ const v=localStorage.getItem('dune_claims_v1'); if(v) claimsOv=JSON.parse(v)||{}; }catch(e){}
+          const seeded=_buildHydratedRecords(window.LEGACY_RECORDS, goalsOv, claimsOv);
+          if (!candidate.records || typeof candidate.records !== 'object') candidate.records={};
+          for (const d of ['deadlines','claims','risks','goals']) {
+            const cur=Array.isArray(candidate.records[d]) ? candidate.records[d] : null;
+            candidate.records[d] = (cur && cur.length > 0) ? cur : seeded[d];
+          }
+          if (!candidate.meta || typeof candidate.meta !== 'object') candidate.meta={};
+          candidate.meta.recordsMigration = {
+            status: MIGRATION_MIGRATED,
+            schemaVersion: window.Store.SCHEMA_VERSION,
+            reason: 'import-inline-hydration'
+          };
+        } catch (seedErr) {
+          throw new Error('IMPORT_INLINE_SEED_FAILED');
+        }
+      }
+
+      // Candidate MUST pass the destructive-boundary canonical check
+      // AFTER any inline seeding.
       const candEval=window.Store.evaluateCandidateData(candidate);
       if(!candEval.canonical){
         throw new Error('IMPORT_SCHEMA14_CANONICAL_SHAPE_INVALID');
       }
 
       // 3. Commit under coordinator — writes STATE_KEY LAST as schema-14.
-      const res=await window.Store.commitFullStateWrapper(token,candidate,'import');
+      // Recovery-mode commit so an active `STORE_CORRUPT_AUTHORITATIVE_STATE`
+      // blocker on the current disk can be atomically replaced by this
+      // approved import (Codex Round-5 P1-2).
+      const res=await window.Store.commitFullStateWrapper(token,candidate,'import',{recovery:true});
       if(!res||!res.ok){ throw new Error(res&&res.error?res.error:'COMMIT_FAILED'); }
       applied.push(STATE_KEY_NAME);
       succeeded=true;

@@ -939,15 +939,26 @@
     }
     return !!parsed.data;
   }
-  // Full snapshot wrapper validation: structural gate + migrate + Store data
-  // validation. Never mutates Store. Returns { ok, data? }; on ok:true, data
+  // Full snapshot wrapper validation: structural gate → SOURCE
+  // validation → migrate → Store data validation → canonical evaluator.
+  // Never mutates Store. Returns { ok, data?, reason? }; on ok:true, data
   // is the migrated candidate suitable for commitFullStateWrapper.
   //
   // PRV-0.5 R5: routes through the Store-owned authority evaluator so the
   // snapshot-restore boundary applies the same canonical marker + records +
   // future-version rules used by hydration and import.
+  //
+  // PRV-0.5 R6 (Codex Round-5 P1-5): SOURCE validation runs BEFORE
+  // migrateUp so that a source-invalid legacy generation (e.g. a v13
+  // snapshot missing required `money.salary_net`) is REJECTED rather
+  // than default-filled into plausibility. Recovery selection can
+  // then skip this snapshot and choose the next independently valid
+  // generation. Fields that legitimately did not exist in that
+  // historical schema are NOT required at the source stage.
   function validateSnapshotWrapperFull(parsed) {
     if (!isValidSnapshotWrapperShape(parsed)) return { ok: false, reason: 'SNAPSHOT_WRAPPER_SHAPE_INVALID' };
+    const sourceCheck = validateLegacySourceRequiredFields(parsed.data, parsed.version);
+    if (!sourceCheck.ok) return { ok: false, reason: 'SNAPSHOT_SOURCE_' + sourceCheck.reason };
     let migrated;
     try {
       migrated = (parsed.version === SCHEMA_VERSION && parsed.data)
@@ -956,12 +967,36 @@
       normalizeLogbookDomain(migrated);
     } catch (e) { return { ok: false, reason: 'SNAPSHOT_MIGRATE_THREW' }; }
     if (!validate(migrated)) return { ok: false, reason: 'SNAPSHOT_DATA_INVALID' };
-    // PRV-0.5 R5: candidate-shape authority — canonical marker (status +
-    // exact schemaVersion) AND canonical four-array records. Rejection
-    // preserves current state; no destructive commit occurs.
     const evalRes = evaluateCandidateData(migrated);
     if (!evalRes.canonical) return { ok: false, reason: 'SNAPSHOT_CANDIDATE_' + evalRes.classification };
     return { ok: true, data: migrated };
+  }
+  // PRV-0.5 R6 (Codex Round-5 P1-5): source-required invariants keyed
+  // by the wrapper's DECLARED historical schema version. This runs
+  // BEFORE migrateUp fills defaults so a snapshot / import candidate
+  // whose stored data is missing an invariant that its own schema
+  // required is REJECTED — the next independently valid generation
+  // wins. Schemas prior to v12 predate the money slice and are not
+  // required to carry it; from v12 onward the money slice was written
+  // and is required.
+  function validateLegacySourceRequiredFields(data, version) {
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      return { ok: false, reason: 'shape-invalid' };
+    }
+    // Money slice required from v12 onward (present in every SCHEMA
+    // version this Store understands). `defaultState()` populates it,
+    // and any historical wrapper that legitimately came from a v12+
+    // boot has it. A candidate missing money.salary_net at v12+ is
+    // source-corrupt, not a legacy default gap.
+    if (typeof version === 'number' && version >= 12) {
+      if (!data.money || typeof data.money !== 'object' || typeof data.money.salary_net !== 'number') {
+        return { ok: false, reason: 'missing-money-salary_net' };
+      }
+      if (!data.qatarVisit || typeof data.qatarVisit !== 'object') {
+        return { ok: false, reason: 'missing-qatarVisit' };
+      }
+    }
+    return { ok: true };
   }
   // Retained alias — existing callers went through the shape-only gate.
   // Every production caller of the old name has been switched to the
@@ -1171,7 +1206,17 @@
     if (typeof input === 'string') {
       const p = parseWrapperRaw(input);
       if (!p) return { classification: 'ABSENT', canonical: false, reasons: ['null-parse'] };
-      if (p.corrupt) return { classification: 'CORRUPT_STALE_COLLIDING', canonical: false, reasons: ['wrapper-corrupt'] };
+      if (p.corrupt) {
+        // PRV-0.5 R6 (Codex Round-5 P2-1): a future-version string
+        // candidate must classify as UNSUPPORTED_FUTURE_SCHEMA — same
+        // as the object-candidate branch below and the live-disk
+        // evaluatePersistedAuthority path. Never collapse a known
+        // future version into generic corruption.
+        if (p.reason === 'wrapper-version-unsupported') {
+          return { classification: 'UNSUPPORTED_FUTURE_SCHEMA', canonical: false, reasons: ['wrapper-version-unsupported', 'version=' + p.version], wrapperVersion: p.version };
+        }
+        return { classification: 'CORRUPT_STALE_COLLIDING', canonical: false, reasons: ['wrapper-corrupt', 'reason=' + (p.reason || 'unknown')] };
+      }
       parsed = p;
     } else if (typeof input === 'object' && !Array.isArray(input)) {
       // Bare candidate wrapper object (from JSON.parse in caller).
@@ -1191,6 +1236,21 @@
     }
     if (parsed.version > SCHEMA_VERSION) {
       return { classification: 'UNSUPPORTED_FUTURE_SCHEMA', canonical: false, reasons: ['version>' + SCHEMA_VERSION], wrapperVersion: parsed.version };
+    }
+    // PRV-0.5 R6 (Codex Round-5 P1-5): source-required invariants for
+    // a legacy candidate MUST hold BEFORE migrateUp fills defaults.
+    // A v12+ candidate missing `money.salary_net` at the source stage
+    // is REJECTED — recovery selection can move on to the next
+    // independently valid generation.
+    if (parsed.version < SCHEMA_VERSION) {
+      const src = validateLegacySourceRequiredFields(parsed.data, parsed.version);
+      if (!src.ok) {
+        return {
+          classification: 'MALFORMED_CURRENT_SCHEMA', canonical: false,
+          reasons: ['legacy-source-' + src.reason],
+          wrapperVersion: parsed.version
+        };
+      }
     }
     // Migrate the inner data up if the wrapper is a legacy source.
     let migrated;
@@ -1267,12 +1327,29 @@
       };
     }
     if (parsed.corrupt) {
+      // PRV-0.5 R6 (Codex Round-5 P2-1): preserve outer wrapper context
+      // even when parseWrapperRaw declines to migrate. A future-version
+      // raw wrapper must classify as UNSUPPORTED_FUTURE_SCHEMA on the
+      // live-disk path — same as evaluateCandidateWrapper on the same
+      // bytes — instead of collapsing to generic CORRUPT_STALE_COLLIDING.
+      if (parsed.reason === 'wrapper-version-unsupported') {
+        return {
+          classification: 'UNSUPPORTED_FUTURE_SCHEMA', canonical: false,
+          acceptFastPathMigrated: false, authoritative: false, seedLegacy: false,
+          acceptForBackup: false, recoveryRequired: true, blocker,
+          rawIdentityMatchesStore: rawEffective === baseWrapperRaw,
+          wrapper: { version: parsed.version, revision: null, committedAt: null },
+          data: null, marker: null,
+          reasons: ['wrapper-version-unsupported', 'version=' + parsed.version]
+        };
+      }
       return {
         classification: 'CORRUPT_STALE_COLLIDING', canonical: false,
         acceptFastPathMigrated: false, authoritative: false, seedLegacy: false,
         acceptForBackup: false, recoveryRequired: true, blocker,
         rawIdentityMatchesStore: rawEffective === baseWrapperRaw,
-        wrapper: null, data: null, marker: null, reasons: ['wrapper-corrupt']
+        wrapper: null, data: null, marker: null,
+        reasons: ['wrapper-corrupt', 'reason=' + (parsed.reason || 'unknown')]
       };
     }
     if (parsed.version > SCHEMA_VERSION) {
@@ -1341,6 +1418,10 @@
     const inner = evaluateCandidateData(parsed.data);
     if (inner.classification === 'AUTHORITATIVE_MIGRATED') {
       const rawIdentityMatchesStore = rawEffective === baseWrapperRaw;
+      const higherRevisionMismatch =
+        baseWrapperRaw !== null &&
+        parsed.revision > knownRevision &&
+        !rawIdentityMatchesStore;
       const equalRevisionDivergentBytes =
         baseWrapperRaw !== null &&
         parsed.revision === knownRevision &&
@@ -1348,12 +1429,17 @@
       const acceptFastPathMigrated = !blocker && rawIdentityMatchesStore;
       const reasonsOut = inner.reasons.slice();
       if (blocker) reasonsOut.push('durability-blocker:' + blocker.code);
+      if (higherRevisionMismatch) reasonsOut.push('higher-revision-raw-mismatch');
       if (equalRevisionDivergentBytes) reasonsOut.push('equal-revision-divergent-bytes');
       if (!rawIdentityMatchesStore) reasonsOut.push('raw-identity-mismatch');
-      // Equal-revision divergent bytes OR an active blocker demote
-      // AUTHORITATIVE_MIGRATED into CORRUPT_STALE_COLLIDING for the
-      // fast-path/backup consumers.
-      if (equalRevisionDivergentBytes || blocker) {
+      // PRV-0.5 R6 (Codex Round-5 P1-3, P1-4): equal-revision divergent
+      // bytes, higher-revision raw mismatch, OR an active durability
+      // blocker demote AUTHORITATIVE_MIGRATED into CORRUPT_STALE_COLLIDING
+      // for consumers. Higher-revision mismatch is called out separately
+      // because the Store storage-event handler owns the safe
+      // adopt/rebase decision — hydration/backup/fast-path must NOT
+      // silently seed or accept on the mismatched newer bytes.
+      if (equalRevisionDivergentBytes || higherRevisionMismatch || blocker) {
         return {
           classification: 'CORRUPT_STALE_COLLIDING', canonical: false,
           acceptFastPathMigrated: false, authoritative: false, seedLegacy: false,
@@ -1376,7 +1462,27 @@
       };
     }
     if (inner.classification === 'VERIFIED_LEGACY_TRANSITION') {
+      // PRV-0.5 R6 (Codex Round-5 P1-1): a schema-14 wrapper's inner
+      // marker cannot self-attest legacy provenance. Legacy transition
+      // authority is a transaction-scoped Store capability that this
+      // boot only holds when it observed a supported outer legacy raw
+      // wrapper (parsed.version < SCHEMA_VERSION). If the capability is
+      // NOT set here, the wrapper's claim of `unmigrated` provenance is
+      // forgeable — downgrade to MALFORMED_CURRENT_SCHEMA so consumers
+      // refuse to seed. The forgery reproduction Codex ran on schema-14
+      // + fabricated marker cold-boots into this downgrade branch.
       const rawIdentityMatchesStore = rawEffective === baseWrapperRaw;
+      if (!_legacyTransitionCapability) {
+        return {
+          classification: 'MALFORMED_CURRENT_SCHEMA', canonical: false,
+          acceptFastPathMigrated: false, authoritative: false, seedLegacy: false,
+          acceptForBackup: false, recoveryRequired: true, blocker,
+          rawIdentityMatchesStore,
+          wrapper: { version: parsed.version, revision: parsed.revision, committedAt: parsed.committedAt },
+          data: parsed.data, marker: inner.marker,
+          reasons: inner.reasons.concat(['current-schema-cannot-self-attest-legacy-provenance'])
+        };
+      }
       return {
         classification: 'VERIFIED_LEGACY_TRANSITION', canonical: true,
         acceptFastPathMigrated: false,
@@ -1482,7 +1588,22 @@
     if (raw !== null) {
       const parsed = parseWrapperRaw(raw);
       const m = migrateAndValidate(parsed);
-      if (m.ok) return { data: m.data, revision: parsed.revision, committedAt: parsed.committedAt, rawWrapper: raw };
+      if (m.ok) {
+        // PRV-0.5 R6 (Codex Round-5 P1-1): if the raw wrapper this boot
+        // observed was a supported outer legacy version, grant the
+        // Store the transient legacy-transition capability so app.js
+        // hydration on THIS boot may authorise a legacy seed. A
+        // schema-14 raw wrapper NEVER grants this capability — a
+        // current-schema wrapper cannot self-attest a prior transition.
+        const legacyTransitionCapability =
+          parsed && !parsed.corrupt && typeof parsed.version === 'number'
+          && parsed.version < SCHEMA_VERSION;
+        return {
+          data: m.data, revision: parsed.revision, committedAt: parsed.committedAt,
+          rawWrapper: raw,
+          legacyTransitionCapability: legacyTransitionCapability
+        };
+      }
       // PRV-0.5 R5 (Codex Round-4 P1-4): a raw persisted wrapper exists
       // but Store's own parse/migrate/validate rejects it. That is a
       // durability invariant break — NOT an invitation to silently
@@ -1561,6 +1682,28 @@
       detail: _boot.pendingBlocker.detail || null
     };
   }
+  // PRV-0.5 R6 (Codex Round-5 P1-1): transaction-scoped legacy-seed
+  // authorisation. Legacy seeding is authorised ONLY while Store is
+  // processing an actual observed outer legacy wrapper — never by
+  // marker text alone. `_legacyTransitionCapability` is set by
+  // initialLoad when the raw persisted wrapper carried
+  // `version < SCHEMA_VERSION` (a supported legacy source), and by
+  // any Store-owned migration transaction that observes such a
+  // wrapper. It is CONSUMED (cleared) by:
+  //   - a successful hydration commit that persists status='migrated';
+  //   - a successful full-state transaction (any commitFullStateWrapper);
+  //   - an explicit clearDurabilityBlocker.
+  // Fresh cold boots and boots off an already-schema-14 disk NEVER
+  // set this flag, so a schema-14 wrapper whose marker claims
+  // legacy provenance cannot self-authorise seeding on cold reload.
+  let _legacyTransitionCapability = false;
+  if (_boot.legacyTransitionCapability === true) {
+    _legacyTransitionCapability = true;
+  }
+  // Held so callers of `Store.reset()` (which still returns a boolean
+  // for backward compat) can await the actual asynchronous commit via
+  // `Store._lastResetSettled`. Overwritten by every reset invocation.
+  let _lastResetSettled = null;
 
   // Backward-compat pause flag: legacy import code (b4083a8) calls
   // pausePersistence/resumePersistence and relies on scheduleSave being a
@@ -1885,6 +2028,18 @@
     baseWrapperRaw = payload;
     pendingOps     = pendingOps.filter(op => op.seq > capturedMaxSeq);
     rebuildOptimistic();
+    // PRV-0.5 R6 (Codex Round-5 P1-1): release legacy-transition
+    // capability once the wrapper on disk carries a canonical
+    // `status='migrated'` marker. Ordinary CAS commits that land a
+    // still-`unmigrated` wrapper (e.g. because a rogue mid-boot
+    // Store.set fired before hydration) keep the capability alive so
+    // hydration's own retry can complete the legitimate transition.
+    try {
+      const newMarker = baseState && baseState.meta && baseState.meta.recordsMigration;
+      if (newMarker && newMarker.status === MARKER_STATUS_MIGRATED) {
+        _legacyTransitionCapability = false;
+      }
+    } catch (e) { /* ignore */ }
 
     // 6. Post-commit hooks (fire outside lock — collect here, caller fires).
     const listenersSnapshot = Array.from(saveListeners);
@@ -2039,26 +2194,76 @@
   // Commit a full-state candidate (import / snapshot / reset) inside the
   // coordinator. Token guard enforces freeze; latest validated disk revision
   // + 1 is the ONLY revision source; Math.max shortcuts are forbidden.
-  function commitFullStateWrapper(token, candidateData, reason) {
+  //
+  // PRV-0.5 R6 (Codex Round-5 P1-2 + P1-3):
+  //   - `opts.recovery === true` puts this commit in recovery mode: a
+  //     corrupt authoritative disk read no longer refuses; the corrupt
+  //     raw bytes are quarantined into a distinct localStorage key
+  //     `dune_state_v4_quarantine_<epoch-ms>` as evidence, and the
+  //     commit proceeds using `max(knownRevision, 0) + 1` for
+  //     monotonicity (never trusting the corrupt revision). This is the
+  //     ONLY path that can replace corrupt authority; ordinary
+  //     Store.set/update flushes and ordinary (non-recovery) full-state
+  //     commits still refuse.
+  //   - The lowest destructive boundary now enforces the canonical
+  //     authority contract via `evaluateCandidateData(cloned)` under the
+  //     coordinator. Any candidate that lacks canonical marker / records
+  //     is rejected BEFORE the write and the blocker is NOT cleared.
+  //   - Post-write verification re-parses the committed payload via the
+  //     evaluator; if the persisted result does not evaluate as
+  //     AUTHORITATIVE_MIGRATED the commit reports failure and leaves
+  //     the previous blocker intact.
+  function commitFullStateWrapper(token, candidateData, reason, opts) {
     if (!activeFullStateTransaction) return Promise.resolve({ ok: false, error: 'FULL_STATE_TRANSACTION_NOT_ACTIVE' });
     if (!fullStateTxToken || token !== fullStateTxToken) return Promise.resolve({ ok: false, error: 'FULL_STATE_TX_TOKEN_MISMATCH' });
+    const recoveryMode = !!(opts && opts.recovery === true);
     return withCoordinator(function () {
-      // Re-read disk under lock. Corrupt disk = fail closed.
+      // Re-read disk under lock. Corrupt disk in NON-recovery mode = fail
+      // closed. Corrupt disk in RECOVERY mode = quarantine + proceed.
       let rawNow;
       try { rawNow = localStorage.getItem(STATE_KEY); } catch (e) { rawNow = null; }
       let diskRevision = 0;
+      let quarantineKey = null;
       if (rawNow !== null) {
         const parsed = parseWrapperRaw(rawNow);
         if (!parsed || parsed.corrupt) {
-          setDurabilityBlocker('STORE_CORRUPT_AUTHORITATIVE_STATE');
-          return { ok: false, error: 'STORE_CORRUPT_AUTHORITATIVE_STATE' };
+          if (!recoveryMode) {
+            setDurabilityBlocker('STORE_CORRUPT_AUTHORITATIVE_STATE');
+            return { ok: false, error: 'STORE_CORRUPT_AUTHORITATIVE_STATE' };
+          }
+          // Recovery-mode quarantine. Preserve corrupt raw bytes as
+          // evidence under a distinct key BEFORE the atomic replacement.
+          try {
+            quarantineKey = 'dune_state_v4_quarantine_' + Date.now();
+            localStorage.setItem(quarantineKey, rawNow);
+          } catch (qe) { /* quarantine failed — proceed but note it */ }
+          // Do not trust the corrupt revision. Use Store's known baseline
+          // for monotonicity: max(knownRevision, 0). If Store never
+          // accepted anything (fresh boot into corrupt raw), knownRevision
+          // is 0 and we mint revision 1.
+          diskRevision = (typeof knownRevision === 'number' && knownRevision > 0) ? knownRevision : 0;
+        } else {
+          diskRevision = parsed.revision;
         }
-        diskRevision = parsed.revision;
       }
       let cloned;
       try { cloned = clonePersistable(candidateData); } catch (e) { return { ok: false, error: 'STORE_UNPERSISTABLE' }; }
       normalizeLogbookDomain(cloned);
       if (!validate(cloned)) return { ok: false, error: 'FULL_STATE_INVALID' };
+      // PRV-0.5 R6 P1-3: canonical authority contract at the lowest
+      // destructive boundary. Reject a candidate whose marker/records
+      // are not canonical BEFORE the write and BEFORE clearing the
+      // blocker. This closes the "direct malformed full-state commit"
+      // reproduction.
+      const evalCand = evaluateCandidateData(cloned);
+      if (!evalCand.canonical) {
+        return {
+          ok: false,
+          error: 'FULL_STATE_CANDIDATE_NONCANONICAL',
+          classification: evalCand.classification,
+          reasons: evalCand.reasons
+        };
+      }
       // Latest validated disk revision + 1 — no Math.max, no knownRevision shortcut.
       if (diskRevision >= Number.MAX_SAFE_INTEGER) return { ok: false, error: 'STORE_REVISION_EXHAUSTED' };
       const nextRevision = diskRevision + 1;
@@ -2068,14 +2273,37 @@
       try { payload = JSON.stringify(wrapper); } catch (e) { return { ok: false, error: 'STORE_SERIALIZE_FAILED' }; }
       try { localStorage.setItem(STATE_KEY, payload); } catch (e) { return { ok: false, error: 'STORE_QUOTA' }; }
       { const _snap = pushSnapshot(payload); if (!_snap.ok) emitError({ code: 'STORE_SNAPSHOT_DEGRADED', revision: nextRevision, error: String((_snap.error && _snap.error.message) || _snap.error) }); }
+      // PRV-0.5 R6 P1-3: post-write verification via the same evaluator.
+      // We just wrote `payload`; re-parse and re-classify it. Only
+      // AUTHORITATIVE_MIGRATED counts as durable success — anything
+      // else leaves the previous blocker intact and reports failure.
+      const verifyParsed = parseWrapperRaw(payload);
+      const verifyEval = verifyParsed && !verifyParsed.corrupt
+        ? evaluateCandidateData(verifyParsed.data)
+        : { canonical: false, classification: 'PARSE_FAILED' };
+      if (!verifyEval.canonical || verifyEval.classification !== 'AUTHORITATIVE_MIGRATED') {
+        return {
+          ok: false,
+          error: 'FULL_STATE_POST_WRITE_VERIFICATION_FAILED',
+          classification: verifyEval.classification
+        };
+      }
       baseState      = cloned;
       knownRevision  = nextRevision;
       committedAt    = committedAtNow;
       baseWrapperRaw = payload;
       pendingOps     = [];
       conflict       = null;
-      durabilityBlocker = null; // an approved full-state transaction clears the blocker
-      return { ok: true, revision: nextRevision, committedAt: committedAtNow, reason: reason || 'full-state' };
+      durabilityBlocker = null; // an approved full-state transaction clears the blocker AFTER verification
+      _legacyTransitionCapability = false; // consumed on any accepted full-state commit
+      return {
+        ok: true,
+        revision: nextRevision,
+        committedAt: committedAtNow,
+        reason: reason || 'full-state',
+        recovery: recoveryMode,
+        quarantineKey: quarantineKey
+      };
     });
   }
 
@@ -2334,6 +2562,16 @@
     evaluatePersistedAuthority: function (raw) { return evaluatePersistedAuthority(raw); },
     evaluateCandidateWrapper: function (input) { return evaluateCandidateWrapper(input); },
     evaluateCandidateData: function (data) { return evaluateCandidateData(data); },
+    validateLegacySourceRequiredFields: validateLegacySourceRequiredFields,
+    // PRV-0.5 R6 (Codex Round-5 P1-1): read-only check whether Store
+    // currently holds the transient legacy-transition authority. Only
+    // hydration should honour a `VERIFIED_LEGACY_TRANSITION` seed when
+    // this returns true.
+    canAuthoriseLegacySeed: function () { return _legacyTransitionCapability === true; },
+    // Async completion handle for the most recent `reset()` call —
+    // resolves to the actual full-state commit result (P1-2 truthful
+    // async result).
+    _lastResetSettled: function () { return _lastResetSettled; },
     // Raised for tests / documentation of the canonical marker contract.
     MARKER_STATUS: { MIGRATED: MARKER_STATUS_MIGRATED, UNMIGRATED: MARKER_STATUS_UNMIGRATED },
     REQUIRED_RECORD_DOMAINS: REQUIRED_RECORD_DOMAINS.slice(),
@@ -2352,6 +2590,15 @@
     // fire the commit through the coordinator, settle on completion. The
     // returned boolean reports whether the transaction was accepted for
     // dispatch (mirrors legacy semantics); durability lands under the lock.
+    // PRV-0.5 R6 (Codex Round-5 P1-2): recovery-mode full-state commits
+    // for restoreSnapshot/reset. Both surface a `settled` promise so
+    // callers can `await` the actual asynchronous durable outcome — not
+    // just the dispatch acceptance the pre-R6 API returned. When boot
+    // detected corrupt authority, the recovery-mode commit quarantines
+    // the corrupt raw bytes and atomically replaces disk with the
+    // validated candidate; the durability blocker is cleared only after
+    // post-write evaluator verification. On failure, blocker + evidence
+    // stay intact and `settled` reports the exact error.
     restoreSnapshot: function (i, opts) {
       opts = opts || {};
       let snap;
@@ -2362,16 +2609,26 @@
       if (!snap) return { ok: false, error: 'SNAPSHOT_NOT_FOUND' };
       let parsed;
       try { parsed = JSON.parse(snap.payload); } catch (e) { return { ok: false, error: 'SNAPSHOT_SOURCE_WRAPPER_INVALID' }; }
-      // Full validation: wrapper structure AND data must pass the same
-      // gate the live Store applies. Rejection here means no state
-      // mutation, no full-state transaction opened, no new wrapper
-      // minted from bad source.
       const v = validateSnapshotWrapperFull(parsed);
-      if (!v.ok) return { ok: false, error: 'SNAPSHOT_SOURCE_WRAPPER_INVALID' };
+      if (!v.ok) return { ok: false, error: 'SNAPSHOT_SOURCE_WRAPPER_INVALID', reason: v.reason };
       const data = v.data;
+      // PRV-0.5 R6 (Codex Round-5 P1-2): snapshot restore is an
+      // approved recovery event by construction. The migrated
+      // candidate's marker MUST land as `status='migrated'` on disk so
+      // reload does not re-enter the recovery-required loop. A v13
+      // source's migrateUp-generated `unmigrated` marker is rewritten
+      // here to a canonical migrated marker with `reason='snapshot-
+      // restore'` — the user's explicit choice of THIS generation as
+      // authoritative supersedes further legacy seeding.
+      if (!data.meta || typeof data.meta !== 'object') data.meta = {};
+      data.meta.recordsMigration = {
+        status: MARKER_STATUS_MIGRATED,
+        schemaVersion: SCHEMA_VERSION,
+        reason: 'snapshot-restore'
+      };
       const gate = beginFullStateTransaction({ force: !!opts.force, reason: 'snapshot' });
       if (!gate.ok) return { ok: false, error: gate.error };
-      commitFullStateWrapper(gate.token, data, 'snapshot').then(res => {
+      const settled = commitFullStateWrapper(gate.token, data, 'snapshot', { recovery: true }).then(res => {
         try {
           if (res && res.ok) {
             const frozen = deepFreezePersistable(clonePersistable(baseState));
@@ -2380,14 +2637,15 @@
             }
           }
         } finally { endFullStateTransaction(gate.token); }
-      }, () => { endFullStateTransaction(gate.token); });
-      return { ok: true };
+        return res;
+      }, (err) => { endFullStateTransaction(gate.token); return { ok: false, error: 'SNAPSHOT_COMMIT_REJECTED', detail: err && err.message }; });
+      return { ok: true, settled: settled };
     },
     reset: function (opts) {
       opts = opts || {};
       const gate = beginFullStateTransaction({ force: !!opts.force, reason: 'reset' });
       if (!gate.ok) return false;
-      commitFullStateWrapper(gate.token, defaultState(), 'reset').then(res => {
+      const settled = commitFullStateWrapper(gate.token, defaultState(), 'reset', { recovery: true }).then(res => {
         try {
           if (res && res.ok) {
             const snap = deepFreezePersistable(clonePersistable(baseState));
@@ -2396,7 +2654,13 @@
             }
           }
         } finally { endFullStateTransaction(gate.token); }
-      }, () => { endFullStateTransaction(gate.token); });
+        return res;
+      }, (err) => { endFullStateTransaction(gate.token); return { ok: false, error: 'RESET_COMMIT_REJECTED', detail: err && err.message }; });
+      // Legacy return contract: reset() returned a boolean. Preserve
+      // that for callers that don't need to await, and attach settled
+      // as a static property so callers that DO need to await can pick
+      // it up via `Store._lastResetSettled`.
+      _lastResetSettled = settled;
       return true;
     },
     // Full-state transaction primitives — for import/snapshot/reset callers.
