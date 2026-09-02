@@ -1516,3 +1516,103 @@ provably-safe foundation.
 **Date:** 2026-09-02 (PRV-0.5 R6 remediation on branch
 `claude/prv-0-5-r6-authority-recovery`; base commit
 `df791627c0ec365261b0bed7518e0371a1accf38`).
+
+### ADR-015 addendum #6 (2026-09-02) — Codex PRV-0.5 R7 remediation
+
+Codex Round-6 review of R6 exact SHA
+`357a9d26ad075cd1ad911db365569300f2113008` returned **FAIL — NOT
+SAFE, MERGE BLOCKED**. Independent probes reproduced seven P1
+defects rooted in R6 treating transition/recovery authority as
+generic booleans and letting the destructive boundary short-circuit
+durability verification. R7 collapses those authorities into ONE
+source-generation-bound context and adds mandatory
+observe→classify→authorise→prepare→lock→reread→verify→quarantine→
+validate→write→reread→verify→success ordering.
+
+**INV-1 / INV-2 / INV-12 — Source-bound transition and recovery
+authority.** `Store` now owns a single `_transitionAuth` narrow
+context with `{kind:'legacy'|'recovery', sourceRawBytes, sourceVersion, sourceRevision, issuedAt}`. Auth is issued at exactly two points:
+`initialLoad` (kind `legacy`, bound to the raw legacy-source bytes)
+and `Store.prepareRecoveryAuth()` (kind `recovery`, bound to the
+current corrupt raw bytes). Auth is consumed on any accepted commit.
+Every destructive path (hydration legacy seed, recovery-mode
+`commitFullStateWrapper`) re-reads disk raw UNDER the destructive
+lock and requires an exact byte-match against `_transitionAuth.sourceRawBytes` — a stale auth for a generation the disk no longer holds
+fails closed with no mutation. Ordinary CAS commits that land a
+still-`unmigrated` wrapper mid-transition rebind the auth's source
+bytes to the new `baseWrapperRaw` so hydration RETRY within the
+same boot still authorises seeding — this rebind is Store-controlled and cannot leak the auth to an externally-substituted wrapper.
+
+**INV-3 / R6-P1-2 — Stale recovery cannot overwrite healthy
+authority.** Recovery-mode `commitFullStateWrapper` performs the
+source-identity re-check TWICE (immediately after quarantine-verify
+and again immediately before primary write) so a Tab-B recovery
+that lands between our steps refuses instead of clobbering. Callers
+(`restoreSnapshot`, `reset`, `processImport`) issue the recovery
+auth via `Store.prepareRecoveryAuth()` before beginning the
+transaction; the auth binds to the exact corrupt raw bytes and
+carries `absent:true` when the primary key was externally cleared.
+
+**INV-4 / R6-P1-3 — Complete canonical full-state schema.** New
+`validateFullStateCanonical(data)` runs under the coordinator BEFORE
+the write and BEFORE any blocker clear. Required top-level domains:
+`money` (with `salary_net` + `expenses`), `qatarVisit`, `todayFocus`,
+`goals`, `career`, `easa`, `logbook`, `reviews`, `decisions`,
+`timeline`, `about`, `apartments`, `sbTasks`, `bht` (with
+`habits`/`entries` arrays), `telemetry`, `ideas`, `records` (with
+four domain arrays), `meta.recordsMigration` (with exact
+`schemaVersion` and recognised status). A missing / null / wrong-
+type domain fails with `FULL_STATE_CANONICAL_INCOMPLETE` and a
+`missing:[...]` list.
+
+**INV-5 / R6-P1-4 — Quarantine before corrupt replacement, with
+verify.** Recovery-mode commit ordering: source identity check →
+quarantine setItem to `dune_state_v4_quarantine_<epoch-ms>_<rand>`
+→ re-read quarantine key → require byte-match with source raw → if
+either step fails, delete quarantine key and refuse. Only after
+verified quarantine does the primary write proceed. Random suffix
+prevents collision under rapid successive recoveries.
+
+**INV-6 / R6-P1-5 — Durable verification of ACTUAL persisted
+primary.** After the primary `localStorage.setItem`, the R7
+implementation reads `localStorage.getItem(STATE_KEY)` and requires
+the durable byte string to EXACTLY equal the payload we intended to
+write. Silent-no-op writes, tampered writes, writes that went
+elsewhere, all surface as `FULL_STATE_DURABLE_VERIFY_FAILED`. Only
+after that byte-match AND a fresh evaluator classification of
+`AUTHORITATIVE_MIGRATED` may `baseState` / `knownRevision` /
+`baseWrapperRaw` / `durabilityBlocker=null` / auth consumption
+proceed. Reset / snapshot restore / import all inherit this gate.
+
+**INV-7 / R6-P1-6 — Version-specific historical source
+validation.** `validateLegacySourceRequiredFields(data, version)`
+now enforces version-specific floors derived from this repo's own
+`migrateUp` history: v12+ requires `money.salary_net` + `qatarVisit`
++ `bht`; v13 additionally requires the additive domains introduced
+by v3+ (career, easa, about, sbTasks, goals, apartments, telemetry,
+ideas, logbook, reviews, decisions, timeline, todayFocus) plus a
+non-empty `bht` substructure (habits + entries arrays). A trivial
+`{money:{salary_net}, qatarVisit:{}}` stub is REJECTED at the source
+stage before `migrateUp` can default-fill the missing structure.
+
+**INV-8 / R6-P1-7 — Strict version semantics.** `parseWrapperRaw`
+now returns `{corrupt:true, reason:'wrapper-version-malformed', versionType:<type>}` when `version` is PRESENT but not a finite integer.
+String `"99"`, `null`, `true`, `14.5`, `{}` all fail closed. Only
+truly absent `version` follows the legacy versionless path — and
+that path never gains legacy-transition authority because
+`initialLoad`'s auth requires `parsed.version < SCHEMA_VERSION`
+with a numeric integer version.
+
+**Concurrency model preserved.** Web Locks continue to serialise
+participating operations, but authority never derives from a lock —
+it derives from source-identity match under the destructive lock.
+The R3 `PRV-R3-SIMULTANEOUS-TABS-P1-3` scenario remains green.
+
+**Legacy corpus lifecycle unchanged.** R7 does NOT remove
+`_migration-legacy-records.js`, Apartments, Claims Register, EASA,
+or Risks — the user's product decisions to eventually retire those
+domains remain PRV-1+ work.
+
+**Date:** 2026-09-02 (PRV-0.5 R7 remediation on branch
+`claude/prv-0-5-r7-invariant-remediation`; base commit
+`357a9d26ad075cd1ad911db365569300f2113008`).

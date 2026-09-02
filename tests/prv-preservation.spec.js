@@ -1877,7 +1877,13 @@ test('PRV-R6-P1-2-CORRUPT-DISK-SNAPSHOT-RECOVERY — restoreSnapshot atomically 
       version: 13, revision: 42, committedAt: iso,
       data: {
         money: { salary_net: 24681, expenses: { rent: 1, food: 1, transport: 1, utilities: 1, phone: 1, family_transfer: 0, other: 1, mai: 0 }, usd_rate: 88, save_target: 55000 },
-        qatarVisit: { from_airport: 'SVO', to_airport: 'DOH', travel_month: '', flights: 0, hotel: 0, food: 0, transport: 0, misc: 0, emergency: 0, saved: 0, notes: '' }
+        qatarVisit: { from_airport: 'SVO', to_airport: 'DOH', travel_month: '', flights: 0, hotel: 0, food: 0, transport: 0, misc: 0, emergency: 0, saved: 0, notes: '' },
+        todayFocus: ['','',''], goals: {}, career: { started: '', licenses: [], milestones: [] }, easa: {},
+        logbook: [], reviews: [], decisions: [], timeline: [],
+        about: { version: 2, createdAt: '', lastUpdated: '', strengths: [], lessons: [], vision: '', values: [], reminders: [] },
+        apartments: [], sbTasks: {},
+        bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: '', model: '' }, meta: {} },
+        telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: []
       }
     };
     localStorage.setItem('dune_snapshots_v1', JSON.stringify([{ at: iso, payload: JSON.stringify(good) }]));
@@ -1962,12 +1968,18 @@ test('PRV-R6-P1-2-CORRUPT-DISK-IMPORT-RECOVERY — processImport atomically repl
     try { window.location.reload = function () {}; } catch (e) {}
     const blockerBefore = window.Store.getDurabilityBlocker();
     const iso = new Date().toISOString();
-    // Legitimate v13 backup to import.
+    // Legitimate v13 backup to import (full v13 shape per R7 source validator).
     const v13 = {
       version: 13, revision: 1, committedAt: iso,
       data: {
-        money: { salary_net: 130000, expenses: {}, usd_rate: 88, save_target: 55000 },
+        money: { salary_net: 130000, expenses: { rent: 1, food: 1, transport: 1, utilities: 1, phone: 1, family_transfer: 0, other: 1, mai: 0 }, usd_rate: 88, save_target: 55000 },
         qatarVisit: { from_airport: 'SVO', to_airport: 'DOH', travel_month: '', flights: 0, hotel: 0, food: 0, transport: 0, misc: 0, emergency: 0, saved: 0, notes: '' },
+        todayFocus: ['','',''], goals: {}, career: { started: '', licenses: [], milestones: [] }, easa: {},
+        logbook: [], reviews: [], decisions: [], timeline: [],
+        about: { version: 2, createdAt: '', lastUpdated: '', strengths: [], lessons: [], vision: '', values: [], reminders: [] },
+        apartments: [], sbTasks: {},
+        bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: '', model: '' }, meta: {} },
+        telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [],
         meta: { version: 13, createdAt: iso, lastUpdated: iso }
       }
     };
@@ -2020,6 +2032,9 @@ test('PRV-R6-P1-3-DIRECT-MALFORMED-FULL-STATE-COMMIT-REJECTED — commitFullStat
         recordsMigration: { status: 'migrated', schemaVersion: 14, reason: 'direct-test' }
       }
     };
+    // R7: for recovery-mode commit, first prepare source-bound
+    // recovery auth from the current corrupt disk.
+    const authRes = window.Store.prepareRecoveryAuth();
     const gate = window.Store.beginFullStateTransaction({ force: true, reason: 'direct-test' });
     const res = await window.Store.commitFullStateWrapper(gate.token, bad, 'direct-test', { recovery: true });
     window.Store.endFullStateTransaction(gate.token);
@@ -2086,12 +2101,19 @@ test('PRV-R6-P1-5-SOURCE-INVALID-SNAPSHOT-SKIPPED — validateSnapshotWrapperFul
   await page.goto('/');
   await waitForApp(page);
   const proof = await page.evaluate(() => {
+    // R7-strict v13 source validator: missing money entirely.
     const bad = { version: 13, revision: 7, committedAt: '2026-08-25T00:00:00Z', data: { qatarVisit: {} } };
     const good = {
       version: 13, revision: 42, committedAt: '2026-08-25T00:00:00Z',
       data: {
         money: { salary_net: 33333, expenses: { rent: 1, food: 1, transport: 1, utilities: 1, phone: 1, family_transfer: 0, other: 1, mai: 0 }, usd_rate: 88, save_target: 55000 },
-        qatarVisit: { from_airport: 'SVO', to_airport: 'DOH', travel_month: '', flights: 0, hotel: 0, food: 0, transport: 0, misc: 0, emergency: 0, saved: 0, notes: '' }
+        qatarVisit: { from_airport: 'SVO', to_airport: 'DOH', travel_month: '', flights: 0, hotel: 0, food: 0, transport: 0, misc: 0, emergency: 0, saved: 0, notes: '' },
+        todayFocus: ['','',''], goals: {}, career: { started: '', licenses: [], milestones: [] }, easa: {},
+        logbook: [], reviews: [], decisions: [], timeline: [],
+        about: { version: 2, createdAt: '', lastUpdated: '', strengths: [], lessons: [], vision: '', values: [], reminders: [] },
+        apartments: [], sbTasks: {},
+        bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: '', model: '' }, meta: {} },
+        telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: []
       }
     };
     // Test the SOURCE validator directly.
@@ -2108,7 +2130,9 @@ test('PRV-R6-P1-5-SOURCE-INVALID-SNAPSHOT-SKIPPED — validateSnapshotWrapperFul
     };
   });
   expect(proof.badSrcOk).toBe(false);
-  expect(proof.badSrcReason).toBe('missing-money-salary_net');
+  // R7-strict v13 validator returns the FIRST failing requirement.
+  // For {qatarVisit:{}} with no money at all, that's `missing-money`.
+  expect(proof.badSrcReason).toBe('missing-money');
   expect(proof.goodSrcOk).toBe(true);
   expect(proof.badCanonical).toBe(false);
   expect(proof.badClassification).toBe('MALFORMED_CURRENT_SCHEMA');
@@ -2125,7 +2149,13 @@ test('PRV-R6-P1-2-RECOVERY-SURVIVES-RELOAD — after snapshot recovery, reload s
       version: 13, revision: 42, committedAt: iso,
       data: {
         money: { salary_net: 24682, expenses: { rent: 1, food: 1, transport: 1, utilities: 1, phone: 1, family_transfer: 0, other: 1, mai: 0 }, usd_rate: 88, save_target: 55000 },
-        qatarVisit: { from_airport: 'SVO', to_airport: 'DOH', travel_month: '', flights: 0, hotel: 0, food: 0, transport: 0, misc: 0, emergency: 0, saved: 0, notes: '' }
+        qatarVisit: { from_airport: 'SVO', to_airport: 'DOH', travel_month: '', flights: 0, hotel: 0, food: 0, transport: 0, misc: 0, emergency: 0, saved: 0, notes: '' },
+        todayFocus: ['','',''], goals: {}, career: { started: '', licenses: [], milestones: [] }, easa: {},
+        logbook: [], reviews: [], decisions: [], timeline: [],
+        about: { version: 2, createdAt: '', lastUpdated: '', strengths: [], lessons: [], vision: '', values: [], reminders: [] },
+        apartments: [], sbTasks: {},
+        bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: '', model: '' }, meta: {} },
+        telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: []
       }
     };
     localStorage.setItem('dune_snapshots_v1', JSON.stringify([{ at: iso, payload: JSON.stringify(good) }]));
@@ -2240,4 +2270,746 @@ test('PRV-R6-P2-2-BOOT-RECOVERY-BANNER-VISIBLE — corrupt-storage boot paints t
   expect(proof.text).toMatch(/Backup import/);
   expect(proof.text).toMatch(/Reset/);
   expect(proof.text).not.toMatch(/export a backup/i);
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// PRV-0.5 R7 (Codex Round-6) — MANDATORY ADVERSARIAL TESTS.
+// Every test converts a Codex Round-6 P1 finding into a permanent
+// regression. R7-T1..R7-T24 per the R7 brief.
+// ═══════════════════════════════════════════════════════════════════
+
+function fullV13Data(iso, salaryOverride) {
+  return {
+    money: { salary_net: salaryOverride == null ? 130000 : salaryOverride, expenses: { rent: 1, food: 1, transport: 1, utilities: 1, phone: 1, family_transfer: 0, other: 1, mai: 0 }, usd_rate: 88, save_target: 55000 },
+    qatarVisit: { from_airport: 'SVO', to_airport: 'DOH', travel_month: '', flights: 0, hotel: 0, food: 0, transport: 0, misc: 0, emergency: 0, saved: 0, notes: '' },
+    todayFocus: ['','',''], goals: {}, career: { started: '', licenses: [], milestones: [] }, easa: {},
+    logbook: [], reviews: [], decisions: [], timeline: [],
+    about: { version: 2, createdAt: '', lastUpdated: '', strengths: [], lessons: [], vision: '', values: [], reminders: [] },
+    apartments: [], sbTasks: {},
+    bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: '', model: '' }, meta: {} },
+    telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [],
+    meta: { version: 13, createdAt: iso, lastUpdated: iso }
+  };
+}
+
+// R7-T1: v13 observed → unrelated schema-14 replaces disk → stale
+// legacy-transition auth rejected. Under R7, hydration reads the
+// current disk raw, compares to auth.sourceRawBytes, and refuses.
+test('PRV-R7-T1-STALE-LEGACY-AUTH-VS-UNRELATED-V14 — legacy auth issued for v13 does not seed after disk is swapped to an unrelated schema-14 revision-50 wrapper', async ({ page }) => {
+  const iso = new Date().toISOString();
+  await page.addInitScript((data) => {
+    window.__prv05DisableBootHydration = true;
+    window.__prv05HydrationAutoRetryEnabled = false;
+    localStorage.setItem('dune_state_v4', JSON.stringify({ version: 13, revision: 1, committedAt: data.iso, data: data.fullV13 }));
+  }, { iso, fullV13: fullV13Data(iso, 11111) });
+  await page.goto('/');
+  await waitForApp(page);
+  const proof = await page.evaluate(async () => {
+    const authBefore = window.Store._currentTransitionAuth();
+    // Swap disk to an unrelated schema-14 wrapper at revision 50 with
+    // canonical-looking unmigrated marker.
+    const iso = new Date().toISOString();
+    const forged = {
+      version: 14, revision: 50, committedAt: iso,
+      data: {
+        money: { salary_net: 999, expenses: {}, usd_rate: 88, save_target: 0 },
+        qatarVisit: { from_airport: 'X', to_airport: 'Y', travel_month: '', flights: 0, hotel: 0, food: 0, transport: 0, misc: 0, emergency: 0, saved: 0, notes: '' },
+        todayFocus: ['','',''], goals: {}, career: {}, easa: {},
+        logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { sourceCounts: { tracker: 0, builder: 0 } }, reconciled: { at: iso }, drift: { diverged: false } },
+        reviews: [], decisions: [], timeline: [], about: {}, apartments: [], sbTasks: {},
+        bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: '', model: '' }, meta: {} },
+        telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [],
+        records: { deadlines: [], claims: [], risks: [], goals: [] },
+        meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'unmigrated', schemaVersion: 14, priorSchemaVersion: 13, reason: 'migrateUp-from-v13' } }
+      }
+    };
+    localStorage.setItem('dune_state_v4', JSON.stringify(forged));
+    const ev = window.Store.evaluatePersistedAuthority();
+    const res = await window.hydratePreservationRecordsOnce();
+    const p = JSON.parse(localStorage.getItem('dune_state_v4'));
+    const r = p && p.data && p.data.records;
+    return {
+      authKind: authBefore && authBefore.kind,
+      authSourceVersion: authBefore && authBefore.sourceVersion,
+      classification: ev.classification,
+      hydrateOk: res && res.ok,
+      hydrateReason: res && res.reason,
+      recordsAllEmpty: r && ['deadlines','claims','risks','goals'].every(d => Array.isArray(r[d]) && r[d].length === 0)
+    };
+  });
+  expect(proof.authKind).toBe('legacy');
+  expect(proof.authSourceVersion).toBe(13);
+  // R7: the v13 auth's sourceRawBytes doesn't match the current
+  // schema-14 disk → downgrade to MALFORMED_CURRENT_SCHEMA.
+  expect(proof.classification).toBe('MALFORMED_CURRENT_SCHEMA');
+  expect(proof.hydrateOk).toBe(false);
+  expect(proof.hydrateReason).toBe('recovery-required');
+  expect(proof.recordsAllEmpty).toBe(true);
+});
+
+// R7-T2: v13 observed → DIFFERENT v13 generation replaces disk →
+// legacy auth for the FIRST v13 must not authorise seeding of the
+// SECOND v13 generation.
+test('PRV-R7-T2-STALE-LEGACY-AUTH-VS-DIFFERENT-V13 — legacy auth is bound to the exact v13 raw bytes and rejects a swapped different v13 revision', async ({ page }) => {
+  const iso = new Date().toISOString();
+  await page.addInitScript((payload) => {
+    window.__prv05DisableBootHydration = true;
+    window.__prv05HydrationAutoRetryEnabled = false;
+    localStorage.setItem('dune_state_v4', payload);
+  }, JSON.stringify({ version: 13, revision: 1, committedAt: iso, data: fullV13Data(iso, 11111) }));
+  await page.goto('/');
+  await waitForApp(page);
+  const proof = await page.evaluate(async () => {
+    // Swap disk to a DIFFERENT v13 wrapper (different revision +
+    // different salary).
+    const iso2 = new Date().toISOString();
+    const differentV13 = {
+      version: 13, revision: 50, committedAt: iso2,
+      data: {
+        money: { salary_net: 22222, expenses: { rent: 2, food: 2, transport: 2, utilities: 2, phone: 2, family_transfer: 0, other: 2, mai: 0 }, usd_rate: 88, save_target: 55000 },
+        qatarVisit: { from_airport: 'A', to_airport: 'B', travel_month: '', flights: 0, hotel: 0, food: 0, transport: 0, misc: 0, emergency: 0, saved: 0, notes: '' },
+        todayFocus: ['','',''], goals: {}, career: { started: '', licenses: [], milestones: [] }, easa: {},
+        logbook: [], reviews: [], decisions: [], timeline: [],
+        about: { version: 2, createdAt: '', lastUpdated: '', strengths: [], lessons: [], vision: '', values: [], reminders: [] },
+        apartments: [], sbTasks: {},
+        bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: '', model: '' }, meta: {} },
+        telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [],
+        meta: { version: 13, createdAt: iso2, lastUpdated: iso2 }
+      }
+    };
+    localStorage.setItem('dune_state_v4', JSON.stringify(differentV13));
+    const ev = window.Store.evaluatePersistedAuthority();
+    const res = await window.hydratePreservationRecordsOnce();
+    return {
+      classification: ev.classification,
+      hydrateOk: res && res.ok,
+      hydrateReason: res && res.reason,
+      hydrateClassification: res && res.classification
+    };
+  });
+  // The evaluator's parsed.version < SCHEMA_VERSION branch classifies
+  // the swapped v13 as VERIFIED_LEGACY_TRANSITION unconditionally
+  // (initialLoad-issued auth applies). But hydration's
+  // canAuthoriseLegacySeed check compares auth.sourceRawBytes to the
+  // CURRENT disk raw — the swap means they don't match → refuse.
+  expect(proof.hydrateOk).toBe(false);
+  expect(proof.hydrateReason).toBe('recovery-required');
+});
+
+// R7-T3 / R7-T4: repeated hydration cannot reuse the auth after
+// successful commit — the auth is consumed and re-attempts fail.
+test('PRV-R7-T3-T4-LEGACY-AUTH-SINGLE-USE — after successful hydration commit, the legacy auth is consumed; a repeated hydration on the same in-memory state fails to authorise a new seed', async ({ page }) => {
+  await page.goto('/');
+  await waitForApp(page);
+  await waitForNextSave(page);
+  const iso = new Date().toISOString();
+  const v13 = { version: 13, revision: 1, committedAt: iso, data: fullV13Data(iso, 12345) };
+  await page.addInitScript((payload) => {
+    localStorage.setItem('dune_state_v4', payload);
+  }, JSON.stringify(v13));
+  await page.reload();
+  await waitForApp(page);
+  await waitForMigrated(page);
+  await waitForNextSave(page);
+  const proof = await page.evaluate(async () => {
+    // Auth was consumed by the successful hydration commit.
+    const authAfter = window.Store._currentTransitionAuth();
+    // Try to run hydration again — evaluator says AUTHORITATIVE_MIGRATED
+    // and skips. But if we rewrite disk to a schema-14/unmigrated
+    // wrapper (mimicking a re-seed attempt), auth should not exist.
+    return {
+      authAfter,
+      canAuthorise: window.Store.canAuthoriseLegacySeed()
+    };
+  });
+  expect(proof.authAfter).toBeNull();
+  expect(proof.canAuthorise).toBe(false);
+});
+
+// R7-T5: Recovery A prepared for corrupt C. Recovery B writes healthy
+// H. A's later commit attempt must FAIL under the destructive lock
+// because the disk raw has changed.
+test('PRV-R7-T5-STALE-RECOVERY-DOES-NOT-OVERWRITE-HEALTHY — a recovery auth prepared for corrupt C fails when disk has been recovered to healthy H', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('dune_state_v4', '{corrupt-json');
+  });
+  await page.goto('/');
+  await waitForApp(page);
+  const proof = await page.evaluate(async () => {
+    const blockerBefore = window.Store.getDurabilityBlocker();
+    // Tab A prepares recovery for corrupt C.
+    const authA = window.Store.prepareRecoveryAuth();
+    // Simulate "Tab B wrote healthy H" by directly replacing disk
+    // with a canonical schema-14 AUTHORITATIVE_MIGRATED wrapper.
+    const iso = new Date().toISOString();
+    const healthy = {
+      version: 14, revision: 5, committedAt: iso,
+      data: {
+        money: { salary_net: 77777, expenses: {}, usd_rate: 88, save_target: 0 },
+        qatarVisit: { from_airport: 'H', to_airport: 'H', travel_month: '', flights: 0, hotel: 0, food: 0, transport: 0, misc: 0, emergency: 0, saved: 0, notes: '' },
+        todayFocus: ['','',''], goals: {}, career: {}, easa: {},
+        logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { sourceCounts: { tracker: 0, builder: 0 } }, reconciled: { at: iso }, drift: { diverged: false } },
+        reviews: [], decisions: [], timeline: [], about: {}, apartments: [], sbTasks: {},
+        bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: '', model: '' }, meta: {} },
+        telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [],
+        records: { deadlines: [], claims: [], risks: [], goals: [] },
+        meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'migrated', schemaVersion: 14, reason: 'test-healthy-h' } }
+      }
+    };
+    const healthyPayload = JSON.stringify(healthy);
+    localStorage.setItem('dune_state_v4', healthyPayload);
+    // Tab A tries to commit its stale recovery.
+    const iso2 = new Date().toISOString();
+    const staleCandidate = {
+      money: { salary_net: 11111, expenses: {}, usd_rate: 88, save_target: 0 },
+      qatarVisit: { from_airport: 'S', to_airport: 'S', travel_month: '', flights: 0, hotel: 0, food: 0, transport: 0, misc: 0, emergency: 0, saved: 0, notes: '' },
+      todayFocus: ['','',''], goals: {}, career: {}, easa: {},
+      logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { sourceCounts: { tracker: 0, builder: 0 } }, reconciled: { at: iso2 }, drift: { diverged: false } },
+      reviews: [], decisions: [], timeline: [], about: {}, apartments: [], sbTasks: {},
+      bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: '', model: '' }, meta: {} },
+      telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [],
+      records: { deadlines: [], claims: [], risks: [], goals: [] },
+      meta: { version: 14, createdAt: iso2, lastUpdated: iso2, recordsMigration: { status: 'migrated', schemaVersion: 14, reason: 'stale-a' } }
+    };
+    const gate = window.Store.beginFullStateTransaction({ force: true, reason: 'stale-recovery' });
+    const res = await window.Store.commitFullStateWrapper(gate.token, staleCandidate, 'stale-recovery', { recovery: true });
+    window.Store.endFullStateTransaction(gate.token);
+    const diskFinal = localStorage.getItem('dune_state_v4');
+    return {
+      blockerBeforeCode: blockerBefore && blockerBefore.code,
+      authAOk: authA && authA.ok,
+      commitOk: res && res.ok,
+      commitError: res && res.error,
+      commitReason: res && res.reason,
+      diskFinal_matches_H: diskFinal === healthyPayload,
+      diskFinalSalary: (() => { try { const p = JSON.parse(diskFinal); return p && p.data && p.data.money && p.data.money.salary_net; } catch (e) { return null; }})()
+    };
+  });
+  expect(proof.blockerBeforeCode).toBe('STORE_CORRUPT_AUTHORITATIVE_STATE');
+  expect(proof.authAOk).toBe(true);
+  expect(proof.commitOk).toBe(false);
+  expect(proof.commitError).toBe('RECOVERY_AUTH_INVALID');
+  expect(proof.commitReason).toBe('source-generation-changed');
+  // Healthy H is preserved.
+  expect(proof.diskFinal_matches_H).toBe(true);
+  expect(proof.diskFinalSalary).toBe(77777);
+});
+
+// R7-T6: two different recovery candidates prepared for the SAME
+// corrupt source — first commit wins; second fails because auth was
+// consumed AND source no longer matches.
+test('PRV-R7-T6-CONCURRENT-RECOVERIES-DO-NOT-OVERWRITE — after one recovery commits, a second concurrent recovery candidate fails to overwrite the newly-healthy state', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('dune_state_v4', '{corrupt-json');
+  });
+  await page.goto('/');
+  await waitForApp(page);
+  const proof = await page.evaluate(async () => {
+    // First recovery: succeeds via Store.reset().
+    window.Store.reset({ force: true });
+    const firstRes = await window.Store._lastResetSettled();
+    const firstDisk = localStorage.getItem('dune_state_v4');
+    // Second recovery: prepareRecoveryAuth against the now-healthy disk.
+    const secondAuth = window.Store.prepareRecoveryAuth();
+    return {
+      firstOk: firstRes && firstRes.ok,
+      firstDiskParseable: (() => { try { JSON.parse(firstDisk); return true; } catch (e) { return false; }})(),
+      secondAuthOk: secondAuth && secondAuth.ok,
+      secondAuthError: secondAuth && secondAuth.error
+    };
+  });
+  expect(proof.firstOk).toBe(true);
+  expect(proof.firstDiskParseable).toBe(true);
+  // Second recovery cannot be prepared — disk is healthy AND the
+  // durability blocker has been cleared, so no recovery precondition
+  // exists any more.
+  expect(proof.secondAuthOk).toBe(false);
+  expect(['RECOVERY_AUTH_NO_BLOCKER','RECOVERY_AUTH_DISK_NOT_CORRUPT']).toContain(proof.secondAuthError);
+});
+
+// R7-T7: direct full-state commit missing `bht` MUST be rejected.
+test('PRV-R7-T7-FULL-STATE-MISSING-BHT-REJECTED — commitFullStateWrapper refuses a candidate missing the bht domain', async ({ page }) => {
+  await page.goto('/');
+  await waitForApp(page);
+  await waitForNextSave(page);
+  const proof = await page.evaluate(async () => {
+    const iso = new Date().toISOString();
+    const bad = JSON.parse(JSON.stringify(window.Store.raw()));
+    delete bad.bht;
+    const gate = window.Store.beginFullStateTransaction({ force: true, reason: 'test-missing-bht' });
+    const res = await window.Store.commitFullStateWrapper(gate.token, bad, 'test-missing-bht');
+    window.Store.endFullStateTransaction(gate.token);
+    return { commitOk: res && res.ok, error: res && res.error, missing: res && res.missing };
+  });
+  expect(proof.commitOk).toBe(false);
+  expect(proof.error).toBe('FULL_STATE_CANONICAL_INCOMPLETE');
+  expect(proof.missing).toContain('bht');
+});
+
+// R7-T8: production import candidate missing bht → after migrateUp
+// fills defaults, the candidate LOOKS complete. But at the source
+// stage, a v13 backup missing bht must be rejected BEFORE migrateUp.
+test('PRV-R7-T8-IMPORT-V13-MISSING-BHT-REJECTED — processImport refuses a v13 backup missing the bht domain (source validation before migrateUp)', async ({ page }) => {
+  await page.goto('/');
+  await waitForApp(page);
+  await waitForNextSave(page);
+  page.on('dialog', d => d.accept());
+  const proof = await page.evaluate(async (fullV13Fn) => {
+    try { window.location.reload = function () {}; } catch (e) {}
+    const iso = new Date().toISOString();
+    const noBht = eval('(' + fullV13Fn + ')')(iso, 33333);
+    delete noBht.bht;
+    const payload = JSON.stringify({ version: '2026.1', exported_at: iso, data: { dune_state_v4: { version: 13, revision: 1, committedAt: iso, data: noBht } } });
+    const ok = await window.processImport(payload);
+    return { ok };
+  }, fullV13Data.toString());
+  expect(proof.ok).toBe(false);
+});
+
+// R7-T9: other required canonical-domain omissions rejected.
+test('PRV-R7-T9-FULL-STATE-MISSING-CAREER-REJECTED — commitFullStateWrapper refuses a candidate missing the career domain', async ({ page }) => {
+  await page.goto('/');
+  await waitForApp(page);
+  await waitForNextSave(page);
+  const proof = await page.evaluate(async () => {
+    const bad = JSON.parse(JSON.stringify(window.Store.raw()));
+    delete bad.career;
+    const gate = window.Store.beginFullStateTransaction({ force: true, reason: 'test-missing-career' });
+    const res = await window.Store.commitFullStateWrapper(gate.token, bad, 'test-missing-career');
+    window.Store.endFullStateTransaction(gate.token);
+    return { commitOk: res && res.ok, error: res && res.error, missing: res && res.missing };
+  });
+  expect(proof.commitOk).toBe(false);
+  expect(proof.error).toBe('FULL_STATE_CANONICAL_INCOMPLETE');
+  expect(proof.missing).toContain('career');
+});
+
+// R7-T10: quarantine write throws → primary unchanged, recovery fails.
+test('PRV-R7-T10-QUARANTINE-WRITE-THROWS-PRIMARY-UNCHANGED — a quarantine setItem throw fails the recovery commit and leaves corrupt primary bytes intact', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('dune_state_v4', '{corrupt-json');
+  });
+  await page.goto('/');
+  await waitForApp(page);
+  const proof = await page.evaluate(async () => {
+    // Prepare recovery auth.
+    const authRes = window.Store.prepareRecoveryAuth();
+    // Inject setItem: throw for any dune_state_v4_quarantine_* key.
+    const realSetItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (k, v) {
+      if (typeof k === 'string' && k.indexOf('dune_state_v4_quarantine_') === 0) {
+        throw new DOMException('QuotaExceededError', 'QuotaExceededError');
+      }
+      return realSetItem.call(this, k, v);
+    };
+    // Build a canonical candidate.
+    const iso = new Date().toISOString();
+    const candidate = {
+      money: { salary_net: 4444, expenses: {}, usd_rate: 88, save_target: 0 },
+      qatarVisit: { from_airport: 'X', to_airport: 'Y', travel_month: '', flights: 0, hotel: 0, food: 0, transport: 0, misc: 0, emergency: 0, saved: 0, notes: '' },
+      todayFocus: ['','',''], goals: {}, career: {}, easa: {},
+      logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { sourceCounts: { tracker: 0, builder: 0 } }, reconciled: { at: iso }, drift: { diverged: false } },
+      reviews: [], decisions: [], timeline: [], about: {}, apartments: [], sbTasks: {},
+      bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: '', model: '' }, meta: {} },
+      telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [],
+      records: { deadlines: [], claims: [], risks: [], goals: [] },
+      meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'migrated', schemaVersion: 14, reason: 'test-q-fail' } }
+    };
+    const gate = window.Store.beginFullStateTransaction({ force: true, reason: 'test-q-fail' });
+    const res = await window.Store.commitFullStateWrapper(gate.token, candidate, 'test-q-fail', { recovery: true });
+    window.Store.endFullStateTransaction(gate.token);
+    Storage.prototype.setItem = realSetItem;
+    const diskAfter = localStorage.getItem('dune_state_v4');
+    return {
+      authOk: authRes && authRes.ok,
+      commitOk: res && res.ok,
+      commitError: res && res.error,
+      diskUnchanged: diskAfter === '{corrupt-json',
+      quarantinePresent: Object.keys(localStorage).some(k => k.indexOf('dune_state_v4_quarantine_') === 0)
+    };
+  });
+  expect(proof.authOk).toBe(true);
+  expect(proof.commitOk).toBe(false);
+  expect(proof.commitError).toBe('RECOVERY_QUARANTINE_WRITE_FAILED');
+  expect(proof.diskUnchanged).toBe(true);
+  expect(proof.quarantinePresent).toBe(false);
+});
+
+// R7-T11: quarantine no-op / mismatch → corrupt primary unchanged.
+test('PRV-R7-T11-QUARANTINE-NOOP-MISMATCH-PRIMARY-UNCHANGED — a quarantine setItem that silently no-ops fails the verify step and leaves corrupt primary intact', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('dune_state_v4', '{corrupt-json');
+  });
+  await page.goto('/');
+  await waitForApp(page);
+  const proof = await page.evaluate(async () => {
+    const authRes = window.Store.prepareRecoveryAuth();
+    // Inject setItem for quarantine keys → no-op (silently drop).
+    const realSetItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (k, v) {
+      if (typeof k === 'string' && k.indexOf('dune_state_v4_quarantine_') === 0) return; // silent no-op
+      return realSetItem.call(this, k, v);
+    };
+    const iso = new Date().toISOString();
+    const candidate = {
+      money: { salary_net: 5555, expenses: {}, usd_rate: 88, save_target: 0 },
+      qatarVisit: { from_airport: 'X', to_airport: 'Y', travel_month: '', flights: 0, hotel: 0, food: 0, transport: 0, misc: 0, emergency: 0, saved: 0, notes: '' },
+      todayFocus: ['','',''], goals: {}, career: {}, easa: {},
+      logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { sourceCounts: { tracker: 0, builder: 0 } }, reconciled: { at: iso }, drift: { diverged: false } },
+      reviews: [], decisions: [], timeline: [], about: {}, apartments: [], sbTasks: {},
+      bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: '', model: '' }, meta: {} },
+      telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [],
+      records: { deadlines: [], claims: [], risks: [], goals: [] },
+      meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'migrated', schemaVersion: 14, reason: 'test' } }
+    };
+    const gate = window.Store.beginFullStateTransaction({ force: true, reason: 'test' });
+    const res = await window.Store.commitFullStateWrapper(gate.token, candidate, 'test', { recovery: true });
+    window.Store.endFullStateTransaction(gate.token);
+    Storage.prototype.setItem = realSetItem;
+    const diskAfter = localStorage.getItem('dune_state_v4');
+    return {
+      authOk: authRes && authRes.ok,
+      commitOk: res && res.ok,
+      commitError: res && res.error,
+      diskUnchanged: diskAfter === '{corrupt-json'
+    };
+  });
+  expect(proof.authOk).toBe(true);
+  expect(proof.commitOk).toBe(false);
+  expect(proof.commitError).toBe('RECOVERY_QUARANTINE_VERIFY_FAILED');
+  expect(proof.diskUnchanged).toBe(true);
+});
+
+// R7-T12: primary write throws → truthful failure.
+test('PRV-R7-T12-PRIMARY-WRITE-THROWS-TRUTHFUL — a primary setItem throw yields ok:false and the blocker is not cleared', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('dune_state_v4', '{corrupt-json');
+  });
+  await page.goto('/');
+  await waitForApp(page);
+  const proof = await page.evaluate(async () => {
+    const authRes = window.Store.prepareRecoveryAuth();
+    const realSetItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (k, v) {
+      if (k === 'dune_state_v4') throw new DOMException('QuotaExceededError', 'QuotaExceededError');
+      return realSetItem.call(this, k, v);
+    };
+    const iso = new Date().toISOString();
+    const candidate = {
+      money: { salary_net: 6666, expenses: {}, usd_rate: 88, save_target: 0 },
+      qatarVisit: { from_airport: 'X', to_airport: 'Y', travel_month: '', flights: 0, hotel: 0, food: 0, transport: 0, misc: 0, emergency: 0, saved: 0, notes: '' },
+      todayFocus: ['','',''], goals: {}, career: {}, easa: {},
+      logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { sourceCounts: { tracker: 0, builder: 0 } }, reconciled: { at: iso }, drift: { diverged: false } },
+      reviews: [], decisions: [], timeline: [], about: {}, apartments: [], sbTasks: {},
+      bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: '', model: '' }, meta: {} },
+      telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [],
+      records: { deadlines: [], claims: [], risks: [], goals: [] },
+      meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'migrated', schemaVersion: 14, reason: 'test' } }
+    };
+    const gate = window.Store.beginFullStateTransaction({ force: true, reason: 'test' });
+    const res = await window.Store.commitFullStateWrapper(gate.token, candidate, 'test', { recovery: true });
+    window.Store.endFullStateTransaction(gate.token);
+    Storage.prototype.setItem = realSetItem;
+    const blocker = window.Store.getDurabilityBlocker();
+    return { authOk: authRes && authRes.ok, commitOk: res && res.ok, commitError: res && res.error, blockerCode: blocker && blocker.code };
+  });
+  expect(proof.authOk).toBe(true);
+  expect(proof.commitOk).toBe(false);
+  expect(proof.commitError).toBe('STORE_QUOTA');
+  expect(proof.blockerCode).toBe('STORE_CORRUPT_AUTHORITATIVE_STATE');
+});
+
+// R7-T13: primary write silently no-ops → durable reread catches it.
+test('PRV-R7-T13-PRIMARY-WRITE-NOOP-DURABLE-CATCHES — a primary setItem that silently no-ops fails at the durable-reread step and reports FULL_STATE_DURABLE_VERIFY_FAILED', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('dune_state_v4', '{corrupt-json');
+  });
+  await page.goto('/');
+  await waitForApp(page);
+  const proof = await page.evaluate(async () => {
+    const authRes = window.Store.prepareRecoveryAuth();
+    const realSetItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (k, v) {
+      if (k === 'dune_state_v4') return; // silent no-op
+      return realSetItem.call(this, k, v);
+    };
+    const iso = new Date().toISOString();
+    const candidate = {
+      money: { salary_net: 7777, expenses: {}, usd_rate: 88, save_target: 0 },
+      qatarVisit: { from_airport: 'X', to_airport: 'Y', travel_month: '', flights: 0, hotel: 0, food: 0, transport: 0, misc: 0, emergency: 0, saved: 0, notes: '' },
+      todayFocus: ['','',''], goals: {}, career: {}, easa: {},
+      logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { sourceCounts: { tracker: 0, builder: 0 } }, reconciled: { at: iso }, drift: { diverged: false } },
+      reviews: [], decisions: [], timeline: [], about: {}, apartments: [], sbTasks: {},
+      bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: '', model: '' }, meta: {} },
+      telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [],
+      records: { deadlines: [], claims: [], risks: [], goals: [] },
+      meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'migrated', schemaVersion: 14, reason: 'test' } }
+    };
+    const gate = window.Store.beginFullStateTransaction({ force: true, reason: 'test' });
+    const res = await window.Store.commitFullStateWrapper(gate.token, candidate, 'test', { recovery: true });
+    window.Store.endFullStateTransaction(gate.token);
+    Storage.prototype.setItem = realSetItem;
+    const blocker = window.Store.getDurabilityBlocker();
+    const disk = localStorage.getItem('dune_state_v4');
+    return { authOk: authRes && authRes.ok, commitOk: res && res.ok, commitError: res && res.error, blockerCode: blocker && blocker.code, diskUnchanged: disk === '{corrupt-json' };
+  });
+  expect(proof.authOk).toBe(true);
+  expect(proof.commitOk).toBe(false);
+  expect(proof.commitError).toBe('FULL_STATE_DURABLE_VERIFY_FAILED');
+  expect(proof.blockerCode).toBe('STORE_CORRUPT_AUTHORITATIVE_STATE');
+  expect(proof.diskUnchanged).toBe(true);
+});
+
+// R7-T14: primary writes DIFFERENT bytes → durable-verify catches.
+test('PRV-R7-T14-PRIMARY-WRITE-DIFFERENT-BYTES-CAUGHT — a primary setItem that persists different bytes fails durable verification', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('dune_state_v4', '{corrupt-json');
+  });
+  await page.goto('/');
+  await waitForApp(page);
+  const proof = await page.evaluate(async () => {
+    const authRes = window.Store.prepareRecoveryAuth();
+    const realSetItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (k, v) {
+      if (k === 'dune_state_v4') return realSetItem.call(this, k, v + ' /*tampered*/');
+      return realSetItem.call(this, k, v);
+    };
+    const iso = new Date().toISOString();
+    const candidate = {
+      money: { salary_net: 8888, expenses: {}, usd_rate: 88, save_target: 0 },
+      qatarVisit: { from_airport: 'X', to_airport: 'Y', travel_month: '', flights: 0, hotel: 0, food: 0, transport: 0, misc: 0, emergency: 0, saved: 0, notes: '' },
+      todayFocus: ['','',''], goals: {}, career: {}, easa: {},
+      logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { sourceCounts: { tracker: 0, builder: 0 } }, reconciled: { at: iso }, drift: { diverged: false } },
+      reviews: [], decisions: [], timeline: [], about: {}, apartments: [], sbTasks: {},
+      bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: '', model: '' }, meta: {} },
+      telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [],
+      records: { deadlines: [], claims: [], risks: [], goals: [] },
+      meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'migrated', schemaVersion: 14, reason: 'test' } }
+    };
+    const gate = window.Store.beginFullStateTransaction({ force: true, reason: 'test' });
+    const res = await window.Store.commitFullStateWrapper(gate.token, candidate, 'test', { recovery: true });
+    window.Store.endFullStateTransaction(gate.token);
+    Storage.prototype.setItem = realSetItem;
+    return { authOk: authRes && authRes.ok, commitOk: res && res.ok, commitError: res && res.error };
+  });
+  expect(proof.authOk).toBe(true);
+  expect(proof.commitOk).toBe(false);
+  expect(proof.commitError).toBe('FULL_STATE_DURABLE_VERIFY_FAILED');
+});
+
+// R7-T15: Store.reset() cannot settle ok:true before durable verification.
+test('PRV-R7-T15-RESET-DURABLE-VERIFICATION — Store.reset() reports ok:false when the primary setItem silently no-ops', async ({ page }) => {
+  await page.goto('/');
+  await waitForApp(page);
+  await waitForNextSave(page);
+  const proof = await page.evaluate(async () => {
+    // Baseline is healthy; no blocker → reset non-recovery mode.
+    // Under R6 semantics the R6 reset requires recoveryMode; R7 makes
+    // it conditional on blocker. Non-recovery reset on a healthy disk
+    // still runs through the same durable-verify gate.
+    const realSetItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (k, v) {
+      if (k === 'dune_state_v4') return; // silent no-op
+      return realSetItem.call(this, k, v);
+    };
+    window.Store.reset({ force: true });
+    let commitRes = null;
+    try { commitRes = await window.Store._lastResetSettled(); } catch (e) {}
+    Storage.prototype.setItem = realSetItem;
+    return { commitOk: commitRes && commitRes.ok, commitError: commitRes && commitRes.error };
+  });
+  expect(proof.commitOk).toBe(false);
+  expect(proof.commitError).toBe('FULL_STATE_DURABLE_VERIFY_FAILED');
+});
+
+// R7-T16: historical missing required top-level domain rejected.
+test('PRV-R7-T16-HISTORICAL-MISSING-DOMAIN-REJECTED — v13 source missing bht is rejected by the pre-migration source validator', async ({ page }) => {
+  await page.goto('/');
+  await waitForApp(page);
+  const proof = await page.evaluate((fullV13Fn) => {
+    const iso = new Date().toISOString();
+    const data = eval('(' + fullV13Fn + ')')(iso, 42);
+    delete data.bht;
+    return window.Store.validateLegacySourceRequiredFields(data, 13);
+  }, fullV13Data.toString());
+  expect(proof.ok).toBe(false);
+  expect(proof.reason).toBe('missing-bht');
+});
+
+// R7-T17: historical nested-partial required structure rejected.
+test('PRV-R7-T17-HISTORICAL-BHT-SUBSTRUCTURE-REJECTED — v13 source with bht object but missing habits array is rejected', async ({ page }) => {
+  await page.goto('/');
+  await waitForApp(page);
+  const proof = await page.evaluate((fullV13Fn) => {
+    const iso = new Date().toISOString();
+    const data = eval('(' + fullV13Fn + ')')(iso, 42);
+    data.bht = { entries: [], snapshots: [], lifeEvents: [] }; // no habits
+    return window.Store.validateLegacySourceRequiredFields(data, 13);
+  }, fullV13Data.toString());
+  expect(proof.ok).toBe(false);
+  expect(proof.reason).toBe('malformed-bht-substructure');
+});
+
+// R7-T18: valid historical 24680 survives migration + durable reload.
+test('PRV-R7-T18-VALID-HISTORICAL-SURVIVES-RELOAD — a fully-formed v13 wrapper with salary_net=24680 migrates and reload sees 24680 durably', async ({ context }) => {
+  const a = await context.newPage();
+  const iso = new Date().toISOString();
+  await a.addInitScript((payload) => {
+    localStorage.setItem('dune_state_v4', payload);
+  }, JSON.stringify({ version: 13, revision: 1, committedAt: iso, data: fullV13Data(iso, 24680) }));
+  await a.goto('/');
+  await waitForApp(a);
+  await waitForMigrated(a);
+  await waitForNextSave(a);
+  const midSalary = await a.evaluate(() => window.Store.get('money.salary_net'));
+  expect(midSalary).toBe(24680);
+  await a.close();
+  const b = await context.newPage();
+  await b.goto('/');
+  await waitForApp(b);
+  const proof = await b.evaluate(() => ({
+    salary: window.Store.get('money.salary_net'),
+    ev: window.Store.evaluatePersistedAuthority().classification
+  }));
+  expect(proof.salary).toBe(24680);
+  expect(proof.ev).toBe('AUTHORITATIVE_MIGRATED');
+  await b.close();
+});
+
+// R7-T19: cold boot version:"99" fails closed.
+test('PRV-R7-T19-STRING-FUTURE-VERSION-FAILS-CLOSED — a cold boot with version:"99" (string) is refused; no legacy auth is issued', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('dune_state_v4', JSON.stringify({ version: '99', revision: 1, data: { anything: true } }));
+  });
+  await page.goto('/');
+  await waitForApp(page);
+  const proof = await page.evaluate(() => ({
+    auth: window.Store._currentTransitionAuth(),
+    canAuthorise: window.Store.canAuthoriseLegacySeed(),
+    ev: window.Store.evaluatePersistedAuthority().classification,
+    blocker: window.Store.getDurabilityBlocker()
+  }));
+  expect(proof.auth).toBeNull();
+  expect(proof.canAuthorise).toBe(false);
+  expect(proof.ev).toBe('CORRUPT_STALE_COLLIDING');
+  expect(proof.blocker && proof.blocker.code).toBe('STORE_CORRUPT_AUTHORITATIVE_STATE');
+});
+
+// R7-T20: numeric future version still rejected (regression).
+test('PRV-R7-T20-NUMERIC-FUTURE-VERSION-REJECTED — version:99 (number) is refused; no legacy auth is issued', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('dune_state_v4', JSON.stringify({ version: 99, revision: 1, data: { anything: true } }));
+  });
+  await page.goto('/');
+  await waitForApp(page);
+  const proof = await page.evaluate(() => ({
+    auth: window.Store._currentTransitionAuth(),
+    ev: window.Store.evaluatePersistedAuthority().classification,
+    blocker: window.Store.getDurabilityBlocker()
+  }));
+  expect(proof.auth).toBeNull();
+  expect(proof.ev).toBe('UNSUPPORTED_FUTURE_SCHEMA');
+  expect(proof.blocker && proof.blocker.code).toBe('STORE_CORRUPT_AUTHORITATIVE_STATE');
+});
+
+// R7-T21: malformed version forms explicit.
+test('PRV-R7-T21-MALFORMED-VERSION-FORMS-EXPLICIT — non-integer / boolean / null version values are refused with explicit reason', async ({ page }) => {
+  await page.goto('/');
+  await waitForApp(page);
+  const proof = await page.evaluate(() => {
+    const results = {};
+    ['14.5', 'null', 'true', '{}'].forEach(k => {
+      const val = k === '14.5' ? 14.5 : (k === 'null' ? null : (k === 'true' ? true : {}));
+      const raw = JSON.stringify({ version: val, revision: 1, data: {} });
+      const p = window.Store.parseWrapper(raw);
+      results[k] = { corrupt: !!(p && p.corrupt), reason: p && p.reason };
+    });
+    return results;
+  });
+  expect(proof['14.5'].corrupt).toBe(true);
+  expect(proof['14.5'].reason).toBe('wrapper-version-malformed');
+  expect(proof['null'].corrupt).toBe(true);
+  expect(proof['null'].reason).toBe('wrapper-version-malformed');
+  expect(proof['true'].corrupt).toBe(true);
+  expect(proof['true'].reason).toBe('wrapper-version-malformed');
+  expect(proof['{}'].corrupt).toBe(true);
+  expect(proof['{}'].reason).toBe('wrapper-version-malformed');
+});
+
+// R7-T22: intentional migrated empty arrays remain empty after repeated
+// hydration and reload.
+test('PRV-R7-T22-INTENTIONAL-EMPTY-STAYS-EMPTY — repeated hydrations + reload preserve deliberately-empty records', async ({ context }) => {
+  const a = await context.newPage();
+  await a.goto('/');
+  await waitForApp(a);
+  await waitForNextSave(a);
+  await a.evaluate(async () => {
+    // Baseline is defaultState (empty arrays, marker migrated).
+    for (const d of ['deadlines','claims','risks','goals']) {
+      window.Store.set('records.' + d, []);
+    }
+    await new Promise((resolve) => { const unsub = window.Store.onSave(() => { unsub(); resolve(); }); setTimeout(resolve, 1500); });
+  });
+  await a.close();
+  const b = await context.newPage();
+  await b.goto('/');
+  await waitForApp(b);
+  const proof = await b.evaluate(async () => {
+    const res1 = await window.hydratePreservationRecordsOnce();
+    const res2 = await window.hydratePreservationRecordsOnce();
+    const p = JSON.parse(localStorage.getItem('dune_state_v4'));
+    const r = p && p.data && p.data.records;
+    return {
+      skipped1: res1 && res1.skipped, skipped2: res2 && res2.skipped,
+      allEmpty: r && ['deadlines','claims','risks','goals'].every(d => Array.isArray(r[d]) && r[d].length === 0)
+    };
+  });
+  expect(proof.skipped1).toBe('already-migrated');
+  expect(proof.skipped2).toBe('already-migrated');
+  expect(proof.allEmpty).toBe(true);
+  await b.close();
+});
+
+// R7-T23: invalid authority still blocks normal backup.
+test('PRV-R7-T23-INVALID-AUTHORITY-BLOCKS-BACKUP — corrupt disk still refuses normal backup export', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('dune_state_v4', '{corrupt-json');
+  });
+  await page.goto('/');
+  await waitForApp(page);
+  const proof = await page.evaluate(() => {
+    const auth = window._evaluateBackupAuthority();
+    return { acceptForBackup: auth.acceptForBackup, classification: auth.classification };
+  });
+  expect(proof.acceptForBackup).toBe(false);
+  expect(['CORRUPT_STALE_COLLIDING','MALFORMED_CURRENT_SCHEMA']).toContain(proof.classification);
+});
+
+// R7-T24: recovery UI guidance matches reachable actions. Boot into
+// corrupt state; banner should mention Snapshot restore / Backup
+// import / Reset. Snapshot restore and Reset are reachable via
+// window.Store.restoreSnapshot(0, {force:true}) and window.Store.reset({force:true}).
+test('PRV-R7-T24-RECOVERY-UI-MATCHES-REACHABLE-ACTIONS — the banner text names actions the user can actually invoke', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('dune_state_v4', '{corrupt-json');
+  });
+  await page.goto('/');
+  await waitForApp(page);
+  const proof = await page.evaluate(() => {
+    const bannerText = (document.getElementById('store-freeze-message') || {}).textContent || '';
+    return {
+      bannerText,
+      resetReachable: typeof window.Store.reset === 'function',
+      restoreReachable: typeof window.Store.restoreSnapshot === 'function',
+      importReachable: typeof window.processImport === 'function',
+      backupPanelReachable: typeof window.openBackupPanel === 'function'
+    };
+  });
+  expect(proof.bannerText).toMatch(/Snapshot restore/);
+  expect(proof.bannerText).toMatch(/Backup import/);
+  expect(proof.bannerText).toMatch(/Reset/);
+  expect(proof.resetReachable).toBe(true);
+  expect(proof.restoreReachable).toBe(true);
+  expect(proof.importReachable).toBe(true);
+  expect(proof.backupPanelReachable).toBe(true);
 });

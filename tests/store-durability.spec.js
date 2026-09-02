@@ -1182,7 +1182,13 @@ test('T-snapshot-source-invalid-data-recovery — load-time recovery skips data-
       version: 13, revision: 42, committedAt: '2026-08-25T00:00:00Z',
       data: {
         money: { salary_net: 24680, expenses: { rent: 1, food: 1, transport: 1, utilities: 1, phone: 1, family_transfer: 0, other: 1, mai: 0 }, usd_rate: 88, save_target: 55000 },
-        qatarVisit: { from_airport: 'SVO', to_airport: 'DOH', travel_month: '', flights: 0, hotel: 0, food: 0, transport: 0, misc: 0, emergency: 0, saved: 0, notes: '' }
+        qatarVisit: { from_airport: 'SVO', to_airport: 'DOH', travel_month: '', flights: 0, hotel: 0, food: 0, transport: 0, misc: 0, emergency: 0, saved: 0, notes: '' },
+        todayFocus: ['','',''], goals: {}, career: { started: '', licenses: [], milestones: [] }, easa: {},
+        logbook: [], reviews: [], decisions: [], timeline: [],
+        about: { version: 2, createdAt: '', lastUpdated: '', strengths: [], lessons: [], vision: '', values: [], reminders: [] },
+        apartments: [], sbTasks: {},
+        bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: '', model: '' }, meta: {} },
+        telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: []
       }
     };
     localStorage.setItem('dune_snapshots_v1', JSON.stringify([

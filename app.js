@@ -2519,10 +2519,24 @@ async function processImport(text){
       }
 
       // 3. Commit under coordinator — writes STATE_KEY LAST as schema-14.
-      // Recovery-mode commit so an active `STORE_CORRUPT_AUTHORITATIVE_STATE`
-      // blocker on the current disk can be atomically replaced by this
-      // approved import (Codex Round-5 P1-2).
-      const res=await window.Store.commitFullStateWrapper(token,candidate,'import',{recovery:true});
+      // PRV-0.5 R7 (Codex Round-6 P1-2): recovery mode is chosen ONLY
+      // when Store currently has an active durability blocker. In
+      // that case, issue a source-bound recovery auth for the current
+      // corrupt disk generation BEFORE calling commit. Ordinary
+      // healthy-disk imports go through the non-recovery path — they
+      // cannot bypass the R6 corrupt-disk refusal for healthy state.
+      let importRecoveryMode=false;
+      const blockerBeforeImport = (typeof window.Store.getDurabilityBlocker === 'function') ? window.Store.getDurabilityBlocker() : null;
+      if(blockerBeforeImport){
+        if(typeof window.Store.prepareRecoveryAuth==='function'){
+          const authRes=window.Store.prepareRecoveryAuth();
+          if(!authRes || !authRes.ok){
+            throw new Error('IMPORT_RECOVERY_AUTH_FAILED');
+          }
+          importRecoveryMode=true;
+        }
+      }
+      const res=await window.Store.commitFullStateWrapper(token,candidate,'import',{recovery:importRecoveryMode});
       if(!res||!res.ok){ throw new Error(res&&res.error?res.error:'COMMIT_FAILED'); }
       applied.push(STATE_KEY_NAME);
       succeeded=true;
