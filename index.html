@@ -583,6 +583,22 @@
 
       <div class="backup-divider"></div>
 
+      <!-- PRV-0.5 Final Closure (INV-K, R7-P2-02): recovery actions
+           the boot-recovery banner advertises must be VISIBLE,
+           keyboard-reachable, and confirmation-gated. -->
+      <div class="backup-section" id="recovery-section" data-testid="recovery-section">
+        <div class="backup-section-title">🛟 Recover from corrupt storage</div>
+        <p class="backup-hint" style="margin:6px 0 10px">Use these when a banner appears reporting invalid storage authority. Each action is confirmation-gated and reports its actual settled result — no silent success.</p>
+        <div class="backup-btns">
+          <button class="lb-btn lb-btn-view" id="recovery-restore-snapshot" data-testid="recovery-restore-snapshot" onclick="recoveryRestoreSnapshot()">💾 Restore latest snapshot</button>
+          <button class="lb-btn lb-btn-view" id="recovery-import-backup"    data-testid="recovery-import-backup"    onclick="triggerImportFile()">⬆ Import backup file</button>
+          <button class="lb-btn lb-btn-add"  id="recovery-reset-lifeos"     data-testid="recovery-reset-lifeos"     onclick="recoveryResetLifeOS()">♻ Reset LIFE OS</button>
+        </div>
+        <p class="backup-hint" style="margin-top:10px">Reset replaces your data with a fresh default. Snapshot restore rolls back to the most recent good state. Backup import replaces your data with the contents of the file you pick.</p>
+      </div>
+
+      <div class="backup-divider"></div>
+
       <div class="backup-section">
         <div class="backup-section-title">☁ GitHub Gist Sync</div>
         <div id="gist-token-section">

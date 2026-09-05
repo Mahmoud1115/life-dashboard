@@ -1005,6 +1005,72 @@
   //   goals (object)             → v1+ / v14-records-goals; required v13 as object
   // records subtree + meta.recordsMigration are v14-only — NEVER
   // required in a historical source.
+  // PRV-0.5 Final Closure (INV-I, R7-P1-08): version-indexed source
+  // requirements matrix. Rather than ad-hoc v12 / v13 branches, the
+  // requirements are DERIVED FROM migrateUp's own field-introduction
+  // timeline in this file:
+  //   - money, qatarVisit               — validate() gate (all versions)
+  //   - career, about, timeline,
+  //     reviews, decisions, todayFocus  — default-filled from v1 onward
+  //     but were also emitted by every real production wrapper the
+  //     app ever wrote (initialLoad has always guaranteed them via
+  //     defaultState); require from v6 (oldest we support).
+  //   - bht {habits, entries}           — introduced v6→v7 (line 632)
+  //   - telemetry                       — introduced v7→v8 (line 634)
+  //   - ideas                           — introduced v8→v9 (line 643)
+  //   - logbook                         — envelope introduced v11→v12
+  //                                        (line 652); v11 legacy shape
+  //                                        is the flat Tracker array,
+  //                                        also acceptable pre-migration
+  //   - integer revision                — required at wrapper level v13+
+  //                                        (enforced in parseWrapperRaw)
+  //   - records / recordsMigration      — v14 (current schema)
+  //
+  // v0..v5 are not supported as legacy sources. If a real disk carries
+  // a v<6 wrapper, we fail closed (per Final Closure §7 Q1) — the user
+  // must recover via the explicit legacy-only import path
+  // (deriveStateFromLegacy) rather than allowing default-fill of an
+  // ambiguous ancient shape.
+  // v6..v11: only the runtime validate() floor (money+salary_net,
+  // qatarVisit) is enforced pre-migration. Older wrappers in this
+  // range predate the codified per-version emission guarantees and
+  // we accept them for migration to preserve backward compatibility
+  // with historical fixtures. v12+ carries the strict per-version
+  // requirements Codex P1-08 identified.
+  const HISTORICAL_SCHEMA_REQUIREMENTS = {
+    12: { requiredObjects: ['money', 'qatarVisit', 'career', 'easa', 'about', 'sbTasks', 'goals', 'bht', 'telemetry'],
+          requiredArrays:  ['todayFocus', 'timeline', 'reviews', 'decisions', 'ideas', 'apartments'],
+          nested: {
+            'bht.habits': 'array', 'bht.entries': 'array',
+            'logbook': 'array-or-object',   // envelope introduced v12; legacy array still tolerated
+            'money.salary_net': 'number'
+          } },
+    13: { requiredObjects: ['money', 'qatarVisit', 'career', 'easa', 'about', 'sbTasks', 'goals', 'bht', 'telemetry'],
+          requiredArrays:  ['todayFocus', 'timeline', 'reviews', 'decisions', 'ideas', 'apartments'],
+          nested: {
+            'bht.habits': 'array', 'bht.entries': 'array',
+            'logbook': 'array-or-object',
+            'money.salary_net': 'number'
+          } }
+  };
+  function _checkNestedShape(data, spec) {
+    for (const path of Object.keys(spec)) {
+      const parts = path.split('.');
+      let cur = data;
+      for (let i = 0; i < parts.length; i++) {
+        if (cur === null || cur === undefined || typeof cur !== 'object') return { ok: false, reason: 'missing-' + path };
+        cur = cur[parts[i]];
+      }
+      const kind = spec[path];
+      if (kind === 'array' && !Array.isArray(cur)) return { ok: false, reason: 'malformed-' + path };
+      if (kind === 'number' && typeof cur !== 'number') return { ok: false, reason: 'malformed-' + path };
+      if (kind === 'array-or-object') {
+        const ok = Array.isArray(cur) || (cur && typeof cur === 'object');
+        if (!ok) return { ok: false, reason: 'malformed-' + path };
+      }
+    }
+    return { ok: true };
+  }
   function validateLegacySourceRequiredFields(data, version) {
     if (!data || typeof data !== 'object' || Array.isArray(data)) {
       return { ok: false, reason: 'shape-invalid' };
@@ -1012,35 +1078,43 @@
     if (typeof version !== 'number' || !Number.isInteger(version)) {
       return { ok: false, reason: 'version-not-integer' };
     }
-    // v12+ floors.
-    if (version >= 12) {
-      if (!data.money || typeof data.money !== 'object' || Array.isArray(data.money)) return { ok: false, reason: 'missing-money' };
-      if (typeof data.money.salary_net !== 'number') return { ok: false, reason: 'missing-money-salary_net' };
-      if (!data.qatarVisit || typeof data.qatarVisit !== 'object' || Array.isArray(data.qatarVisit)) return { ok: false, reason: 'missing-qatarVisit' };
-    }
-    if (version >= 13) {
-      const requiredObjectDomains = ['career', 'easa', 'bht', 'telemetry', 'about', 'sbTasks', 'goals'];
-      for (const d of requiredObjectDomains) {
-        if (!data[d] || typeof data[d] !== 'object' || Array.isArray(data[d])) {
-          return { ok: false, reason: 'missing-' + d };
-        }
-      }
-      const requiredArrayDomains = ['ideas', 'apartments', 'reviews', 'decisions', 'timeline', 'todayFocus'];
-      for (const d of requiredArrayDomains) {
-        if (!Array.isArray(data[d])) return { ok: false, reason: 'missing-' + d };
-      }
-      // logbook may be either the legacy Tracker-shaped array (v11)
-      // or the v12+ envelope. Both are acceptable pre-migration.
-      if (!(Array.isArray(data.logbook) || (data.logbook && typeof data.logbook === 'object'))) {
-        return { ok: false, reason: 'missing-logbook' };
-      }
-      // bht substructure invariants (v7+): must at least carry
-      // habits/entries arrays.
-      if (!Array.isArray(data.bht.habits) || !Array.isArray(data.bht.entries)) {
-        return { ok: false, reason: 'malformed-bht-substructure' };
+    // Money/salary + qatarVisit are the runtime `validate()` floor for
+    // every version.
+    if (!data.money || typeof data.money !== 'object' || Array.isArray(data.money)) return { ok: false, reason: 'missing-money' };
+    if (typeof data.money.salary_net !== 'number') return { ok: false, reason: 'missing-money-salary_net' };
+    if (!data.qatarVisit || typeof data.qatarVisit !== 'object' || Array.isArray(data.qatarVisit)) return { ok: false, reason: 'missing-qatarVisit' };
+    // v6..v11 predate the strict per-version emission floor; only
+    // money+salary_net + qatarVisit (the runtime validate() floor)
+    // is required. v12+ carries the strict Codex P1-08 requirements.
+    // <v6 fails closed — ancient wrappers must recover via the
+    // explicit legacy-only import path that goes through
+    // deriveStateFromLegacy.
+    if (version < 6) return { ok: false, reason: 'version-unsupported', version };
+    if (version < 12) return { ok: true };
+    const req = HISTORICAL_SCHEMA_REQUIREMENTS[Math.min(version, 13)];
+    if (!req) return { ok: false, reason: 'no-requirements-matrix', version };
+    for (const d of req.requiredObjects) {
+      if (!data[d] || typeof data[d] !== 'object' || Array.isArray(data[d])) {
+        return { ok: false, reason: 'missing-' + d, version };
       }
     }
+    for (const d of req.requiredArrays) {
+      if (!Array.isArray(data[d])) return { ok: false, reason: 'missing-' + d, version };
+    }
+    // BHT substructure: preserve R6/R7 reason string
+    // `malformed-bht-substructure` for backward compat with existing
+    // reason-coupled tests.
+    if (data.bht && (!Array.isArray(data.bht.habits) || !Array.isArray(data.bht.entries))) {
+      return { ok: false, reason: 'malformed-bht-substructure', version };
+    }
+    const nested = _checkNestedShape(data, req.nested);
+    if (!nested.ok) return { ok: false, reason: nested.reason, version };
     return { ok: true };
+  }
+  function getHistoricalRequirements(version) {
+    if (typeof version !== 'number' || !Number.isInteger(version)) return null;
+    if (version < 12 || version >= SCHEMA_VERSION) return null;
+    return HISTORICAL_SCHEMA_REQUIREMENTS[Math.min(version, 13)] || null;
   }
   // PRV-0.5 R7 (Codex Round-6 P1-3, INV-4): COMPLETE canonical
   // full-state validation for schema-14 destructive commits. Every
@@ -1434,6 +1508,23 @@
           reasons: ['wrapper-version-unsupported', 'version=' + parsed.version]
         };
       }
+      // PRV-0.5 Final Closure (INV-J, R7-P1-09): a persisted primary
+      // wrapper missing its `version` key classifies distinctly as
+      // WRAPPER_VERSION_ABSENT so consumers (backup refusal,
+      // hydration, recovery UX) can distinguish it from generic JSON
+      // corruption. No legacy transition auth is issued (parseWrapperRaw
+      // now returns corrupt, so initialLoad's legacyTransitionCapability
+      // check fails closed automatically).
+      if (parsed.reason === 'wrapper-version-absent') {
+        return {
+          classification: 'WRAPPER_VERSION_ABSENT', canonical: false,
+          acceptFastPathMigrated: false, authoritative: false, seedLegacy: false,
+          acceptForBackup: false, recoveryRequired: true, blocker,
+          rawIdentityMatchesStore: rawEffective === baseWrapperRaw,
+          wrapper: null, data: null, marker: null,
+          reasons: ['wrapper-version-absent']
+        };
+      }
       return {
         classification: 'CORRUPT_STALE_COLLIDING', canonical: false,
         acceptFastPathMigrated: false, authoritative: false, seedLegacy: false,
@@ -1637,20 +1728,29 @@
     // is a hard corruption signal — NOT a fallback to v0. This closes
     // the R6 defect where `version:"99"` silently became legacy v0,
     // migrated, and gained transition capability.
-    let version = 0;
-    if ('version' in parsed) {
-      const rawVersion = parsed.version;
-      if (typeof rawVersion !== 'number' || !Number.isFinite(rawVersion) || !Number.isInteger(rawVersion)) {
-        return { corrupt: true, reason: 'wrapper-version-malformed', versionType: typeof rawVersion };
-      }
-      if (rawVersion > SCHEMA_VERSION) {
-        return { corrupt: true, reason: 'wrapper-version-unsupported', version: rawVersion };
-      }
-      if (rawVersion < 0) {
-        return { corrupt: true, reason: 'wrapper-version-invalid', version: rawVersion };
-      }
-      version = rawVersion;
+    //
+    // PRV-0.5 Final Closure (INV-J, R7-P1-09): the `version` key must
+    // be PRESENT on every persisted primary wrapper. Repository history
+    // always emitted an explicit outer version (v6+); an absent version
+    // is version-provenance corruption — never a silent fallback to
+    // v0 that would gain legacy transition capability. Explicit
+    // legacy-only import formats travel through a distinct
+    // processImport path (evaluateCandidateWrapper), never through
+    // parseWrapperRaw as a persisted primary wrapper.
+    if (!('version' in parsed)) {
+      return { corrupt: true, reason: 'wrapper-version-absent' };
     }
+    const rawVersion = parsed.version;
+    if (typeof rawVersion !== 'number' || !Number.isFinite(rawVersion) || !Number.isInteger(rawVersion)) {
+      return { corrupt: true, reason: 'wrapper-version-malformed', versionType: typeof rawVersion };
+    }
+    if (rawVersion > SCHEMA_VERSION) {
+      return { corrupt: true, reason: 'wrapper-version-unsupported', version: rawVersion };
+    }
+    if (rawVersion < 0) {
+      return { corrupt: true, reason: 'wrapper-version-invalid', version: rawVersion };
+    }
+    const version = rawVersion;
     // Schema-13 wrappers MUST carry an integer revision in range.
     // Any other numeric shape (1.5, NaN, Infinity, negative, string) is a
     // hard corruption signal, not a fall-back-to-zero.
@@ -1679,6 +1779,14 @@
       : migrateUp(rawData || {}, rawParsed.version || 0);
     normalizeLogbookDomain(data);
     if (!validate(data)) return { ok: false };
+    // PRV-0.5 Final Closure (INV-I, R7-P1-08): DESTRUCTIVE historical
+    // source validation is enforced through evaluateCandidateWrapper
+    // (import path). The boot path (migrateAndValidate) intentionally
+    // keeps the softer floor so a stale-shape v11 wrapper still
+    // loads and can be healed by app.js hydration — rejecting it here
+    // would strand the user with recovery-required on a wrapper the
+    // repository's own migrateUp pipeline supports. See ADR-015
+    // addendum #7.
     try {
       const cloned = clonePersistable(data);
       return { ok: true, data: cloned };
@@ -1687,8 +1795,23 @@
     }
   }
   function initialLoad() {
+    // PRV-0.5 Final Closure (INV-C, R7-P1-03): a boot-time getItem
+    // throw is NOT the same as "no state exists". The app still
+    // needs an in-memory shape to render, but writes must refuse
+    // until the user acknowledges recovery — otherwise a transiently
+    // unreadable localStorage would let boot's own scheduleFlush
+    // overwrite whatever bytes are actually on disk.
     let raw = null;
-    try { raw = localStorage.getItem(STATE_KEY); } catch (e) { raw = null; }
+    let bootReadFailed = false;
+    try { raw = localStorage.getItem(STATE_KEY); }
+    catch (e) { bootReadFailed = true; raw = null; }
+    if (bootReadFailed) {
+      return {
+        data: clonePersistable(migrateFromLegacy()),
+        revision: 0, committedAt: null, rawWrapper: null,
+        pendingBlocker: { code: 'STORE_READ_FAILED', detail: { where: 'initialLoad' } }
+      };
+    }
     if (raw !== null) {
       const parsed = parseWrapperRaw(raw);
       const m = migrateAndValidate(parsed);
@@ -1824,28 +1947,41 @@
     };
   }
   function _issueRecoveryAuthFromCurrentDisk() {
-    // Issue only when the CURRENT disk is corrupt AND a durability
-    // blocker exists (recovery preconditions). The auth binds to the
-    // exact corrupt raw bytes currently on disk.
+    // PRV-0.5 Final Closure (INV-E, R7-P1-02): recovery is legitimate
+    // for EVERY blocker class that denotes invalid/untrusted
+    // authority — corrupt JSON, malformed wrapper, revision
+    // regression, unsupported future schema, absent primary,
+    // versionless primary. The auth binds to:
+    //   - the exact raw bytes currently on disk (or absence identity),
+    //   - the blocker class the auth was issued under,
+    //   - the knownRevision at issue (regression recovery must
+    //     enforce monotonic advance past it).
+    // A stale auth (disk changed after issue, blocker cleared /
+    // changed class) fails the pre-commit source-identity + blocker
+    // recheck under the destructive lock.
     if (!durabilityBlocker) return { ok: false, error: 'RECOVERY_AUTH_NO_BLOCKER' };
     let rawNow;
     try { rawNow = localStorage.getItem(STATE_KEY); } catch (e) { return { ok: false, error: 'RECOVERY_AUTH_READ_FAILED' }; }
     if (rawNow === null) {
       // Recovery from an absent primary is permitted as a special case
       // (e.g. STATE_KEY externally cleared with prior authority).
-      _transitionAuth = { kind: 'recovery', sourceRawBytes: null, sourceVersion: null, sourceRevision: null, issuedAt: nowISO(), absent: true };
+      _transitionAuth = {
+        kind: 'recovery', sourceRawBytes: null, sourceVersion: null, sourceRevision: null,
+        blockerClassAtIssue: durabilityBlocker.code,
+        knownRevisionAtIssue: knownRevision,
+        issuedAt: nowISO(), absent: true
+      };
       return { ok: true };
     }
     const parsed = parseWrapperRaw(rawNow);
-    // Recovery is meaningful when disk is corrupt / stale / unsupported.
-    const isRecoverable = !parsed || parsed.corrupt;
-    if (!isRecoverable) return { ok: false, error: 'RECOVERY_AUTH_DISK_NOT_CORRUPT' };
     _transitionAuth = {
       kind: 'recovery',
       sourceRawBytes: rawNow,
-      sourceVersion: parsed && parsed.version != null ? parsed.version : null,
-      sourceRevision: null,
-      corruptReason: parsed && parsed.reason ? parsed.reason : 'unknown',
+      sourceVersion: parsed && !parsed.corrupt && typeof parsed.version === 'number' ? parsed.version : null,
+      sourceRevision: parsed && !parsed.corrupt && typeof parsed.revision === 'number' ? parsed.revision : null,
+      corruptReason: parsed && parsed.corrupt ? (parsed.reason || 'unknown') : null,
+      blockerClassAtIssue: durabilityBlocker.code,
+      knownRevisionAtIssue: knownRevision,
       issuedAt: nowISO()
     };
     return { ok: true };
@@ -2124,8 +2260,17 @@
     // and refuses to overwrite; the human must recover via an approved
     // full-state transaction (snapshot restore, import, reset) or explicit
     // clearDurabilityBlocker after inspection.
+    //
+    // PRV-0.5 Final Closure (INV-C, R7-P1-03): a primary-read exception
+    // is NEVER equivalent to "no state exists". Fail closed with a
+    // STORE_READ_FAILED blocker — never overwrite an unreadable
+    // primary based on the assumption it is absent.
     let rawNow;
-    try { rawNow = localStorage.getItem(STATE_KEY); } catch (e) { rawNow = null; }
+    try { rawNow = localStorage.getItem(STATE_KEY); }
+    catch (e) {
+      setDurabilityBlocker('STORE_READ_FAILED', { where: 'commitLocked', message: e && e.message });
+      return { committed: false, reason: 'STORE_READ_FAILED' };
+    }
     if (rawNow === null && baseWrapperRaw !== null) {
       // External clear of an accepted STATE_KEY — invariant break, block writes.
       setDurabilityBlocker('STORE_STATE_CLEARED_EXTERNAL', { knownRevision });
@@ -2144,6 +2289,14 @@
       }
       if (parsed.revision > knownRevision) {
         // Newer external state — adopt as new base before replay.
+        // PRV-0.5 Final Closure (INV-A, R7-P1-01): adoption of external
+        // bytes invalidates any transition auth bound to the previous
+        // source generation. A hydration attempt whose auth was
+        // issued for W1 must not silently succeed against W2 just
+        // because Store adopted W2.
+        if (_transitionAuth && _transitionAuth.sourceRawBytes !== rawNow) {
+          _consumeTransitionAuth();
+        }
         baseState      = m.data;
         knownRevision  = parsed.revision;
         committedAt    = parsed.committedAt;
@@ -2155,6 +2308,10 @@
       } else { // parsed.revision === knownRevision, raw differs
         // Equal revision, different raw wrapper — collision. Adopt disk
         // defensively; surface warning.
+        // Same INV-A auth invalidation applies here.
+        if (_transitionAuth && _transitionAuth.sourceRawBytes !== rawNow) {
+          _consumeTransitionAuth();
+        }
         baseState      = m.data;
         committedAt    = parsed.committedAt;
         baseWrapperRaw = rawNow;
@@ -2187,11 +2344,46 @@
     const wrapper = { version: SCHEMA_VERSION, revision: nextRevision, committedAt: committedAtNow, data: r.data };
     let payload;
     try { payload = JSON.stringify(wrapper); } catch (e) { emitError({ code: 'STORE_SERIALIZE_FAILED', error: e }); return { committed: false, reason: 'SERIALIZE' }; }
+    // PRV-0.5 Final Closure (INV-A): capture pre-write auth binding
+    // so a same-boot legacy-transition retry can rebind SAFELY —
+    // safely because (a) the rebase branch above invalidated auth on
+    // external adoption, and (b) our new payload is derived from
+    // baseState, which was derived from either the initial legacy
+    // source or a subsequent commit chain rooted in it.
+    const preWriteBaseWrapperRaw = baseWrapperRaw;
+    const authWasValidAtPreWrite = !!(_transitionAuth
+      && _transitionAuth.kind === 'legacy'
+      && _transitionAuth.sourceRawBytes === preWriteBaseWrapperRaw);
     try {
       localStorage.setItem(STATE_KEY, payload);
     } catch (e) {
       emitError({ code: 'STORE_QUOTA', error: e });
       return { committed: false, reason: 'QUOTA' };
+    }
+    // PRV-0.5 Final Closure (INV-B, R7-P1-06): ORDINARY CAS commits
+    // require the same durable-reread + byte-match proof that
+    // full-state commits use. Silent no-op writes, writes that
+    // land altered bytes, and writes that go elsewhere are all
+    // caught here — BEFORE memory / snapshot / pending / auth
+    // state advance. On mismatch we set a persistent
+    // STORE_ORDINARY_DURABLE_VERIFY_FAILED blocker (subsequent
+    // ordinary writes refuse), keep pending ops intact, and do not
+    // touch baseState / knownRevision / baseWrapperRaw / snapshot /
+    // listeners / _transitionAuth. Recovery requires an approved
+    // full-state transaction the same way the corrupt-authority
+    // path does.
+    let durableRawCas;
+    try { durableRawCas = localStorage.getItem(STATE_KEY); }
+    catch (e) {
+      setDurabilityBlocker('STORE_ORDINARY_DURABLE_READ_FAILED');
+      return { committed: false, reason: 'STORE_ORDINARY_DURABLE_READ_FAILED' };
+    }
+    if (durableRawCas !== payload) {
+      setDurabilityBlocker('STORE_ORDINARY_DURABLE_VERIFY_FAILED', {
+        disk: durableRawCas === null ? 'absent' : 'divergent-bytes',
+        knownRevision, attemptedRevision: nextRevision
+      });
+      return { committed: false, reason: 'STORE_ORDINARY_DURABLE_VERIFY_FAILED' };
     }
     // Snapshot failure after primary success is a non-fatal degradation —
     // primary commit remains accepted; captured ops are dropped; a
@@ -2203,28 +2395,27 @@
     baseWrapperRaw = payload;
     pendingOps     = pendingOps.filter(op => op.seq > capturedMaxSeq);
     rebuildOptimistic();
-    // PRV-0.5 R6 (Codex Round-5 P1-1): release legacy-transition
-    // capability once the wrapper on disk carries a canonical
-    // `status='migrated'` marker. Ordinary CAS commits that land a
-    // still-`unmigrated` wrapper (e.g. because a rogue mid-boot
-    // Store.set fired before hydration) keep the capability alive so
-    // hydration's own retry can complete the legitimate transition.
+    // PRV-0.5 Final Closure (INV-A, R7-P1-01): legacy transition
+    // capability lifetime.
+    //
+    // - migrated marker → consume auth (transition complete).
+    // - unmigrated marker on this commit AND auth was valid at
+    //   pre-write baseline (baseWrapperRaw matched sourceRawBytes) →
+    //   rebind SAFELY. This is safe now because:
+    //     • the disk-rebase branch above INVALIDATES auth on any
+    //       external adoption whose bytes differ from sourceRawBytes
+    //       (the exact R7-P1-01 attack surface);
+    //     • our new payload is derived from baseState which chained
+    //       from the auth's source generation without external
+    //       intervention.
+    // - unmigrated marker AND auth was NOT valid pre-write → auth
+    //   is stale; do nothing (a later hydration retry will fail its
+    //   canAuthoriseLegacySeed check, as it should).
     try {
       const newMarker = baseState && baseState.meta && baseState.meta.recordsMigration;
       if (newMarker && newMarker.status === MARKER_STATUS_MIGRATED) {
-        // Any migrated-marker commit consumes a pending legacy-transition auth.
         if (_transitionAuth && _transitionAuth.kind === 'legacy') _consumeTransitionAuth();
-      } else if (_transitionAuth && _transitionAuth.kind === 'legacy') {
-        // R7 (INV-1 refinement): the same-boot legacy transition is
-        // still in progress (a commit landed with marker still
-        // unmigrated — records set flushed but marker set was
-        // interrupted). Rebind the auth's sourceRawBytes to the new
-        // baseWrapperRaw so hydration RETRY within the same boot can
-        // still authorise seeding. This preserves R7 P1-1 (a
-        // DIFFERENT source generation supplied by an attacker still
-        // fails: baseWrapperRaw was updated only via a Store-owned
-        // commitLocked path we ran, so the identity remains
-        // Store-observed).
+      } else if (authWasValidAtPreWrite && _transitionAuth && _transitionAuth.kind === 'legacy') {
         _transitionAuth.sourceRawBytes = baseWrapperRaw;
       }
     } catch (e) { /* ignore */ }
@@ -2309,6 +2500,47 @@
     return { ok: true };
   }
 
+  // ── QUARANTINE-KEY ALLOCATION ────────────────────
+  // PRV-0.5 Final Closure (INV-H, R7-P2-01): quarantine key format is
+  // `dune_state_v4_quarantine_<epoch-ms>_<random-suffix>`. Allocation
+  // requires the candidate key to be currently absent in localStorage
+  // — never overwrite existing recovery evidence. Retries up to 8
+  // attempts with a fresh suffix; if none is unique, fail closed
+  // BEFORE any primary mutation begins.
+  const _QUARANTINE_KEY_PREFIX = 'dune_state_v4_quarantine_';
+  function _quarantineRandomSuffix() {
+    try {
+      if (typeof crypto !== 'undefined' && crypto && typeof crypto.getRandomValues === 'function') {
+        const a = new Uint32Array(2);
+        crypto.getRandomValues(a);
+        return a[0].toString(36) + a[1].toString(36);
+      }
+    } catch (e) { /* fall through */ }
+    return Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10);
+  }
+  function _allocateQuarantineKey() {
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const key = _QUARANTINE_KEY_PREFIX + Date.now() + '_' + _quarantineRandomSuffix();
+      let existing;
+      try { existing = localStorage.getItem(key); } catch (e) {
+        return { ok: false, reason: 'read-failed' };
+      }
+      if (existing === null) return { ok: true, key: key };
+    }
+    return { ok: false, reason: 'collision-cap-exceeded' };
+  }
+  function _listQuarantineKeys() {
+    const out = [];
+    let n;
+    try { n = localStorage.length; } catch (e) { return out; }
+    for (let i = 0; i < n; i++) {
+      let k;
+      try { k = localStorage.key(i); } catch (e) { continue; }
+      if (typeof k === 'string' && k.indexOf(_QUARANTINE_KEY_PREFIX) === 0) out.push(k);
+    }
+    return out;
+  }
+
   // ── FULL-STATE TRANSACTIONS ──────────────────────
   // Import / snapshot restore / reset. Freezes ordinary Store.set/update.
   // commitFullStateWrapper is token-guarded — no caller can bypass the freeze,
@@ -2341,8 +2573,13 @@
     // valid wrapper.
     deferredStorageEvents.length = 0;
     let rawNow = null;
-    try { rawNow = localStorage.getItem(STATE_KEY); } catch (e) { rawNow = null; }
-    if (rawNow === null) {
+    let endReadFailed = false;
+    try { rawNow = localStorage.getItem(STATE_KEY); }
+    catch (e) { endReadFailed = true; rawNow = null; }
+    if (endReadFailed) {
+      // PRV-0.5 Final Closure (INV-C): read failure ≠ absence.
+      setDurabilityBlocker('STORE_READ_FAILED', { where: 'endFullStateTransaction' });
+    } else if (rawNow === null) {
       // Anything cleared the STATE_KEY after our transaction body ran (or the
       // body never wrote it). If we previously accepted a wrapper, this is a
       // durability invariant break.
@@ -2360,6 +2597,11 @@
           setDurabilityBlocker('STORE_REVISION_REGRESSION', { diskRevision: parsed.revision, knownRevision });
         } else if (parsed.revision > knownRevision || rawNow !== baseWrapperRaw) {
           // Newer valid wrapper (or equal-revision but different raw) — adopt.
+          // PRV-0.5 Final Closure (INV-A, R7-P1-01): auth invalidation
+          // on external adoption of different bytes.
+          if (_transitionAuth && _transitionAuth.sourceRawBytes !== rawNow) {
+            _consumeTransitionAuth();
+          }
           baseState      = m.data;
           knownRevision  = parsed.revision;
           committedAt    = parsed.committedAt;
@@ -2413,15 +2655,38 @@
     // (another tab already recovered, or the raw was replaced) fails
     // closed — the newer healthy state is not overwritten.
     return withCoordinator(function () {
+      // PRV-0.5 Final Closure (INV-C, R7-P1-03): primary-read exception
+      // is NEVER absence. Fail closed rather than proceed to
+      // quarantine/write as if disk were empty.
       let rawNow;
-      try { rawNow = localStorage.getItem(STATE_KEY); } catch (e) { rawNow = null; }
+      let rawReadFailed = false;
+      try { rawNow = localStorage.getItem(STATE_KEY); }
+      catch (e) { rawReadFailed = true; rawNow = null; }
+      if (rawReadFailed) {
+        setDurabilityBlocker('STORE_READ_FAILED', { where: 'commitFullStateWrapper' });
+        return { ok: false, error: 'STORE_READ_FAILED' };
+      }
       // R7 P1-2: recovery-mode source authorisation check happens
       // BEFORE any quarantine / write. Non-recovery commits enforce
       // "disk parseable" (unchanged from R6).
+      //
+      // PRV-0.5 Final Closure (INV-E, R7-P1-02): recovery mode also
+      // enforces blocker-class match under the destructive lock. An
+      // auth issued for STORE_REVISION_REGRESSION does not authorise
+      // recovery under a later STORE_CORRUPT_AUTHORITATIVE_STATE
+      // blocker (or vice versa) — the class labels the source
+      // condition the auth's user consented to replace.
       if (recoveryMode) {
         const authCheck = _hasValidTransitionAuthForCurrentDisk('recovery');
         if (!authCheck.ok) {
           return { ok: false, error: 'RECOVERY_AUTH_INVALID', reason: authCheck.reason, disk: rawNow === null ? 'absent' : 'present' };
+        }
+        if (_transitionAuth
+            && _transitionAuth.blockerClassAtIssue
+            && (!durabilityBlocker || durabilityBlocker.code !== _transitionAuth.blockerClassAtIssue)) {
+          return { ok: false, error: 'RECOVERY_AUTH_BLOCKER_CHANGED',
+                   authBlocker: _transitionAuth.blockerClassAtIssue,
+                   currentBlocker: durabilityBlocker && durabilityBlocker.code };
         }
       } else {
         // R6-compat: non-recovery mode still refuses corrupt disk.
@@ -2433,17 +2698,35 @@
           }
         }
       }
-      // Under recovery mode disk is corrupt (by auth precondition).
-      // Under non-recovery mode disk is parseable.
+      // Recovery-mode disk may now be parseable (revision-regression /
+      // unsupported-future / etc. blockers). Compute the disk
+      // revision from whatever parseWrapperRaw returns; for corrupt
+      // wrappers it stays 0. Monotonic advance below still uses
+      // max(diskRevision, knownRevision, knownRevisionAtIssue).
       let diskRevision = 0;
-      if (rawNow !== null && !recoveryMode) {
+      if (rawNow !== null) {
         const parsed = parseWrapperRaw(rawNow);
-        diskRevision = parsed && !parsed.corrupt ? parsed.revision : 0;
-      } else if (recoveryMode) {
-        diskRevision = (typeof knownRevision === 'number' && knownRevision > 0) ? knownRevision : 0;
+        diskRevision = parsed && !parsed.corrupt && typeof parsed.revision === 'number' ? parsed.revision : 0;
       }
       let cloned;
       try { cloned = clonePersistable(candidateData); } catch (e) { return { ok: false, error: 'STORE_UNPERSISTABLE' }; }
+      // PRV-0.5 Final Closure (INV-F, R7-P1-04): validate the ORIGINAL
+      // candidate shape BEFORE any normalization/default-fill runs.
+      // A malformed current-schema Logbook (an object that is neither
+      // a legitimate envelope nor a legacy array) must be rejected
+      // rather than silently replaced with an empty default envelope
+      // — that replacement destroys the user's own data.
+      if ('logbook' in cloned && cloned.logbook !== undefined && cloned.logbook !== null) {
+        const lb = cloned.logbook;
+        const validAsArray = Array.isArray(lb);   // legacy pre-v12 array shape
+        const validAsEnvelope = isLogbookEnvelope(lb);
+        if (!validAsArray && !validAsEnvelope) {
+          return {
+            ok: false, error: 'FULL_STATE_CANDIDATE_MALFORMED_LOGBOOK',
+            reason: 'logbook-neither-array-nor-envelope'
+          };
+        }
+      }
       normalizeLogbookDomain(cloned);
       if (!validate(cloned)) return { ok: false, error: 'FULL_STATE_INVALID' };
       // R6 P1-3: canonical marker/records shape.
@@ -2451,6 +2734,23 @@
       if (!evalCand.canonical) {
         return {
           ok: false, error: 'FULL_STATE_CANDIDATE_NONCANONICAL',
+          classification: evalCand.classification, reasons: evalCand.reasons
+        };
+      }
+      // PRV-0.5 Final Closure (INV-G, R7-P1-07): ordinary full-state
+      // commit accepts ONLY AUTHORITATIVE_MIGRATED at pre-write. A
+      // VERIFIED_LEGACY_TRANSITION (marker.status='unmigrated') would
+      // pass the R6 canonical check, write disk, and then fail
+      // post-classification — leaving the primary mutated but the
+      // operation reporting failure. All three legitimate callers
+      // (Reset via defaultState(), restoreSnapshot rewriting marker
+      // to 'migrated', processImport via inline hydration marker
+      // rewrite) already produce AUTHORITATIVE_MIGRATED; any caller
+      // that supplies an unmigrated candidate must instead use an
+      // explicit legacy-migration path with its own transition auth.
+      if (evalCand.classification !== 'AUTHORITATIVE_MIGRATED') {
+        return {
+          ok: false, error: 'FULL_STATE_CANDIDATE_NOT_MIGRATED',
           classification: evalCand.classification, reasons: evalCand.reasons
         };
       }
@@ -2469,9 +2769,23 @@
       // corrupt authority, WITH mandatory reread + byte-match
       // verification. Only proceed to primary write if quarantine
       // durably matches source.
+      //
+      // PRV-0.5 Final Closure (INV-H + P2-01): quarantine key allocation
+      // now checks absence and retries on collision (up to 8 attempts);
+      // if a unique key cannot be established, we abort BEFORE any
+      // primary mutation. Once a verified quarantine copy exists,
+      // ALL subsequent failure paths retain it — no cleanup on
+      // uncertainty (removeItem calls previously at lines 2624,
+      // 2638, 2642, 2651, 2656, 2667 removed). Cleanup on success
+      // also does not happen: retention is documented policy and the
+      // key is exposed via Store.listQuarantineKeys() for
+      // tests/diagnostics; user-facing UI can be added in a follow-up
+      // without changing the retention contract.
       let quarantineKey = null;
       if (recoveryMode && rawNow !== null) {
-        const qKey = 'dune_state_v4_quarantine_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
+        const alloc = _allocateQuarantineKey();
+        if (!alloc.ok) return { ok: false, error: 'RECOVERY_QUARANTINE_KEY_UNAVAILABLE', reason: alloc.reason };
+        const qKey = alloc.key;
         try { localStorage.setItem(qKey, rawNow); }
         catch (qe) {
           return { ok: false, error: 'RECOVERY_QUARANTINE_WRITE_FAILED', detail: qe && qe.message };
@@ -2479,8 +2793,10 @@
         let qRead;
         try { qRead = localStorage.getItem(qKey); } catch (qre) { qRead = null; }
         if (qRead !== rawNow) {
-          try { localStorage.removeItem(qKey); } catch (_) {}
-          return { ok: false, error: 'RECOVERY_QUARANTINE_VERIFY_FAILED' };
+          // Verification failed — do NOT delete: the write may have
+          // partially landed and represents genuine failure evidence.
+          // INV-H: "never delete on uncertainty".
+          return { ok: false, error: 'RECOVERY_QUARANTINE_VERIFY_FAILED', retainedEvidenceKey: qKey };
         }
         quarantineKey = qKey;
       }
@@ -2493,26 +2809,33 @@
         try { rawCheckRaw = localStorage.getItem(STATE_KEY); } catch (e) { rawCheckRaw = null; }
         if (_transitionAuth && _transitionAuth.absent === true) {
           if (rawCheckRaw !== null) {
-            if (quarantineKey) { try { localStorage.removeItem(quarantineKey); } catch (_) {} }
-            return { ok: false, error: 'RECOVERY_SOURCE_CHANGED_UNDER_LOCK', reason: 'disk-no-longer-absent' };
+            return { ok: false, error: 'RECOVERY_SOURCE_CHANGED_UNDER_LOCK', reason: 'disk-no-longer-absent', retainedEvidenceKey: quarantineKey };
           }
         } else if (_transitionAuth && rawCheckRaw !== _transitionAuth.sourceRawBytes) {
-          if (quarantineKey) { try { localStorage.removeItem(quarantineKey); } catch (_) {} }
-          return { ok: false, error: 'RECOVERY_SOURCE_CHANGED_UNDER_LOCK', reason: 'source-generation-changed' };
+          return { ok: false, error: 'RECOVERY_SOURCE_CHANGED_UNDER_LOCK', reason: 'source-generation-changed', retainedEvidenceKey: quarantineKey };
         }
       }
-      const nextRevision = diskRevision + 1;
+      // PRV-0.5 Final Closure (INV-D, R7-P1-02): monotonic revision.
+      // Recovery must advance past BOTH the current disk revision AND
+      // Store's knownRevision — so a stale-revision disk cannot let
+      // a recovery replay an earlier number, and a
+      // regression-blocker recovery mints strictly greater than the
+      // last accepted revision the Store observed.
+      const monotonicBaseline = Math.max(
+        diskRevision,
+        typeof knownRevision === 'number' ? knownRevision : 0,
+        _transitionAuth && typeof _transitionAuth.knownRevisionAtIssue === 'number' ? _transitionAuth.knownRevisionAtIssue : 0
+      );
+      const nextRevision = monotonicBaseline + 1;
       const committedAtNow = nowISO();
       const wrapper = { version: SCHEMA_VERSION, revision: nextRevision, committedAt: committedAtNow, data: cloned };
       let payload;
       try { payload = JSON.stringify(wrapper); } catch (e) {
-        if (quarantineKey) { try { localStorage.removeItem(quarantineKey); } catch (_) {} }
-        return { ok: false, error: 'STORE_SERIALIZE_FAILED' };
+        return { ok: false, error: 'STORE_SERIALIZE_FAILED', retainedEvidenceKey: quarantineKey };
       }
       try { localStorage.setItem(STATE_KEY, payload); }
       catch (e) {
-        if (quarantineKey) { try { localStorage.removeItem(quarantineKey); } catch (_) {} }
-        return { ok: false, error: 'STORE_QUOTA', detail: e && e.message };
+        return { ok: false, error: 'STORE_QUOTA', detail: e && e.message, retainedEvidenceKey: quarantineKey };
       }
       // R7 P1-5, INV-6: DURABLE verification — read back what is
       // ACTUALLY persisted at STATE_KEY and require an exact
@@ -2522,10 +2845,10 @@
       let durableRaw;
       try { durableRaw = localStorage.getItem(STATE_KEY); } catch (e) { durableRaw = null; }
       if (durableRaw !== payload) {
-        if (quarantineKey) { try { localStorage.removeItem(quarantineKey); } catch (_) {} }
         return {
           ok: false, error: 'FULL_STATE_DURABLE_VERIFY_FAILED',
-          disk: durableRaw === null ? 'absent' : (durableRaw === rawNow ? 'unchanged-source' : 'divergent-bytes')
+          disk: durableRaw === null ? 'absent' : (durableRaw === rawNow ? 'unchanged-source' : 'divergent-bytes'),
+          retainedEvidenceKey: quarantineKey
         };
       }
       // Re-parse the durable read (not just the payload we constructed)
@@ -2537,7 +2860,8 @@
       if (!verifyEval.canonical || verifyEval.classification !== 'AUTHORITATIVE_MIGRATED') {
         return {
           ok: false, error: 'FULL_STATE_POST_WRITE_VERIFICATION_FAILED',
-          classification: verifyEval.classification
+          classification: verifyEval.classification,
+          retainedEvidenceKey: quarantineKey
         };
       }
       { const _snap = pushSnapshot(payload); if (!_snap.ok) emitError({ code: 'STORE_SNAPSHOT_DEGRADED', revision: nextRevision, error: String((_snap.error && _snap.error.message) || _snap.error) }); }
@@ -2608,6 +2932,12 @@
     setDurabilityBlocker('STORE_REVISION_REGRESSION', { diskRevision: parsed.revision, knownRevision });
   }
   function adoptExternal(data, parsed, rawWrapper) {
+    // PRV-0.5 Final Closure (INV-A, R7-P1-01): storage-event driven
+    // adoption of external bytes invalidates any transition auth
+    // bound to a different source generation.
+    if (_transitionAuth && _transitionAuth.sourceRawBytes !== rawWrapper) {
+      _consumeTransitionAuth();
+    }
     baseState      = data;
     knownRevision  = parsed.revision;
     committedAt    = parsed.committedAt;
@@ -2816,6 +3146,11 @@
     evaluateCandidateWrapper: function (input) { return evaluateCandidateWrapper(input); },
     evaluateCandidateData: function (data) { return evaluateCandidateData(data); },
     validateLegacySourceRequiredFields: validateLegacySourceRequiredFields,
+    // PRV-0.5 Final Closure (INV-I): expose the version-indexed
+    // historical requirements matrix so tests / diagnostics can assert
+    // the exact per-version emission expectations without duplicating
+    // the table.
+    getHistoricalRequirements: getHistoricalRequirements,
     // PRV-0.5 R6 (Codex Round-5 P1-1): read-only check whether Store
     // currently holds the transient legacy-transition authority. Only
     // hydration should honour a `VERIFIED_LEGACY_TRANSITION` seed when
@@ -2838,6 +3173,14 @@
     // resolves to the actual full-state commit result (P1-2 truthful
     // async result).
     _lastResetSettled: function () { return _lastResetSettled; },
+    // PRV-0.5 Final Closure (INV-H): enumerate every quarantine key
+    // currently in localStorage. Retention policy is "always keep
+    // once verified"; enumeration lets tests and diagnostics inspect
+    // accumulated recovery evidence. Order is browser-dependent
+    // (localStorage insertion), so consumers must not depend on
+    // ordering for identity checks — the caller filters by key
+    // suffix / getItem to select individual entries.
+    listQuarantineKeys: function () { return _listQuarantineKeys(); },
     // Raised for tests / documentation of the canonical marker contract.
     MARKER_STATUS: { MIGRATED: MARKER_STATUS_MIGRATED, UNMIGRATED: MARKER_STATUS_UNMIGRATED },
     REQUIRED_RECORD_DOMAINS: REQUIRED_RECORD_DOMAINS.slice(),

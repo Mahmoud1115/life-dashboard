@@ -2299,6 +2299,63 @@ window.importFromClipboard=async function(){
 window.triggerImportFile=function(){
   document.getElementById('backup-file-input').click();
 };
+
+// PRV-0.5 Final Closure (INV-K, R7-P2-02): visible, keyboard-
+// reachable, confirmation-gated recovery actions. Both handlers
+// route through the Store's settled-promise APIs and surface the
+// TRUTHFUL result via showBackupToast (no silent success).
+window.recoveryRestoreSnapshot=async function(){
+  if(!window.Store||typeof window.Store.restoreSnapshot!=='function'){
+    showBackupToast('⚠ Snapshot restore unavailable');return false;
+  }
+  const snaps=(typeof window.Store.snapshots==='function')?window.Store.snapshots():[];
+  if(!snaps||snaps.length===0){
+    showBackupToast('⚠ No snapshot to restore');return false;
+  }
+  const confirmed=confirm('Restore the latest snapshot?\n\nThis replaces your current data with the most recent good save. Your current data is not preserved automatically — export a backup first if you need it.');
+  if(!confirmed) return false;
+  const disp=window.Store.restoreSnapshot(0,{force:true});
+  if(!disp||!disp.ok){
+    showBackupToast('⚠ Snapshot restore rejected: '+((disp&&disp.error)||'unknown'));
+    return false;
+  }
+  try{
+    const settled=await disp.settled;
+    if(settled&&settled.ok){
+      showBackupToast('✓ Snapshot restored (revision '+settled.revision+')');
+      return true;
+    }
+    showBackupToast('⚠ Snapshot restore failed: '+((settled&&settled.error)||'unknown'));
+    return false;
+  }catch(e){
+    showBackupToast('⚠ Snapshot restore threw: '+(e&&e.message||'unknown'));
+    return false;
+  }
+};
+window.recoveryResetLifeOS=async function(){
+  if(!window.Store||typeof window.Store.reset!=='function'){
+    showBackupToast('⚠ Reset unavailable');return false;
+  }
+  const confirmed=confirm('Reset LIFE OS?\n\nThis replaces all your data with a fresh default and cannot be undone. Export a backup first if you might want any of your current data back.');
+  if(!confirmed) return false;
+  const dispatched=window.Store.reset({force:true});
+  if(!dispatched){
+    showBackupToast('⚠ Reset dispatch rejected');
+    return false;
+  }
+  try{
+    const settled=(typeof window.Store._lastResetSettled==='function')?await window.Store._lastResetSettled():null;
+    if(settled&&settled.ok){
+      showBackupToast('✓ LIFE OS reset (revision '+settled.revision+')');
+      return true;
+    }
+    showBackupToast('⚠ Reset failed: '+((settled&&settled.error)||'unknown'));
+    return false;
+  }catch(e){
+    showBackupToast('⚠ Reset threw: '+(e&&e.message||'unknown'));
+    return false;
+  }
+};
 window.handleImportFile=function(input){
   const file=input.files[0];
   if(!file) return;

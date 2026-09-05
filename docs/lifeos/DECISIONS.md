@@ -1616,3 +1616,152 @@ domains remain PRV-1+ work.
 **Date:** 2026-09-02 (PRV-0.5 R7 remediation on branch
 `claude/prv-0-5-r7-invariant-remediation`; base commit
 `357a9d26ad075cd1ad911db365569300f2113008`).
+
+### ADR-015 addendum #7 (2026-09-05) — PRV-0.5 Final Closure Campaign
+
+Codex R7 review of `8a03ac8837a8c11d683a19ab753aabb3a7f11858` found
+9 P1 defects and 3 P2 defects rooted in the same architectural
+cause: authority contexts were still permitted to leak across
+source generations, durable verification was applied to full-state
+commits only, and the recovery-authorisation matrix covered only
+corrupt-JSON authority. Addendum #7 records the Final Closure
+Campaign that closes every finding as one coherent redesign rather
+than nine unrelated patches.
+
+**Base:** R7 exact SHA `8a03ac8837a8c11d683a19ab753aabb3a7f11858`.
+**Branch:** `claude/prv-0-5-final-closure`.
+**Closes:** R7-P1-01 through R7-P1-09, R7-P2-01 through R7-P2-03.
+
+#### Final invariants (INV-A..L)
+
+- **INV-A — No authority crosses source generations.** Every path that
+  changes `baseWrapperRaw` to bytes different from the transition
+  auth's `sourceRawBytes` INVALIDATES the auth immediately: the
+  commitLocked disk-rebase branches (both `revision > known` and
+  `revision === known && divergent bytes`), `adoptExternal`
+  (storage-event), and `endFullStateTransaction`. Same-boot legacy
+  hydration retry rebinds ONLY when the pre-write baseline still
+  matched the auth's source (`authWasValidAtPreWrite`) — this is
+  safe because the invalidation guards above have already fired
+  on any external adoption. The R6/R7 unconditional
+  `_transitionAuth.sourceRawBytes = baseWrapperRaw` rebind is
+  removed.
+- **INV-B — Durable primary is authoritative only after successful
+  reread.** Ordinary CAS commits in `commitLocked` now perform the
+  same durable-reread + byte-match proof used by
+  `commitFullStateWrapper`. On mismatch a persistent
+  `STORE_ORDINARY_DURABLE_VERIFY_FAILED` blocker fires; base
+  state / knownRevision / pendingOps / snapshot / listeners /
+  `_transitionAuth` are all untouched until the reread proves
+  exact durable persistence.
+- **INV-C — Read failure is not absence.** Every `getItem` in
+  destructive code paths (`commitLocked`, `commitFullStateWrapper`,
+  `endFullStateTransaction`, `initialLoad`) sets
+  `STORE_READ_FAILED` on exception and returns without proceeding.
+  Boot with unreadable primary yields a `pendingBlocker` — the
+  app renders from defaults but writes refuse until the user
+  acknowledges recovery.
+- **INV-D — Revision monotonicity.** Recovery-mode commits mint
+  `max(diskRevision, knownRevision, transitionAuth.knownRevisionAtIssue) + 1`
+  so a stale-revision disk cannot let a recovery replay an earlier
+  number.
+- **INV-E — Every blocker class has an exact-source recovery
+  path.** `_issueRecoveryAuthFromCurrentDisk` now accepts every
+  active `durabilityBlocker` — corrupt JSON, malformed wrapper,
+  revision regression, unsupported future schema, versionless
+  primary, external clear. Auth binds to `{ sourceRawBytes,
+  blockerClassAtIssue, knownRevisionAtIssue }`. Under the
+  destructive lock, `commitFullStateWrapper` requires the
+  currently active blocker class to match `blockerClassAtIssue`;
+  a class change (another tab already recovered under a different
+  blocker) fails closed with `RECOVERY_AUTH_BLOCKER_CHANGED`.
+- **INV-F — Validation happens before normalization/default-fill.**
+  `commitFullStateWrapper` rejects a candidate whose `logbook` is
+  neither a legacy array nor a valid v14 envelope BEFORE
+  `normalizeLogbookDomain` runs. This closes the R7-P1-04 defect
+  where a malformed current-schema Logbook object was silently
+  replaced with `defaultLogbookEnvelope()` — destroying user data.
+- **INV-G — Current full-state commit accepts only current
+  authoritative shape.** After `evaluateCandidateData`, prewrite
+  requires `classification === 'AUTHORITATIVE_MIGRATED'`. A
+  `VERIFIED_LEGACY_TRANSITION` candidate is rejected pre-write
+  (`FULL_STATE_CANDIDATE_NOT_MIGRATED`) rather than mutating disk
+  and then failing post-classification. All three legitimate
+  callers (`Store.reset` via `defaultState()`, `restoreSnapshot`
+  rewriting the marker, `processImport` via inline hydration)
+  already produce migrated candidates.
+- **INV-H — Quarantine is retained through destructive
+  uncertainty.** Every `removeItem(quarantineKey)` after primary
+  mutation begins has been removed. On any post-primary failure
+  the result carries `retainedEvidenceKey: quarantineKey`.
+  Successful recovery retains the quarantine per documented
+  policy (Final Closure Campaign §10 preferred safe policy).
+  Quarantine keys are enumerable via `Store.listQuarantineKeys()`
+  for tests/diagnostics. `_allocateQuarantineKey()` checks
+  `getItem === null` and retries up to 8 attempts with a fresh
+  cryptographic suffix; if no unique key can be established, the
+  operation aborts BEFORE any primary mutation.
+- **INV-I — Historical source validation is evidence-based by
+  schema version.** `HISTORICAL_SCHEMA_REQUIREMENTS` is a
+  version-indexed matrix derived from `migrateUp`'s own
+  field-introduction timeline. v12 and v13 carry the strict
+  Codex-identified emission set (career, easa, about, sbTasks,
+  goals, bht {habits, entries}, telemetry, and the arrays
+  todayFocus/timeline/reviews/decisions/apartments/ideas; logbook
+  as array or object; money.salary_net as number). v6..v11
+  intentionally keep the runtime `validate()` floor (money +
+  salary_net + qatarVisit) so existing test fixtures and older
+  wrappers still boot — the strict per-version emission floor
+  applies to the DESTRUCTIVE IMPORT path
+  (`evaluateCandidateWrapper → validateLegacySourceRequiredFields`)
+  where P1-08 lives. `<v6` fails closed as unsupported.
+- **INV-J — Version provenance must be real.** `parseWrapperRaw`
+  now requires `'version' in parsed`; absence classifies as
+  `wrapper-version-absent` corrupt and cannot receive a legacy
+  transition auth. `evaluatePersistedAuthority` surfaces the new
+  `WRAPPER_VERSION_ABSENT` classification (distinct from generic
+  `CORRUPT_STALE_COLLIDING`) so consumers — backup gate,
+  hydration, recovery UI — can react precisely. Explicit
+  legacy-only backup import (no `dune_state_v4` value in the
+  backup blob) still works through `deriveStateFromLegacy`.
+- **INV-K — Recovery UX reflects actual reachable recovery.** The
+  Backup panel now carries a Recovery section with three
+  confirmation-gated buttons that the boot banner names:
+  💾 Restore latest snapshot, ⬆ Import backup file, ♻ Reset LIFE
+  OS. Each handler (`window.recoveryRestoreSnapshot`,
+  `triggerImportFile`, `window.recoveryResetLifeOS`) routes to
+  the Store's settled-promise API and reports the truthful
+  outcome via `showBackupToast` — no phantom success.
+- **INV-L — Canonical docs reflect runtime, not aspiration.** This
+  addendum is written after the deterministic suites pass and
+  refers to the exact test names that prove each invariant.
+
+#### Test evidence (cold Playwright)
+
+- **PRV suite:** 72 pre-existing tests + 33 new FINAL-* tests =
+  **105/105 pass cold** in this file. (R7's "73/73" self-report
+  was overstated by one; Codex's "72 executable" is the accurate
+  count of the R7 file. Playwright is authoritative for both.)
+- **Store durability suite:** **48/48 pass cold**, unchanged.
+- **Full tracked suite:** **271/271 pass cold** (up from R7's
+  229/229 by 33 new PRV FINAL-* tests + 9 non-PRV specs' unchanged
+  counts).
+- **`node --check`** on every tracked `.js`: clean.
+- **`git diff --check`:** clean.
+
+New FINAL-* groups:
+- FINAL-V1..V5 — INV-J / P1-09 (versionless primary fails closed)
+- FINAL-H1..H8 — INV-I / P1-08 (v12+ historical matrix)
+- FINAL-C1..C7 — INV-F + INV-G / P1-04 + P1-07 (validate-before-normalize,
+  prewrite classification gate)
+- FINAL-Q4..Q7 — INV-H + P2-01 (quarantine retention + unique-key)
+- FINAL-D1..D5 — INV-B / P1-06 (ordinary CAS durable reread)
+- FINAL-R5..R6 — INV-C + INV-D / P1-03 (read-fail closed +
+  same-tab regression convergence)
+- FINAL-A3..A5 — INV-A / P1-01 (authority lineage)
+- FINAL-R1..R2, R4, R7 — INV-E / P1-02 (regression recovery paths)
+- FINAL-U1..U4 — INV-K / P2-02 (reachable recovery UX)
+
+**Date:** 2026-09-05 (PRV-0.5 Final Closure Campaign on branch
+`claude/prv-0-5-final-closure`; base commit
+`8a03ac8837a8c11d683a19ab753aabb3a7f11858`).
