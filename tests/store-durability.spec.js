@@ -787,10 +787,20 @@ test('T-import-deferred-storage-event — storage event during import is deferre
     const _st = window.setTimeout;
     window.setTimeout = (fn, d) => (d && d >= 1000) ? 0 : _st(fn, d);
     // Kick off an import that will actually commit successfully.
+    // PRV-0.5 Pre-Push R2 / BINDING-3-A: legacy v11 wrappers must
+    // carry the full defaultState-shape emission of commit 8a1e374;
+    // a minimal `{money, qatarVisit}` seed is UNPROVEN under the
+    // strict matrix and would be rejected by evaluateCandidateWrapper.
+    const _fullLegacyV11 = {
+      money: { salary_net: 314, expenses: {}, usd_rate: 88, save_target: 55000 },
+      qatarVisit: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+      bht: { habits: [], entries: [] }, telemetry: {},
+      todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [], logbook: []
+    };
     const backup = {
       version: '2026.1', exported_at: '2026-08-25T00:00:00Z',
       data: {
-        dune_state_v4: { version: 11, data: { money: { salary_net: 314 }, qatarVisit: {} } },
+        dune_state_v4: { version: 11, data: _fullLegacyV11 },
         dune_apartments_v1: [{ id: 'im1' }]
       }
     };

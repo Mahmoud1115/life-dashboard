@@ -74,10 +74,25 @@ async function seed(page, entries) {
 function validEnvelope(data) {
   return { version: '2026.1', exported_at: '2026-08-24T00:00:00Z', data };
 }
-// Minimal dune_state_v4 that passes the Store's validate() on reload —
-// though reload is suppressed in these tests, keep the shape realistic.
+// dune_state_v4 seed that passes the Store's evidence-backed strict
+// legacy matrix at v11 (PRV-0.5 Pre-Push R2 / BINDING-3-A): v11
+// defaultState at 8a1e374 emitted the full fifteen-domain shape
+// below plus `ideas`. A minimal `{money, qatarVisit}` wrapper is
+// UNPROVEN under the strict matrix and would be rejected by
+// evaluateCandidateWrapper.
+function _fullLegacyV11Data(salary) {
+  return {
+    money: { salary_net: salary, expenses: {}, usd_rate: 88, save_target: 55000 },
+    qatarVisit: {},
+    career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+    bht: { habits: [], entries: [] },
+    telemetry: {},
+    todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [],
+    apartments: [], logbook: []
+  };
+}
 function minState() {
-  return { version: 11, data: { money: { salary_net: 100000 }, qatarVisit: {} } };
+  return { version: 11, data: _fullLegacyV11Data(100000) };
 }
 
 test('T1 — valid backup restores allowed keys and creates recovery snapshot', async ({ page }) => {
@@ -286,7 +301,7 @@ test('T9 — pending Store autosave race: stale in-memory Store cannot overwrite
   await page.evaluate(() => {
     window.Store.set('money.salary_net', 130000);
   });
-  const imported = { version: 11, data: { money: { salary_net: 222222 }, qatarVisit: {} } };
+  const imported = { version: 11, data: _fullLegacyV11Data(222222) };
   const r = await page.evaluate(async (backup) => {
     window.confirm = () => true;
     const _st = window.setTimeout;
@@ -499,7 +514,7 @@ test('T13 — invalid known-key shapes rejected with zero mutations and no recov
 test('T14 — changed dune_state_v4 rolls back byte-exact on apply failure', async ({ page }) => {
   await page.goto('/');
   await waitReady(page);
-  const originalStateBlob = JSON.stringify({ version: 11, data: { money: { salary_net: 111111 }, qatarVisit: {} } });
+  const originalStateBlob = JSON.stringify({ version: 11, data: _fullLegacyV11Data(111111) });
   await page.evaluate((blob) => {
     // Pause persistence so any pending Store save from module init cannot
     // overwrite our synthetic dune_state_v4 seed before processImport runs.
@@ -530,7 +545,7 @@ test('T14 — changed dune_state_v4 rolls back byte-exact on apply failure', asy
       window.setTimeout = _st;
     }
   }, validEnvelope({
-    dune_state_v4: { version: 11, data: { money: { salary_net: 999999 }, qatarVisit: {} } },
+    dune_state_v4: { version: 11, data: _fullLegacyV11Data(999999) },
     dune_apartments_v1: [{ id: 'new' }],
   }));
   expect(r.ok).toBe(false);
@@ -578,7 +593,7 @@ test('T15 — failed B0 import unfreezes and pre-import pending Store edit persi
     window.setTimeout = _st;
     return { ok, frozenBefore, frozenAfter, raw };
   }, validEnvelope({
-    dune_state_v4: { version: 11, data: { money: { salary_net: 777 }, qatarVisit: {} } },
+    dune_state_v4: { version: 11, data: _fullLegacyV11Data(777) },
     dune_apartments_v1: [{ id: 'imported' }],
     dune_finance_v1: { russia: { salary: 42 } },
     dune_goals_v1: { g: 1 },

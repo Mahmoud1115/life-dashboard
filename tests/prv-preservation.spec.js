@@ -3267,16 +3267,25 @@ test('FINAL-H5-MALFORMED-NESTED-BHT-REJECTED — v13 bht object without habits/e
   expect(proof.reason).toBe('malformed-bht-substructure');
 });
 
-// FINAL-H6 — legitimate historical v11 (predates strict floor) accepted
-// with money+salary_net + qatarVisit only. Preserves backward-compat
-// for older test fixtures / real user data.
-test('FINAL-H6-LEGITIMATE-V11-ACCEPTED — v11 wrapper predating strict floor accepted with runtime minimum', async ({ page }) => {
+// FINAL-H6 — a legitimate v11 wrapper (full defaultState-shape at
+// commit 8a1e374) is accepted; a minimal `{money, qatarVisit}`
+// wrapper — never emitted at any tag — is REJECTED as
+// `version-unsupported`-equivalent through the strict matrix.
+test('FINAL-H6-LEGITIMATE-V11-ACCEPTED — full-shape v11 wrapper (evidence: 8a1e374) accepted; minimal wrapper rejected', async ({ page }) => {
   await page.goto('/'); await waitForApp(page);
   const proof = await page.evaluate(() => {
-    const d = { money: { salary_net: 1 }, qatarVisit: {} };
-    return window.Store.validateLegacySourceRequiredFields(d, 11);
+    const full = { money: { salary_net: 1 }, qatarVisit: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+                   bht: { habits: [], entries: [] }, telemetry: {},
+                   todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
+                   logbook: [] };
+    const minimal = { money: { salary_net: 1 }, qatarVisit: {} };
+    return {
+      full: window.Store.validateLegacySourceRequiredFields(full, 11),
+      minimal: window.Store.validateLegacySourceRequiredFields(minimal, 11)
+    };
   });
-  expect(proof.ok).toBe(true);
+  expect(proof.full.ok).toBe(true);
+  expect(proof.minimal.ok).toBe(false);
 });
 
 // FINAL-H7 — 24680 salary sentinel survives a valid v13 import
@@ -4372,17 +4381,26 @@ test('FINAL-M1-PRE-V8-UNSUPPORTED-FAIL-CLOSED — a v7 candidate is rejected as 
   expect(proof.reason).toBe('version-unsupported');
 });
 
-// FINAL-M2 — v8 accepted with runtime floor (bht/telemetry introduced
-// at v7/v8, permissive per-version emission floor documented in
-// ADR-015 addendum #8 as scope-limited pending direct emission
-// evidence).
-test('FINAL-M2-V8-ACCEPTED-RUNTIME-FLOOR — v8 candidate with money+salary_net+qatarVisit accepted', async ({ page }) => {
+// FINAL-M2 — v8 strict matrix: a full-shape v8 wrapper (evidence:
+// 85e1d22, defaultState with telemetry introduced) is accepted; a
+// minimal `{money, qatarVisit}` wrapper is REJECTED (never emitted
+// by this repository at any tag). BINDING-3-A: no permissive
+// runtime floor for v8..v11.
+test('FINAL-M2-V8-STRICT-MATRIX — full-shape v8 accepted; minimal wrapper rejected as missing-domain', async ({ page }) => {
   await page.goto('/'); await waitForApp(page);
   const proof = await page.evaluate(() => {
-    return window.Store.validateLegacySourceRequiredFields(
-      { money: { salary_net: 1 }, qatarVisit: {} }, 8);
+    const full = { money: { salary_net: 1 }, qatarVisit: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+                   bht: { habits: [], entries: [] }, telemetry: {},
+                   todayFocus: [], timeline: [], reviews: [], decisions: [], apartments: [], logbook: [] };
+    const minimal = { money: { salary_net: 1 }, qatarVisit: {} };
+    return {
+      full: window.Store.validateLegacySourceRequiredFields(full, 8),
+      minimal: window.Store.validateLegacySourceRequiredFields(minimal, 8)
+    };
   });
-  expect(proof.ok).toBe(true);
+  expect(proof.full.ok).toBe(true);
+  expect(proof.minimal.ok).toBe(false);
+  expect(String(proof.minimal.reason)).toMatch(/^missing-/);
 });
 
 // FINAL-M3 — v12 candidate WITHOUT bht/telemetry rejected (strict
@@ -4400,15 +4418,17 @@ test('FINAL-M3-V12-STRICT-MATRIX — v12 missing bht is rejected', async ({ page
   expect(proof.reason).toBe('missing-bht');
 });
 
-// FINAL-M4 — getHistoricalRequirements exposes the matrix for tests
-// and diagnostics; v<12 returns null (permissive floor); v14+ returns
-// null (that's the current schema, not a historical import target).
-test('FINAL-M4-MATRIX-EXPOSED — Store.getHistoricalRequirements returns null for versions outside the strict matrix', async ({ page }) => {
+// FINAL-M4 — getHistoricalRequirements exposes the evidence-backed
+// strict matrix for every SUPPORTED historical version (v8..v13) and
+// returns null for FAIL-CLOSED ranges (v<8, v>=SCHEMA_VERSION).
+test('FINAL-M4-MATRIX-EXPOSED — Store.getHistoricalRequirements returns strict matrix for v8..v13, null for FAIL-CLOSED ranges', async ({ page }) => {
   await page.goto('/'); await waitForApp(page);
   const proof = await page.evaluate(() => {
     return {
-      v7: window.Store.getHistoricalRequirements(7),
-      v8: window.Store.getHistoricalRequirements(8),
+      v7:  window.Store.getHistoricalRequirements(7),
+      v8:  window.Store.getHistoricalRequirements(8),
+      v9:  window.Store.getHistoricalRequirements(9),
+      v10: window.Store.getHistoricalRequirements(10),
       v11: window.Store.getHistoricalRequirements(11),
       v12: window.Store.getHistoricalRequirements(12),
       v13: window.Store.getHistoricalRequirements(13),
@@ -4416,9 +4436,128 @@ test('FINAL-M4-MATRIX-EXPOSED — Store.getHistoricalRequirements returns null f
     };
   });
   expect(proof.v7).toBeNull();
-  expect(proof.v8).toBeNull();
-  expect(proof.v11).toBeNull();
+  expect(proof.v8).not.toBeNull();
+  expect(proof.v9).not.toBeNull();
+  expect(proof.v10).not.toBeNull();
+  expect(proof.v11).not.toBeNull();
   expect(proof.v12).not.toBeNull();
   expect(proof.v13).not.toBeNull();
   expect(proof.v14).toBeNull();
+});
+
+// FINAL-M5 — v8 emission had NO `ideas` array (ideas added at v9,
+// commit cea0dab). A v8 wrapper WITH ideas removed remains valid;
+// a v8 wrapper missing telemetry (introduced at 85e1d22) is
+// REJECTED as missing-telemetry.
+test('FINAL-M5-V8-NO-IDEAS-REQUIRED-TELEMETRY-REQUIRED — v8 accepted without ideas; v8 without telemetry rejected', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(() => {
+    const withoutIdeas = { money: { salary_net: 1 }, qatarVisit: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+                           bht: { habits: [], entries: [] }, telemetry: {},
+                           todayFocus: [], timeline: [], reviews: [], decisions: [], apartments: [], logbook: [] };
+    const withoutTelemetry = { money: { salary_net: 1 }, qatarVisit: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+                               bht: { habits: [], entries: [] },
+                               todayFocus: [], timeline: [], reviews: [], decisions: [], apartments: [], logbook: [] };
+    return {
+      withoutIdeas: window.Store.validateLegacySourceRequiredFields(withoutIdeas, 8),
+      withoutTelemetry: window.Store.validateLegacySourceRequiredFields(withoutTelemetry, 8)
+    };
+  });
+  expect(proof.withoutIdeas.ok).toBe(true);
+  expect(proof.withoutTelemetry.ok).toBe(false);
+  expect(proof.withoutTelemetry.reason).toBe('missing-telemetry');
+});
+
+// FINAL-M6 — v9 emission (cea0dab) required `ideas` in defaultState.
+// A v9 wrapper missing `ideas` fails; a full-shape v9 wrapper is
+// SUPPORTED.
+test('FINAL-M6-V9-IDEAS-REQUIRED — v9 without ideas rejected; full-shape v9 accepted', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(() => {
+    const withoutIdeas = { money: { salary_net: 1 }, qatarVisit: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+                           bht: { habits: [], entries: [] }, telemetry: {},
+                           todayFocus: [], timeline: [], reviews: [], decisions: [], apartments: [], logbook: [] };
+    const full = { money: { salary_net: 1 }, qatarVisit: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+                   bht: { habits: [], entries: [] }, telemetry: {},
+                   todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [], logbook: [] };
+    return {
+      withoutIdeas: window.Store.validateLegacySourceRequiredFields(withoutIdeas, 9),
+      full: window.Store.validateLegacySourceRequiredFields(full, 9)
+    };
+  });
+  expect(proof.withoutIdeas.ok).toBe(false);
+  expect(proof.withoutIdeas.reason).toBe('missing-ideas');
+  expect(proof.full.ok).toBe(true);
+});
+
+// FINAL-M7 — v10 emission (04af26a) unchanged in domain shape from
+// v9. A v10 wrapper is validated with the same strict matrix as v9.
+test('FINAL-M7-V10-SHARES-V9-SHAPE — v10 rejected on missing bht; full-shape v10 accepted', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(() => {
+    const withoutBht = { money: { salary_net: 1 }, qatarVisit: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+                         telemetry: {}, todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [], logbook: [] };
+    const full = { money: { salary_net: 1 }, qatarVisit: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+                   bht: { habits: [], entries: [] }, telemetry: {},
+                   todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [], logbook: [] };
+    return {
+      withoutBht: window.Store.validateLegacySourceRequiredFields(withoutBht, 10),
+      full: window.Store.validateLegacySourceRequiredFields(full, 10)
+    };
+  });
+  expect(proof.withoutBht.ok).toBe(false);
+  expect(proof.withoutBht.reason).toBe('missing-bht');
+  expect(proof.full.ok).toBe(true);
+});
+
+// FINAL-M8 — v11 emission (8a1e374) unchanged in domain shape from
+// v9. A v11 wrapper with malformed bht substructure (habits not
+// array) is REJECTED via the same nested-shape guard used at v13.
+test('FINAL-M8-V11-MALFORMED-BHT-REJECTED — v11 bht object without habits array rejected', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(() => {
+    const malformed = { money: { salary_net: 1 }, qatarVisit: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+                        bht: { habits: 'not-array', entries: [] }, telemetry: {},
+                        todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [], logbook: [] };
+    return window.Store.validateLegacySourceRequiredFields(malformed, 11);
+  });
+  expect(proof.ok).toBe(false);
+  expect(proof.reason).toBe('malformed-bht-substructure');
+});
+
+// FINAL-M9 — v7 (one below the SUPPORTED boundary) FAILS CLOSED
+// even if the source shape would otherwise pass a later matrix.
+// Boundary evidence: SCHEMA_VERSION bump 6→7 predates telemetry
+// introduction at 85e1d22.
+test('FINAL-M9-V7-FAIL-CLOSED-BOUNDARY — v7 fails closed regardless of shape', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(() => {
+    const rich = { money: { salary_net: 1 }, qatarVisit: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+                   bht: { habits: [], entries: [] }, telemetry: {},
+                   todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [], logbook: [] };
+    return window.Store.validateLegacySourceRequiredFields(rich, 7);
+  });
+  expect(proof.ok).toBe(false);
+  expect(proof.reason).toBe('version-unsupported');
+});
+
+// FINAL-M10 — evaluateCandidateWrapper end-to-end: a full-shape v11
+// wrapper migrates to canonical v14 and preserves a sentinel salary
+// value across the whole v11→v14 chain (no default-fill of missing
+// domains at migrate time hides an emission gap).
+test('FINAL-M10-V11-FULL-SHAPE-MIGRATES-TO-CANONICAL-V14 — sentinel salary preserved, canonical', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(() => {
+    const data = { money: { salary_net: 24680, expenses: {}, usd_rate: 88, save_target: 55000 },
+                   qatarVisit: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+                   bht: { habits: [], entries: [] }, telemetry: {},
+                   todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [], logbook: [] };
+    const ev = window.Store.evaluateCandidateWrapper({ version: 11, data });
+    return {
+      classification: ev.classification, canonical: ev.canonical,
+      migratedSalary: ev.data && ev.data.money && ev.data.money.salary_net
+    };
+  });
+  expect(proof.canonical).toBe(true);
+  expect(proof.migratedSalary).toBe(24680);
 });

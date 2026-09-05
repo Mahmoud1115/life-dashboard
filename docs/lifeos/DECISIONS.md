@@ -1840,37 +1840,43 @@ the strict rule applies only where cross-tab identity is required.
 Proven by `FINAL-L1-LEGACY-CONVERSION-NO-LOCK-FAILS-CLOSED` and
 `FINAL-L2-RECOVERY-NO-LOCK-FAILS-CLOSED`.
 
-#### BINDING-3 (A): Frozen Historical-Version Matrix
+#### BINDING-3 (A): Frozen Historical-Version Matrix — evidence-backed (Round-2 remediation)
 
-Git-log evidence attests emission at specific commits:
+Pre-Push Review Round-2 rejected the earlier "scope-limited"
+formulation. The matrix below is now fully evidence-backed: every
+`SUPPORTED` row cites the exact commit that bumped `SCHEMA_VERSION`
+to that value, the code path that emitted `{version:N, data:state}`
+at that commit, and the `defaultState()` shape written on that
+commit's disk. Anything below the earliest confirmed emission of
+the current-generation domain set FAILS CLOSED with reason
+`version-unsupported`. The permissive `validate()`-floor path for
+v8..v11 has been eliminated.
 
-| Version | Confirmed by                                   | Emitted defaults extended |
-|---------|-----------------------------------------------|---------------------------|
-| ≤5      | (no confirmed emission in this branch)         | fail closed               |
-| 6       | (implied by pre-bht v6 code; no artifact)      | fail closed               |
-| 7       | commit 5313b61 (2026-06-14) added bht          | fail closed (no artifact) |
-| 8       | commit 85e1d22 (2026-06-14) — v7→v8 telemetry  | + telemetry (confirmed)   |
-| 9       | (interpolated: ideas array added)              | + ideas                   |
-| 10-11   | (interpolated: about touch-ups only)           | (same as v9)              |
-| 12      | commit 521fe70 (2026-08-25) — logbook envelope | + logbook envelope        |
-| 13      | commit 94254c4 (2026-08-25) — B0 wrapper       | + integer revision        |
-| 14      | commit 4ead699 (2026-08-29) — PRV-0.5 R2       | + records subtree + marker|
+Every referenced SHA is an ancestor of `origin/main`
+(`git merge-base --is-ancestor <sha> origin/main` returns 0).
+
+| Version | Emitted? | Evidence (commit / file / code) | Required source shape | Legal migration path | Test evidence | Disposition |
+|---|---|---|---|---|---|---|
+| v0..v3 | UNPROVEN | pre-history; no `SCHEMA_VERSION` constant | — | — | (`version < 8` branch) | **FAIL CLOSED** (`version-unsupported`) |
+| v4..v7 | UNPROVEN | pre-Phase-1 iterations; `defaultState()` predates bht (v7)/telemetry (v8)/ideas (v9); the current-generation domain set has no confirmed persisted artifact at v<8 | — | — | FINAL-M1, FINAL-M9 | **FAIL CLOSED** (`version-unsupported`) |
+| v8 | YES | `85e1d22` (2026-06-14) "core.js: additive v7 → v8 schema migration — add telemetry slice" — `core.js:11` bumps `SCHEMA_VERSION` 7→8; `core.js:110` seeds `telemetry` in `defaultState()`; `core.js:282-283` emits `JSON.stringify({version: SCHEMA_VERSION, data: state})` unchanged | money{salary_net:number}, qatarVisit obj, career obj, easa obj, about obj, sbTasks obj, goals obj, telemetry obj, bht{habits:array, entries:array}, todayFocus[], timeline[], reviews[], decisions[], apartments[], logbook (array-or-object) | v8 → v9 → v10 → v11 → v12 → v13 → v14 (steps in `core.js:migrateUp`) | FINAL-M2, FINAL-M5 | **SUPPORTED** |
+| v9 | YES | `cea0dab` (2026-06-15) "Add Ideas section — parking lot for what's next" — `core.js:11` bumps 8→9; `core.js:115` seeds `ideas: []` in `defaultState()`; migrateUp v8→v9 seeds `s.ideas = []`; write path unchanged | v8 shape + `ideas: array` | v9 → v10 → … → v14 | FINAL-M6, FINAL-M10 | **SUPPORTED** |
+| v10 | YES | `04af26a` (2026-06-19) "About You: update with everything added since the original build" — `core.js:11` bumps 9→10; migrateUp v9→v10 touches `s.about.lastUpdated` only, no domain added | v9 shape (unchanged domain set) | v10 → v11 → … → v14 | FINAL-M7 | **SUPPORTED** |
+| v11 | YES | `8a1e374` (2026-06-19) "About: fix date — 19 June, not 15" — `core.js:11` bumps 10→11; migrateUp v10→v11 touches `s.about.lastUpdated` only, no domain added | v9 shape (unchanged domain set) | v11 → v12 → v13 → v14 | FINAL-H6, FINAL-M8, FINAL-M10 | **SUPPORTED** |
+| v12 | YES | `521fe70` (2026-08-25) "feat(logbook): add canonical mirror phase A" — `core.js` bumps 11→12; introduces logbook envelope + records mirror in defaultState | v9 shape (logbook now array-or-object envelope; records subtree migrates in at v13→v14, not required in source) | v12 → v13 → v14 | FINAL-H1..H4, FINAL-H8, FINAL-M3 | **SUPPORTED** |
+| v13 | YES | `94254c4` (2026-08-25) "feat(store): B0 durability protocol (schema-13 wrapper + CAS + coordinator)" — wrapper adds integer `revision` + `committedAt`; data shape unchanged from v12 | v12 shape; wrapper-level integer `revision` enforced by `parseWrapperRaw` (not this validator) | v13 → v14 | FINAL-H5, FINAL-H7 | **SUPPORTED** |
+| v14 | YES | `4ead699` (2026-08-29) "feat(prv-0.5-r2): schema 14 migration marker + durable-verified hydration" — adds records subtree + `meta.recordsMigration`. Current `SCHEMA_VERSION`. | current — validated by `validateFullStateCanonical`, not this legacy validator | (identity; no migration) | validateFullStateCanonical tests | **SUPPORTED** (current) |
+| v>SCHEMA_VERSION | UNPROVEN | future | — | — | `STORE_UNSUPPORTED_FUTURE_SCHEMA` blocker tests (PRV-R5-P1-5-*, PRV-R7-T19/T20) | **FAIL CLOSED** (`version-unsupported-future` at wrapper parse) |
 
 Enforcement in `validateLegacySourceRequiredFields`:
-- **v<8:** `{ ok:false, reason:'version-unsupported' }`. FAIL CLOSED.
-- **v8..v11:** runtime `validate()` floor only (money + salary_net +
-  qatarVisit). This is the deliberate SCOPE limit: the per-version
-  emission set can be interpolated from `migrateUp`'s introduction
-  timeline but is not directly attested by persisted-artifact
-  evidence in this branch. Existing test fixtures use v11 minimal
-  shape for slice-focused tests; upgrading them to strict
-  per-version shape is deferred as a follow-up documented here.
-- **v12..v13:** strict per-version matrix (money, qatarVisit, career,
-  easa, about, sbTasks, goals, bht {habits, entries}, telemetry,
-  todayFocus, timeline, reviews, decisions, ideas, apartments,
-  logbook array-or-object, money.salary_net number).
+- `version < 8` → `{ ok:false, reason:'version-unsupported', version }`. FAIL CLOSED (FINAL-M1, FINAL-M9).
+- `version >= 8` → strict `HISTORICAL_SCHEMA_REQUIREMENTS[min(version, 13)]` applied to `data`: every required object present as a non-null non-array object, every required array present as an actual array, and the nested shape gate enforces `bht.habits`, `bht.entries`, `logbook` (array-or-object), and `money.salary_net` (number). Any miss fails closed with `missing-<domain>` or `malformed-<path>` or `malformed-bht-substructure`.
+- `getHistoricalRequirements(v)` returns the frozen matrix row for `v ∈ [8, SCHEMA_VERSION)` and `null` outside that range.
 
-Proven by FINAL-M1..M4 + all FINAL-H1..H8 from addendum #7.
+Proven by:
+- SUPPORTED rows: FINAL-M2 (v8 accepted / minimal rejected), FINAL-M5 (v8 telemetry-required), FINAL-M6 (v9 ideas-required), FINAL-M7 (v10 shares v9 shape), FINAL-M8 (v11 malformed-bht), FINAL-M10 (v11 full-shape migrates to canonical v14 with sentinel salary preserved), FINAL-H1..H8 (v12/v13 strict matrix + sentinel preservation), FINAL-H6 (v11 full-shape accepted / minimal rejected).
+- FAIL-CLOSED rows: FINAL-M1 (v7 rejected), FINAL-M9 (v7 boundary — rejected even for shape that would otherwise pass a later matrix).
+- Matrix exposure: FINAL-M4 (v8..v13 return non-null; v7 and v14 return null).
 
 #### BINDING-3 (B): Frozen Blocker/Recovery Matrix
 
@@ -1915,11 +1921,104 @@ not by hardening it. Every other closure retained.
   both reread + byte-match before advancing memory/snapshot/listener
   state. Proven by FINAL-D1..D5, FINAL-Q4..Q7, all commit-failure
   paths in the PRV suite.
-- **BINDING-3** (frozen matrices): **PASS with documented scope
-  limit**. Historical matrix strict for v12-v13, permissive for
-  v8-v11 (runtime floor), fail-closed for <v8. Blocker/recovery
-  matrix documented above with per-row test citations.
+- **BINDING-3-A** (frozen Historical-Version Matrix): **PASS**.
+  Every supported historical version is anchored to a concrete
+  emission commit (see BINDING-3-A matrix above). Interpolated
+  SUPPORTED rows have been eliminated. `v < 8` fails closed with
+  `version-unsupported`; `v >= 8` uses the strict per-version
+  matrix — the permissive runtime-floor path is gone.
+- **BINDING-3-B** (frozen Blocker/Recovery Matrix): **PASS**.
+  Documented in the table above with per-row test citations.
 
 **Date:** 2026-09-06 (Pre-Push Amendment on branch
 `claude/prv-0-5-final-closure`; base commit
 `8a03ac8837a8c11d683a19ab753aabb3a7f11858`).
+
+### ADR-015 addendum #9 (2026-09-06) — Pre-Push Review Round-2 remediation: evidence-backed Historical-Version Matrix (BINDING-3-A closure)
+
+**Trigger.** ChatGPT Pre-Push Review Round-2
+(`93-PRV-0.5-PRE-PUSH-REVIEW-R2-HISTORICAL-MATRIX-CLOSURE.md`)
+rejected the addendum #8 formulation of BINDING-3-A: the matrix
+still carried interpolated `SUPPORTED` rows for v9/v10/v11 and a
+permissive `validate()`-floor path for v8..v11 that did not meet
+the frozen rule "historical support must be derived from actual
+repository-emitted schemas". The Round-2 authorization
+(`94-PRV-0.5-ROUND2-REMEDIATION-AUTHORIZATION.md`) required
+extraction of concrete emission evidence per version or
+fail-closed for anything unproven.
+
+**What was extracted.** `git log --pickaxe-regex -S
+"SCHEMA_VERSION\s*=\s*[0-9]+"` returned every commit that mutated
+the constant. For each of v8..v11 we then verified:
+
+1. The exact commit that bumped `SCHEMA_VERSION` (`core.js:11`).
+2. That the write path `JSON.stringify({version: SCHEMA_VERSION, data: state})` (currently at ~`core.js:282-283` at each of those SHAs) was still present and unchanged, so that build DID emit `{version:N, data:state}` to `localStorage[STATE_KEY]` on any user's disk.
+3. The `defaultState()` shape at that commit (evidence of what the emitted `data` contained).
+4. That the commit is an ancestor of `origin/main`.
+
+Result: every version v8..v14 has direct emission evidence (see
+BINDING-3-A matrix above). Nothing below v8 has any confirmed
+emission of the current-generation domain set, so v<8 remains
+FAIL CLOSED.
+
+**Behavior change.**
+
+`validateLegacySourceRequiredFields` in `core.js` now:
+
+- Rejects `version < 8` with `version-unsupported`.
+- Applies the strict `HISTORICAL_SCHEMA_REQUIREMENTS[min(v, 13)]`
+  matrix for every `version >= 8` — no permissive floor anywhere.
+
+`HISTORICAL_SCHEMA_REQUIREMENTS` gains rows for v8, v9, v10, v11
+(all reusing the same requiredObjects set and either v8's
+requiredArrays for v8, or the v9+ set that also requires `ideas`).
+`getHistoricalRequirements(v)` now returns the row for
+`v ∈ [8, SCHEMA_VERSION)`.
+
+`_migration-legacy-records.js` is unchanged; the migrateUp chain
+still spans v8→…→v14 and no legitimate emission path was
+regressed.
+
+**Impact on existing tests.** Six test files carried minimal
+`{version: 11, data: {money:{salary_net}, qatarVisit:{}}}` legacy
+seeds that were valid under the old permissive floor but are
+UNPROVEN wrappers under the strict matrix (this repository never
+emitted them). Those seeds were rewritten to the full v11
+defaultState shape:
+
+- `tests/import-restore.spec.js` — introduces
+  `_fullLegacyV11Data(salary)` helper; `minState()` and all four
+  other minimal-v11 usages route through it.
+- `tests/logbook-canonicalization.spec.js` — L20, L21, L40 seeds
+  extended.
+- `tests/store-durability.spec.js:793` — `_fullLegacyV11` seed.
+- `tests/finance-bridge.spec.js` — `seedFinance` writes full-shape
+  v11.
+- `tests/prv-preservation.spec.js` — FINAL-H6 and FINAL-M2 flipped
+  from "minimal accepted" to "full-shape accepted AND minimal
+  rejected"; FINAL-M4 updated to expose v8..v13 (not just v12-v13).
+
+**New tests.** FINAL-M5 (v8 telemetry-required), FINAL-M6 (v9
+ideas-required), FINAL-M7 (v10 shares v9 shape / missing-bht
+rejected), FINAL-M8 (v11 malformed-bht rejected), FINAL-M9 (v7
+FAIL-CLOSED boundary), FINAL-M10 (v11 full-shape migrates to
+canonical v14 with 24680 sentinel salary preserved).
+
+**Preservation.** The atomic legacy conversion architecture,
+BINDING-1 (NO LOCK = FAIL CLOSED), BINDING-2 (one durable-write
+contract), BINDING-3-B (blocker/recovery matrix), quarantine
+retention, revision-regression recovery, read-failure fail-closed
+semantics, malformed-Logbook rejection, versionless-primary
+rejection, and every R7 P1/P2 closure remain intact. No transition-auth
+rebinding was reintroduced.
+
+**Effect on binding closure summary:**
+
+- BINDING-1: PASS (unchanged from addendum #8).
+- BINDING-2: PASS (unchanged from addendum #8).
+- BINDING-3-A: **PASS** (was PASS-with-scope-limit in addendum #8).
+- BINDING-3-B: PASS (unchanged from addendum #8).
+
+**Date:** 2026-09-06 (Round-2 remediation on branch
+`claude/prv-0-5-final-closure`; parent commit
+`7829009965bb41add17640766e4ee0f114e8cc78`). Local only, unpushed.

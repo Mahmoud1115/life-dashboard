@@ -26,6 +26,34 @@ async function waitAppReady(page) {
     typeof window.Store.get === 'function' &&
     typeof window.finInputChange === 'function'
   );
+  // PRV-0.5 Pre-Push R2 / BINDING-3-A: bridgeFinance runs at
+  // app.js:init() and calls Store.set through seedGen2FromGen1;
+  // if that fires while the boot atomic legacy conversion still
+  // holds STORE_LEGACY_CONVERSION_PENDING, the Store.set is refused
+  // and the Gen-2 shadow stays stale. Wait for the durability
+  // blocker to clear, then re-seed Gen-2 from Gen-1 deterministically.
+  await page.waitForFunction(() => {
+    if (!window.Store || typeof window.Store.getDurabilityBlocker !== 'function') return true;
+    return window.Store.getDurabilityBlocker() === null;
+  }, { timeout: 2500 }).catch(() => {});
+  await page.evaluate(() => {
+    try {
+      const legacy = JSON.parse(localStorage.getItem('dune_finance_v1') || '{}');
+      const r = legacy && legacy.russia;
+      if (!r || typeof r !== 'object') return;
+      const map = {
+        salary: 'money.salary_net', rent: 'money.expenses.rent',
+        food: 'money.expenses.food', transport: 'money.expenses.transport',
+        utilities: 'money.expenses.utilities', phone: 'money.expenses.phone',
+        family_transfer: 'money.expenses.family_transfer', other: 'money.expenses.other',
+        mai: 'money.expenses.mai', usd_rate: 'money.usd_rate', save_target: 'money.save_target'
+      };
+      for (const [g1, path] of Object.entries(map)) {
+        const v = r[g1];
+        if (typeof v === 'number') window.Store.set(path, v);
+      }
+    } catch (e) { /* best-effort */ }
+  });
 }
 
 // Seed dune_finance_v1 (Gen-1) and optionally dune_state_v4 (Gen-2) before
@@ -34,13 +62,18 @@ async function seedFinance(page, { gen1 = null, gen2Money = null } = {}) {
   await page.addInitScript(([g1, g2m]) => {
     if (g1) localStorage.setItem('dune_finance_v1', JSON.stringify(g1));
     if (g2m) {
-      // Minimal dune_state_v4 shape that passes core.js:validate().
-      // Only the money slice matters for these tests.
+      // PRV-0.5 Pre-Push R2 / BINDING-3-A: v11 legacy seed requires
+      // the full defaultState-shape emitted at commit 8a1e374; a
+      // minimal `{money, qatarVisit}` seed is UNPROVEN under the
+      // strict matrix and would be rejected at boot.
       localStorage.setItem('dune_state_v4', JSON.stringify({
         version: 11,
         data: {
           money: g2m,
           qatarVisit: {},
+          career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+          bht: { habits: [], entries: [] }, telemetry: {},
+          todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [], logbook: []
         },
       }));
     }

@@ -979,79 +979,93 @@
   // wins. Schemas prior to v12 predate the money slice and are not
   // required to carry it; from v12 onward the money slice was written
   // and is required.
-  // PRV-0.5 R7 (Codex Round-6 P1-6, INV-7): historical source
-  // validation is version-specific and runs BEFORE migrateUp default-
-  // fill. A candidate whose declared source version required a domain
-  // to be present cannot become valid because migrateUp inserts a
-  // default in that domain's place.
+  // PRV-0.5 Pre-Push Review Round-2 (BINDING-3-A closure): the
+  // Historical-Version Matrix is now fully evidence-backed. Every
+  // SUPPORTED row is anchored to a concrete emission commit; anything
+  // that cannot be so anchored FAILS CLOSED with reason
+  // `version-unsupported`. Interpolated / runtime-floor acceptance
+  // has been eliminated.
   //
-  // Required-domain floors derived from this repo's own migrateUp
-  // history (see core.js `migrateUp`):
-  //   money.salary_net (number)  → introduced ≤ v11, required from v12+
-  //   qatarVisit (object)        → present from earliest tracked, required v12+
-  //   career (object)            → v5+ additive; required v13+
-  //   easa (object)              → v4+; required v13+
-  //   logbook envelope OR array  → v11 legacy array; v12+ envelope; both accepted at v12+
-  //   bht (object)               → v7+; required v13+
-  //   telemetry (object)         → v8+; required v13+
-  //   ideas (array)              → v9+; required v13+
-  //   apartments (array)         → v6+; required v13+
-  //   about (object)             → v2+; required v13+
-  //   sbTasks (object)           → v6+; required v13+
-  //   reviews (array)            → v3+; required v13+
-  //   decisions (array)          → v3+; required v13+
-  //   timeline (array)           → v1+; required v13+
-  //   todayFocus (array)         → v1+; required v13+
-  //   goals (object)             → v1+ / v14-records-goals; required v13 as object
-  // records subtree + meta.recordsMigration are v14-only — NEVER
-  // required in a historical source.
-  // PRV-0.5 Final Closure (INV-I, R7-P1-08): version-indexed source
-  // requirements matrix. Rather than ad-hoc v12 / v13 branches, the
-  // requirements are DERIVED FROM migrateUp's own field-introduction
-  // timeline in this file:
-  //   - money, qatarVisit               — validate() gate (all versions)
-  //   - career, about, timeline,
-  //     reviews, decisions, todayFocus  — default-filled from v1 onward
-  //     but were also emitted by every real production wrapper the
-  //     app ever wrote (initialLoad has always guaranteed them via
-  //     defaultState); require from v6 (oldest we support).
-  //   - bht {habits, entries}           — introduced v6→v7 (line 632)
-  //   - telemetry                       — introduced v7→v8 (line 634)
-  //   - ideas                           — introduced v8→v9 (line 643)
-  //   - logbook                         — envelope introduced v11→v12
-  //                                        (line 652); v11 legacy shape
-  //                                        is the flat Tracker array,
-  //                                        also acceptable pre-migration
-  //   - integer revision                — required at wrapper level v13+
-  //                                        (enforced in parseWrapperRaw)
-  //   - records / recordsMigration      — v14 (current schema)
+  // Emission evidence (SHAs are ancestors of origin/main):
+  //   v0..v3   — pre-history. No SCHEMA_VERSION constant. FAIL CLOSED.
+  //   v4..v7   — pre-Phase-1 iterations; defaultState shape predates
+  //              bht (v7)/telemetry (v8)/ideas (v9). Not a supported
+  //              legacy import target. FAIL CLOSED.
+  //   v8       — 85e1d22 (2026-06-14) "core.js: additive v7 → v8
+  //              schema migration — add telemetry slice". core.js:11
+  //              bumps SCHEMA_VERSION 7→8; core.js:110 seeds
+  //              telemetry:{...} in defaultState; write path unchanged
+  //              at core.js:282-283 emits
+  //              JSON.stringify({version: SCHEMA_VERSION, data: state})
+  //              — every genuine v8 emission carries the full
+  //              defaultState shape below.
+  //   v9       — cea0dab (2026-06-15) "Add Ideas section — parking
+  //              lot for what's next". core.js:11 bumps 8→9;
+  //              defaultState adds `ideas: []` (core.js:115);
+  //              migrateUp v8→v9 seeds `s.ideas = []`.
+  //   v10      — 04af26a (2026-06-19) "About You: update with
+  //              everything added since the original build".
+  //              core.js:11 bumps 9→10; no domain added — migrateUp
+  //              v9→v10 only touches s.about.lastUpdated string.
+  //              Emission shape = v9 shape.
+  //   v11      — 8a1e374 (2026-06-19) "About: fix date — 19 June,
+  //              not 15". core.js:11 bumps 10→11; migrateUp v10→v11
+  //              only touches s.about.lastUpdated string. Emission
+  //              shape = v9 shape.
+  //   v12      — 521fe70 (2026-08-25) "feat(logbook): add canonical
+  //              mirror phase A". core.js bumps 11→12; introduces
+  //              logbook envelope + records mirror in defaultState.
+  //   v13      — 94254c4 (2026-08-25) "feat(store): B0 durability
+  //              protocol (schema-13 wrapper + CAS + coordinator)".
+  //              Wrapper gains integer `revision` + committedAt.
+  //   v14      — 4ead699 (2026-08-29) "feat(prv-0.5-r2): schema 14
+  //              migration marker + durable-verified hydration".
+  //              Adds records subtree + meta.recordsMigration marker.
+  //              (Current SCHEMA_VERSION.)
   //
-  // v0..v5 are not supported as legacy sources. If a real disk carries
-  // a v<6 wrapper, we fail closed (per Final Closure §7 Q1) — the user
-  // must recover via the explicit legacy-only import path
-  // (deriveStateFromLegacy) rather than allowing default-fill of an
-  // ambiguous ancient shape.
-  // v6..v11: only the runtime validate() floor (money+salary_net,
-  // qatarVisit) is enforced pre-migration. Older wrappers in this
-  // range predate the codified per-version emission guarantees and
-  // we accept them for migration to preserve backward compatibility
-  // with historical fixtures. v12+ carries the strict per-version
-  // requirements Codex P1-08 identified.
+  // Required-shape derivation for v8..v11: at each of those commits,
+  // defaultState() seeded the same fifteen top-level domains (money,
+  // qatarVisit, todayFocus, goals, career, easa, logbook, reviews,
+  // decisions, timeline, about, apartments, sbTasks, bht, telemetry,
+  // meta) plus — from v9 onward — `ideas`. initialLoad() at those
+  // SHAs ran migrateUp + a defaultState merge before the very next
+  // write, so any genuine v8..v11 wrapper on disk carries all fifteen
+  // (or sixteen at v9+) domains. A minimal `{money, qatarVisit}`
+  // wrapper was never emitted by this repository at any tag and is
+  // classified as UNPROVEN → fail closed.
+  //
+  // For v12..v13 the emission set additionally includes the logbook
+  // envelope shape (v12) and the wrapper-level integer revision (v13
+  // — enforced in parseWrapperRaw, not here).
+  //
+  // records + meta.recordsMigration are v14-only and must NEVER be
+  // required in a v<14 historical source (they would default-fill
+  // downstream at migrateUp v13→v14, which is the legitimate
+  // migration path).
+  const _V8_REQUIRED_OBJECTS = ['money', 'qatarVisit', 'career', 'easa', 'about', 'sbTasks', 'goals', 'bht', 'telemetry'];
+  const _V8_REQUIRED_ARRAYS  = ['todayFocus', 'timeline', 'reviews', 'decisions', 'apartments'];
+  const _V8_NESTED = {
+    'bht.habits': 'array', 'bht.entries': 'array',
+    'logbook': 'array-or-object',   // v8..v11 emit legacy array; v12+ envelope object also acceptable
+    'money.salary_net': 'number'
+  };
+  const _V9_REQUIRED_ARRAYS  = _V8_REQUIRED_ARRAYS.concat(['ideas']);
   const HISTORICAL_SCHEMA_REQUIREMENTS = {
-    12: { requiredObjects: ['money', 'qatarVisit', 'career', 'easa', 'about', 'sbTasks', 'goals', 'bht', 'telemetry'],
-          requiredArrays:  ['todayFocus', 'timeline', 'reviews', 'decisions', 'ideas', 'apartments'],
-          nested: {
-            'bht.habits': 'array', 'bht.entries': 'array',
-            'logbook': 'array-or-object',   // envelope introduced v12; legacy array still tolerated
-            'money.salary_net': 'number'
-          } },
-    13: { requiredObjects: ['money', 'qatarVisit', 'career', 'easa', 'about', 'sbTasks', 'goals', 'bht', 'telemetry'],
-          requiredArrays:  ['todayFocus', 'timeline', 'reviews', 'decisions', 'ideas', 'apartments'],
-          nested: {
-            'bht.habits': 'array', 'bht.entries': 'array',
-            'logbook': 'array-or-object',
-            'money.salary_net': 'number'
-          } }
+    // v8 (85e1d22): telemetry introduced; ideas not yet present.
+    8:  { requiredObjects: _V8_REQUIRED_OBJECTS, requiredArrays: _V8_REQUIRED_ARRAYS, nested: _V8_NESTED },
+    // v9 (cea0dab): ideas array introduced. Same domains through v11.
+    9:  { requiredObjects: _V8_REQUIRED_OBJECTS, requiredArrays: _V9_REQUIRED_ARRAYS, nested: _V8_NESTED },
+    10: { requiredObjects: _V8_REQUIRED_OBJECTS, requiredArrays: _V9_REQUIRED_ARRAYS, nested: _V8_NESTED },
+    11: { requiredObjects: _V8_REQUIRED_OBJECTS, requiredArrays: _V9_REQUIRED_ARRAYS, nested: _V8_NESTED },
+    // v12 (521fe70): same domain floor; logbook may now be an envelope
+    // object OR the legacy Tracker array. Emission adds records mirror
+    // but that domain migrates in at v13→v14, so we do not require it
+    // in the pre-migration source.
+    12: { requiredObjects: _V8_REQUIRED_OBJECTS, requiredArrays: _V9_REQUIRED_ARRAYS, nested: _V8_NESTED },
+    // v13 (94254c4): wrapper-level integer revision + committedAt.
+    // The data-shape requirement is unchanged from v12; the wrapper-
+    // level integer revision is enforced by parseWrapperRaw upstream.
+    13: { requiredObjects: _V8_REQUIRED_OBJECTS, requiredArrays: _V9_REQUIRED_ARRAYS, nested: _V8_NESTED }
   };
   function _checkNestedShape(data, spec) {
     for (const path of Object.keys(spec)) {
@@ -1083,22 +1097,17 @@
     if (!data.money || typeof data.money !== 'object' || Array.isArray(data.money)) return { ok: false, reason: 'missing-money' };
     if (typeof data.money.salary_net !== 'number') return { ok: false, reason: 'missing-money-salary_net' };
     if (!data.qatarVisit || typeof data.qatarVisit !== 'object' || Array.isArray(data.qatarVisit)) return { ok: false, reason: 'missing-qatarVisit' };
-    // PRV-0.5 Pre-Push Amendment §6 (evidence-based historical
-    // matrix): git-log evidence confirms `{version: N, data:{...}}`
-    // emission at v8 (85e1d22, 2026-06-14) and v12 (521fe70,
-    // 2026-08-25), plus the v13 wrapper with integer revision at
-    // 94254c4 (2026-08-25) and v14 with records subtree at 4ead699
-    // (2026-08-29). v0..v7 are BEFORE bht was introduced (5313b61)
-    // — no confirmed emission with the current defaultState shape
-    // exists in this branch's history. Fail closed for <v8. v8..v11
-    // are accepted at the runtime validate() floor (money+salary_net
-    // + qatarVisit) because pre-B0 wrappers wrote a minimal
-    // {version, data} envelope; the per-version emission set can be
-    // interpolated from migrateUp's field-introduction timeline but
-    // is not directly attested by a persisted-artifact fixture.
-    // v12+ carries the strict Codex P1-08 requirements.
+    // PRV-0.5 Pre-Push Review Round-2 (BINDING-3-A closure): every
+    // supported historical version is anchored to a concrete
+    // emission commit (see HISTORICAL_SCHEMA_REQUIREMENTS header),
+    // and its required source shape is the strict evidence-backed
+    // matrix. Anything below v8 predates the earliest attested
+    // emission of the current-generation domain set and FAILS
+    // CLOSED with `version-unsupported`. There is no permissive
+    // runtime-floor path for v8..v11 any more — a minimal
+    // `{money, qatarVisit}` wrapper was never emitted by this
+    // repository at any tag and is classified as UNPROVEN.
     if (version < 8) return { ok: false, reason: 'version-unsupported', version };
-    if (version < 12) return { ok: true };
     const req = HISTORICAL_SCHEMA_REQUIREMENTS[Math.min(version, 13)];
     if (!req) return { ok: false, reason: 'no-requirements-matrix', version };
     for (const d of req.requiredObjects) {
@@ -1121,7 +1130,7 @@
   }
   function getHistoricalRequirements(version) {
     if (typeof version !== 'number' || !Number.isInteger(version)) return null;
-    if (version < 12 || version >= SCHEMA_VERSION) return null;
+    if (version < 8 || version >= SCHEMA_VERSION) return null;
     return HISTORICAL_SCHEMA_REQUIREMENTS[Math.min(version, 13)] || null;
   }
   // PRV-0.5 R7 (Codex Round-6 P1-3, INV-4): COMPLETE canonical
