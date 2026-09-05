@@ -1765,3 +1765,161 @@ New FINAL-* groups:
 **Date:** 2026-09-05 (PRV-0.5 Final Closure Campaign on branch
 `claude/prv-0-5-final-closure`; base commit
 `8a03ac8837a8c11d683a19ab753aabb3a7f11858`).
+
+### ADR-015 addendum #8 (2026-09-06) — Pre-Push Amendment: atomic legacy conversion + frozen matrices
+
+The Codex R7 remediation addendum (#7) closed the nine P1 + three P2
+findings by hardening the R7 rebind architecture. The pre-push review
+of the resulting closure (`6028c59da811552daf1a647db8c46026521b47ba`)
+rejected that as "hardening in the wrong direction": the Stage-1
+amendment requires ELIMINATION of the rebind architecture in favour
+of an ATOMIC legacy conversion, plus explicit lock-required
+enforcement (BINDING-1) and two frozen matrices (BINDING-3).
+Addendum #8 records the resulting refactor.
+
+**Base:** R7 exact `8a03ac8837a8c11d683a19ab753aabb3a7f11858`,
+following addendum #7's local-only closure `6028c59d…`.
+**Branch:** `claude/prv-0-5-final-closure`.
+
+#### Atomic legacy conversion (§2 of the pre-push review)
+
+Hydration is now a SINGLE full-state transaction rather than a
+multi-step sequence of ordinary `Store.set` calls. The flow:
+
+1. `initialLoad` reads the persisted raw wrapper.
+2. If `parsed.version < SCHEMA_VERSION`, `initialLoad` returns
+   BOTH a legacy `_transitionAuth` bound to the exact raw bytes AND a
+   `STORE_LEGACY_CONVERSION_PENDING` durability blocker. The blocker
+   REFUSES every ordinary `Store.set` / `Store.update` /
+   `commitLocked` write (the existing guard at core.js:2148/2187/2247)
+   — there is NO durable current-schema `unmigrated` operating
+   state in which normal writes continue.
+3. `hydratePreservationRecordsOnce()` assembles a fully-migrated
+   candidate in memory (from `Store.get()` + `_buildHydratedRecords`
+   seed + `status='migrated'` marker) and submits it via
+   `beginFullStateTransaction` + `commitFullStateWrapper(token,
+   candidate, 'legacy-conversion', { legacyConversion: true })` +
+   `endFullStateTransaction`.
+4. Under the exclusive Web Lock inside the coordinator,
+   `commitFullStateWrapper` rereads the disk raw, requires it to
+   byte-match `_transitionAuth.sourceRawBytes` (identity check),
+   validates the historical source against `HISTORICAL_SCHEMA_REQUIREMENTS`,
+   validates the current-schema candidate against
+   `validateFullStateCanonical`, writes ONCE, rereads the durable
+   primary, requires byte-match with the payload, classifies
+   authority as `AUTHORITATIVE_MIGRATED`, and only then advances
+   memory + clears the blocker + consumes the auth.
+5. Failure at any step: no primary mutation OR (if setItem ran)
+   returns `retainedEvidenceKey` and leaves the blocker intact.
+   Retry re-runs the atomic conversion; the auth is still valid
+   because `baseWrapperRaw` was never advanced.
+
+The R7 rebind machinery (`authWasValidAtPreWrite` gating the
+`_transitionAuth.sourceRawBytes = baseWrapperRaw` rebind in
+`commitLocked`) is removed entirely — under the atomic model
+ordinary CAS commits during pending legacy conversion cannot run,
+so there is no intermediate state to reconcile.
+
+`adoptExternal` now also clears `STORE_LEGACY_CONVERSION_PENDING`
+when the adopted external wrapper is a valid v14
+`AUTHORITATIVE_MIGRATED` — this handles the concurrent-tabs case
+where Tab A's atomic commit resolves Tab B's blocker via the
+storage event.
+
+#### BINDING-1: NO LOCK = FAIL CLOSED
+
+`commitFullStateWrapper` re-evaluates `navigator.locks` availability
+at commit time for both `recovery` and `legacyConversion` modes.
+If unavailable (or the test hook `Store._testForceNoLock(true)` is
+set), the commit refuses immediately with `STORE_LOCK_UNAVAILABLE`
+— no primary mutation, no memory advance, blocker intact. Ordinary
+CAS commits still fall back to the same-tab serializer (their scope
+is bounded to same-tab consistency, not cross-tab identity), so
+the strict rule applies only where cross-tab identity is required.
+
+Proven by `FINAL-L1-LEGACY-CONVERSION-NO-LOCK-FAILS-CLOSED` and
+`FINAL-L2-RECOVERY-NO-LOCK-FAILS-CLOSED`.
+
+#### BINDING-3 (A): Frozen Historical-Version Matrix
+
+Git-log evidence attests emission at specific commits:
+
+| Version | Confirmed by                                   | Emitted defaults extended |
+|---------|-----------------------------------------------|---------------------------|
+| ≤5      | (no confirmed emission in this branch)         | fail closed               |
+| 6       | (implied by pre-bht v6 code; no artifact)      | fail closed               |
+| 7       | commit 5313b61 (2026-06-14) added bht          | fail closed (no artifact) |
+| 8       | commit 85e1d22 (2026-06-14) — v7→v8 telemetry  | + telemetry (confirmed)   |
+| 9       | (interpolated: ideas array added)              | + ideas                   |
+| 10-11   | (interpolated: about touch-ups only)           | (same as v9)              |
+| 12      | commit 521fe70 (2026-08-25) — logbook envelope | + logbook envelope        |
+| 13      | commit 94254c4 (2026-08-25) — B0 wrapper       | + integer revision        |
+| 14      | commit 4ead699 (2026-08-29) — PRV-0.5 R2       | + records subtree + marker|
+
+Enforcement in `validateLegacySourceRequiredFields`:
+- **v<8:** `{ ok:false, reason:'version-unsupported' }`. FAIL CLOSED.
+- **v8..v11:** runtime `validate()` floor only (money + salary_net +
+  qatarVisit). This is the deliberate SCOPE limit: the per-version
+  emission set can be interpolated from `migrateUp`'s introduction
+  timeline but is not directly attested by persisted-artifact
+  evidence in this branch. Existing test fixtures use v11 minimal
+  shape for slice-focused tests; upgrading them to strict
+  per-version shape is deferred as a follow-up documented here.
+- **v12..v13:** strict per-version matrix (money, qatarVisit, career,
+  easa, about, sbTasks, goals, bht {habits, entries}, telemetry,
+  todayFocus, timeline, reviews, decisions, ideas, apartments,
+  logbook array-or-object, money.salary_net number).
+
+Proven by FINAL-M1..M4 + all FINAL-H1..H8 from addendum #7.
+
+#### BINDING-3 (B): Frozen Blocker/Recovery Matrix
+
+Every blocker class in the Store, its allowed operations, source
+identity requirement, revision behavior, quarantine behavior,
+required lock, and post-failure/success states:
+
+| Blocker | Set by | Ordinary set/update/flush | Import (recovery mode) | Snapshot restore | Reset | Source identity | Revision after recovery | Quarantine | Lock | Post-failure state | Post-success state |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| STORE_LEGACY_CONVERSION_PENDING | initialLoad (raw version < SCHEMA_VERSION) | reject | permitted (recovery) | permitted (recovery) | permitted (recovery) | exact raw bytes match at commit time | monotonic > max(disk, known, knownAtIssue) | none | REQUIRED | blocker intact, disk unchanged | blocker cleared, disk = new v14 |
+| STORE_CORRUPT_AUTHORITATIVE_STATE | initialLoad (unparseable / migrateAndValidate fail); onStorage on non-parseable adoption; commitLocked / commitFullStateWrapper on corrupt disk under lock | reject | permitted (recovery) | permitted (recovery) | permitted (recovery) | exact raw bytes match | monotonic ≥ 1 (disk revision unknown, use known+1) | REQUIRED — writes verified quarantine of source bytes before primary; retained on all failure paths; retained on success | REQUIRED | blocker intact, disk unchanged, retainedEvidenceKey returned | blocker cleared, quarantine retained |
+| STORE_REVISION_REGRESSION | commitLocked / onStorage / endFullStateTransaction on disk revision < knownRevision | reject | permitted (recovery) | permitted (recovery) | permitted (recovery) | exact raw bytes match + blocker-class match + knownRevisionAtIssue captured | monotonic > max(disk, known, knownAtIssue) | none (source is parseable, no need) | REQUIRED | blocker intact | blocker cleared, revision advances |
+| STORE_STATE_CLEARED_EXTERNAL | commitLocked / onStorage when disk absent but baseWrapperRaw was non-null | reject | permitted (recovery) | permitted (recovery) | permitted (recovery) | absence identity check (auth.absent === true) | monotonic > max(disk, known, knownAtIssue) | none | REQUIRED | blocker intact, disk still absent | blocker cleared, disk = new v14 |
+| STORE_UNSUPPORTED_FUTURE_SCHEMA | parseWrapperRaw on parsed.version > SCHEMA_VERSION | reject | permitted (recovery) — user must confirm | permitted (recovery) | permitted (recovery) | exact raw bytes match | monotonic > max | none | REQUIRED | blocker intact | blocker cleared |
+| STORE_READ_FAILED | initialLoad / commitLocked / commitFullStateWrapper / endFullStateTransaction on getItem exception | reject | reject until readable | reject until readable | reject until readable | n/a (cannot read) | n/a | none | blocker intact | blocker cleared only once reads succeed and a full-state commit lands |
+| STORE_ORDINARY_DURABLE_VERIFY_FAILED | commitLocked when reread ≠ payload (silent no-op, altered bytes, truncated) | reject | permitted (recovery) | permitted (recovery) | permitted (recovery) | exact raw bytes match | monotonic > max | none (writes originated from ordinary CAS, not recovery-triggered mutation) | REQUIRED | blocker intact, pending ops retained, no memory / snapshot / listener advance | blocker cleared |
+| STORE_ORDINARY_DURABLE_READ_FAILED | commitLocked when post-write getItem throws | reject | reject until readable | reject until readable | reject until readable | n/a | n/a | none | blocker intact | blocker cleared once reads succeed |
+
+Proven by:
+- STORE_LEGACY_CONVERSION_PENDING → FINAL-A3, FINAL-L1, PRV-R2-DURABILITY-FAILURE, PRV-R2-CROSS-TAB-DURABILITY, PRV-R3-SIMULTANEOUS-TABS-P1-3
+- STORE_CORRUPT_AUTHORITATIVE_STATE → PRV-R6-P1-2-CORRUPT-DISK-*, PRV-R7-T10..T14, FINAL-Q4..Q7, FINAL-L2
+- STORE_REVISION_REGRESSION → FINAL-R1, FINAL-R2, FINAL-R4, FINAL-R5, FINAL-R7
+- STORE_STATE_CLEARED_EXTERNAL → PRV-R5-P1-1-* (existing coverage)
+- STORE_UNSUPPORTED_FUTURE_SCHEMA → PRV-R5-P1-5-*, PRV-R7-T19/T20
+- STORE_READ_FAILED → FINAL-R6
+- STORE_ORDINARY_DURABLE_VERIFY_FAILED → FINAL-D2, FINAL-D3, FINAL-D5
+- STORE_ORDINARY_DURABLE_READ_FAILED → covered by FINAL-D1's read-failure adjacency (same code path)
+
+#### R7 P1/P2 re-evaluation
+
+All addendum #7 closures preserved. R7-P1-01 is now closed by
+ELIMINATION of the rebind architecture (per pre-push review §7),
+not by hardening it. Every other closure retained.
+
+#### Binding gates
+
+- **BINDING-1** (NO LOCK = FAIL CLOSED): **PASS**. `commitFullStateWrapper`
+  refuses recovery + legacy-conversion commits at entry when
+  `navigator.locks` is unavailable. Proven by FINAL-L1, FINAL-L2.
+- **BINDING-2** (one durable-write contract): **PASS**. Ordinary CAS
+  (INV-B / addendum #7) and full-state (recovery + legacy conversion)
+  both reread + byte-match before advancing memory/snapshot/listener
+  state. Proven by FINAL-D1..D5, FINAL-Q4..Q7, all commit-failure
+  paths in the PRV suite.
+- **BINDING-3** (frozen matrices): **PASS with documented scope
+  limit**. Historical matrix strict for v12-v13, permissive for
+  v8-v11 (runtime floor), fail-closed for <v8. Blocker/recovery
+  matrix documented above with per-row test citations.
+
+**Date:** 2026-09-06 (Pre-Push Amendment on branch
+`claude/prv-0-5-final-closure`; base commit
+`8a03ac8837a8c11d683a19ab753aabb3a7f11858`).

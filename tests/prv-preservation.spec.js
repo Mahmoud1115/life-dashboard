@@ -313,7 +313,13 @@ test('PRV-R2-RESET-SAFETY — Reset produces empty migrated records; hydration d
 // the marker back via Store.set post-boot no longer applies under R6
 // (schema-14 unmigrated on disk without an active legacy-transition
 // capability is MALFORMED_CURRENT_SCHEMA — Codex Round-5 P1-1).
-test('PRV-R2-DURABILITY-FAILURE — Store.set failure keeps marker unmigrated; retry succeeds', async ({ page }) => {
+test('PRV-R2-DURABILITY-FAILURE — first-attempt commit failure keeps disk legacy; same-boot retry converges atomically', async ({ page }) => {
+  // PRV-0.5 Pre-Push Amendment §2: under the atomic legacy conversion
+  // model, hydration is ONE full-state commit. A first-attempt
+  // failure leaves the disk at the ORIGINAL legacy raw wrapper (not
+  // an intermediate schema-14/unmigrated wrapper). Same-boot retry
+  // re-runs the atomic conversion — the legacy auth is still valid
+  // because baseWrapperRaw was never mutated.
   await page.addInitScript(() => {
     window.__prv05DisableBootHydration = true;
     window.__prv05HydrationAutoRetryEnabled = false;
@@ -322,58 +328,49 @@ test('PRV-R2-DURABILITY-FAILURE — Store.set failure keeps marker unmigrated; r
   await page.goto('/');
   await waitForApp(page);
   const proof = await page.evaluate(async () => {
-    // Boot-time hydration was suppressed; disk is still the v13 raw
-    // wrapper and Store holds the legacy-transition capability from
-    // initialLoad. Install a marker-set injection before invoking
-    // hydration explicitly.
-    const realSet = window.Store.set;
-    let markerSetCalls = 0;
-    window.Store.set = function (path, val) {
-      if (path === 'meta.recordsMigration' && val && val.status === 'migrated') {
-        markerSetCalls++;
-        return { ok: false, error: 'INJECTED_FAILURE' };
+    // Fail the first STATE_KEY write, let the second succeed.
+    const realSetItem = Storage.prototype.setItem;
+    let dropCount = 0;
+    Storage.prototype.setItem = function (k, v) {
+      if (k === 'dune_state_v4' && dropCount === 0) {
+        dropCount++;
+        throw new DOMException('QuotaExceededError test injection', 'QuotaExceededError');
       }
-      return realSet.call(window.Store, path, val);
+      return realSetItem.call(this, k, v);
     };
     const firstAttempt = await window.hydratePreservationRecordsOnce();
-    // Give the coordinator a moment to flush any records ops the seed
-    // path enqueued before the marker-set failed. The commit will
-    // land as schema-14 with populated records but marker='unmigrated'
-    // (the in-memory marker migrateUp produced). The
-    // legacy-transition capability is NOT consumed because the marker
-    // did not flip to migrated.
+    // Disk should still be the legacy v13 raw wrapper.
+    const persistedAfterFail = JSON.parse(localStorage.getItem('dune_state_v4') || '{}');
+    // Retry — atomic conversion should now complete.
+    const secondAttempt = await window.hydratePreservationRecordsOnce();
     await new Promise((resolve) => {
       let done = false;
       const finish = () => { if (done) return; done = true; try { unsub(); } catch(e){} resolve(); };
       const unsub = window.Store.onSave(finish);
       setTimeout(finish, 1200);
     });
-    const persistedAfterFail = JSON.parse(localStorage.getItem('dune_state_v4') || '{}');
-    // Restore Store.set and retry — capability still true, so the
-    // schema-14/unmigrated wrapper reaches VERIFIED_LEGACY_TRANSITION.
-    window.Store.set = realSet;
-    const secondAttempt = await window.hydratePreservationRecordsOnce();
+    Storage.prototype.setItem = realSetItem;
     const persistedAfterSuccess = JSON.parse(localStorage.getItem('dune_state_v4') || '{}');
     return {
+      dropCount,
       firstAttempt,
-      failMarker: persistedAfterFail.data && persistedAfterFail.data.meta && persistedAfterFail.data.meta.recordsMigration,
+      failWrapperVersion: persistedAfterFail && persistedAfterFail.version,
       secondAttempt,
+      finalWrapperVersion: persistedAfterSuccess && persistedAfterSuccess.version,
       finalMarker: persistedAfterSuccess.data && persistedAfterSuccess.data.meta && persistedAfterSuccess.data.meta.recordsMigration,
-      finalGoalsLen: persistedAfterSuccess.data && persistedAfterSuccess.data.records && persistedAfterSuccess.data.records.goals ? persistedAfterSuccess.data.records.goals.length : 0,
-      markerFailedSetCalls: markerSetCalls
+      finalGoalsLen: persistedAfterSuccess.data && persistedAfterSuccess.data.records && persistedAfterSuccess.data.records.goals ? persistedAfterSuccess.data.records.goals.length : 0
     };
   });
-  // First attempt: marker-set was intercepted.
+  expect(proof.dropCount).toBeGreaterThan(0);
+  // First attempt: commit failure surfaced through the outer mapper.
   expect(proof.firstAttempt.ok).toBe(false);
-  expect(proof.firstAttempt.reason).toBe('set-marker-failed');
-  expect(proof.markerFailedSetCalls).toBeGreaterThan(0);
-  // Disk after first attempt is schema-14 with unmigrated marker
-  // (records may or may not have flushed depending on debouncing).
-  if (proof.failMarker) {
-    expect(proof.failMarker.status).toBe('unmigrated');
-  }
-  // Retry after restoration succeeds — capability was preserved.
+  expect(['set-failed', 'durability-verification-failed', 'atomic-conversion-failed']).toContain(proof.firstAttempt.reason);
+  // Disk stayed legacy — no intermediate schema-14/unmigrated state
+  // ever existed on disk (amendment §2 invariant).
+  expect(proof.failWrapperVersion).toBe(13);
+  // Retry converged atomically.
   expect(proof.secondAttempt.ok).toBe(true);
+  expect(proof.finalWrapperVersion).toBe(14);
   expect(proof.finalMarker && proof.finalMarker.status).toBe('migrated');
   expect(proof.finalGoalsLen).toBeGreaterThan(0);
 });
@@ -459,17 +456,15 @@ test('PRV-R2-CROSS-TAB-DURABILITY — Tab B does not treat migration as complete
   await a.goto('/');
   await waitForApp(a);
   await a.evaluate(async () => {
-    const realSet = window.Store.set;
-    window.Store.set = function (path, val) {
-      // Block EVERY hydration write so no commit lands. Disk stays at
-      // v13 raw; capability observed on Tab B's cold boot is genuine.
-      if (path && path.indexOf('records.') === 0) {
-        return { ok: false, error: 'INJECTED_FAILURE' };
-      }
-      if (path === 'meta.recordsMigration' && val && val.status === 'migrated') {
-        return { ok: false, error: 'INJECTED_FAILURE' };
-      }
-      return realSet.call(window.Store, path, val);
+    // PRV-0.5 Pre-Push Amendment §2 (atomic legacy conversion):
+    // block Tab A's STATE_KEY writes at the setItem layer so its
+    // atomic conversion commit cannot land. Disk stays at the v13
+    // raw wrapper; Tab B's cold boot then observes a genuine legacy
+    // source and completes its own atomic conversion.
+    const realSetItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (k, v) {
+      if (k === 'dune_state_v4') throw new DOMException('QuotaExceededError test injection', 'QuotaExceededError');
+      return realSetItem.call(this, k, v);
     };
     await window.hydratePreservationRecordsOnce();
   });
@@ -901,6 +896,12 @@ test('PRV-R3-SIMULTANEOUS-TABS-P1-3 — concurrent two-tab hydration converges w
   // pages see the same starting localStorage regardless of which
   // navigates first (page-level addInitScript would only cover one tab).
   await context.addInitScript(() => {
+    // PRV-0.5 Pre-Push Amendment §2: suppress boot-time auto-hydration
+    // so Promise.all below is the actual concurrency signal; retries
+    // fired by boot would race against the explicit invocations and
+    // muddy which tab "won" the Web Lock.
+    window.__prv05DisableBootHydration = true;
+    window.__prv05HydrationAutoRetryEnabled = false;
     if (localStorage.getItem('dune_state_v4')) return;
     const nowIso = new Date().toISOString();
     const data = {
@@ -1143,14 +1144,25 @@ test('PRV-R4-P1A-NEGATIVE-REVISION — invalid negative revision is not a migrat
 // current.
 // ────────────────────────────────────────────────────────
 test('PRV-R4-P1A-OLD-VERSION — version=13 wrapper with schema-14 inner data is not a migrated fast-path authority', async ({ page }) => {
+  // PRV-0.5 Pre-Push Amendment §2: boot-time atomic legacy conversion
+  // is disabled here so the test's explicit hydratePreservationRecordsOnce
+  // invocation observes the initial v13 raw wrapper directly. Without
+  // this, boot's automatic atomic conversion would already have
+  // written a v14 wrapper by the time the test evaluates.
+  await page.addInitScript(() => {
+    window.__prv05DisableBootHydration = true;
+    window.__prv05HydrationAutoRetryEnabled = false;
+  });
   await seedMigratedV14Wrapper(page, { wrapperVersion: 13, revision: 3 });
   await page.goto('/');
   await waitForApp(page);
   const proof = await page.evaluate(async () => {
-    window.__prv05HydrationAutoRetryEnabled = false;
     const res = await window.hydratePreservationRecordsOnce();
     return { res };
   });
+  // Under the atomic model a v13 outer wrapper triggers CONVERSION,
+  // never a migrated fast-path skip. res.hydrated is true; res.skipped
+  // is undefined.
   expect(proof.res.skipped).not.toBe('already-migrated');
 });
 
@@ -3943,55 +3955,63 @@ function _seedV13FullWrapper(salary, rev) {
     }});
 }
 
-// FINAL-A3 — a failed ordinary Store.set (silent no-op) leaves auth
-// unchanged (was valid → stays valid because pre-write baseline was
-// not disturbed; note we don't advance baseWrapperRaw on failure).
-test('FINAL-A3-FAILED-ORDINARY-COMMIT-DOES-NOT-REBIND — set that fails durable-verify leaves auth binding intact', async ({ page }) => {
-  await page.addInitScript((seed) => { localStorage.setItem('dune_state_v4', seed); }, _seedV13FullWrapper(11111, 1));
+// FINAL-A3 — ordinary Store.set is BLOCKED while legacy conversion
+// is pending. Under the amendment, no ordinary write can run during
+// unfinished legacy conversion — the mechanism the R7 rebind was
+// once needed to make safe simply cannot fire. auth stays intact.
+test('FINAL-A3-ORDINARY-WRITES-BLOCKED-WHILE-CONVERSION-PENDING — Store.set refuses while STORE_LEGACY_CONVERSION_PENDING is set', async ({ page }) => {
+  await page.addInitScript((seed) => {
+    window.__prv05DisableBootHydration = true;
+    window.__prv05HydrationAutoRetryEnabled = false;
+    localStorage.setItem('dune_state_v4', seed);
+  }, _seedV13FullWrapper(11111, 1));
   await page.goto('/'); await waitForApp(page);
   const proof = await page.evaluate(async () => {
-    // Suppress boot hydration so we can inspect auth state before it fires.
-    window.__prv05HydrationAutoRetryEnabled = false;
     const authBefore = window.Store._currentTransitionAuth();
-    // Silent no-op the STATE_KEY primary.
-    const realSetItem = Storage.prototype.setItem;
-    Storage.prototype.setItem = function (k, v) {
-      if (k === 'dune_state_v4') return;
-      return realSetItem.call(this, k, v);
-    };
-    window.Store.set('money.salary_net', 88888);
-    await new Promise(r => setTimeout(r, 500));
-    Storage.prototype.setItem = realSetItem;
+    const blocker = window.Store.getDurabilityBlocker();
+    const setRes = window.Store.set('money.salary_net', 88888);
     const authAfter = window.Store._currentTransitionAuth();
     return {
       authKindBefore: authBefore && authBefore.kind,
       authKindAfter: authAfter && authAfter.kind,
-      sourceRawSameAsBefore: authAfter && authBefore && authAfter.sourceRawBytes === authBefore.sourceRawBytes
+      sourceRawSameAsBefore: authAfter && authBefore && authAfter.sourceRawBytes === authBefore.sourceRawBytes,
+      blockerCode: blocker && blocker.code,
+      setRefused: setRes && setRes.ok === false && setRes.error === 'STORE_DURABILITY_BLOCKED',
+      setCode: setRes && setRes.code
     };
   });
+  expect(proof.blockerCode).toBe('STORE_LEGACY_CONVERSION_PENDING');
+  expect(proof.setRefused).toBe(true);
+  expect(proof.setCode).toBe('STORE_LEGACY_CONVERSION_PENDING');
   expect(proof.authKindBefore).toBe('legacy');
   expect(proof.authKindAfter).toBe('legacy');
   expect(proof.sourceRawSameAsBefore).toBe(true);
 });
 
-// FINAL-A4 — external W2 lands on disk between our commits; a
-// subsequent ordinary Store.set adopts W2 and invalidates the legacy
-// auth. canAuthoriseLegacySeed() then returns false.
-test('FINAL-A4-EXTERNAL-ADOPTION-INVALIDATES-AUTH — after commitLocked adopts an unrelated W2, legacy auth is gone', async ({ page }) => {
-  await page.addInitScript((seed) => { localStorage.setItem('dune_state_v4', seed); }, _seedV13FullWrapper(22222, 1));
+// FINAL-A4 — external W2 arrives via a storage event from another
+// tab. adoptExternal invalidates the legacy auth. This is the
+// legitimate surface for cross-tab adoption under the amendment —
+// ordinary Store.set adoption path is blocked (see FINAL-A3).
+test('FINAL-A4-EXTERNAL-STORAGE-EVENT-INVALIDATES-AUTH — storage event from another tab invalidates legacy auth', async ({ page }) => {
+  await page.addInitScript((seed) => {
+    window.__prv05DisableBootHydration = true;
+    window.__prv05HydrationAutoRetryEnabled = false;
+    localStorage.setItem('dune_state_v4', seed);
+  }, _seedV13FullWrapper(22222, 1));
   await page.goto('/'); await waitForApp(page);
   const proof = await page.evaluate(async () => {
-    window.__prv05HydrationAutoRetryEnabled = false;
     const canAuthBefore = window.Store.canAuthoriseLegacySeed();
-    // Externally swap disk to a DIFFERENT v13 wrapper (rev higher so
-    // commitLocked's rebase path adopts it).
+    const originalRaw = localStorage.getItem('dune_state_v4');
+    // Simulate another tab: write W2 and dispatch a StorageEvent so
+    // the onStorage handler runs adoptExternal (which invalidates
+    // the auth). Writing setItem in the same tab doesn't fire
+    // storage events, so we dispatch one manually.
     const w2 = JSON.stringify({ version: 13, revision: 50, committedAt: new Date().toISOString(),
       data: { money: { salary_net: 99999, expenses: {}, usd_rate: 88, save_target: 55000 }, qatarVisit: {}, todayFocus: [], goals: {}, career: {}, easa: {}, about: {}, sbTasks: {}, apartments: [], logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { sourceCounts: { tracker: 0, builder: 0 } }, drift: null }, reviews: [], decisions: [], timeline: [], bht: { habits: [], entries: [] }, telemetry: {}, ideas: [] }});
     localStorage.setItem('dune_state_v4', w2);
-    // Now trigger commitLocked via an ordinary Store.set. Rebase
-    // adopts W2; auth invalidated at that step.
-    window.Store.set('money.save_target', 44444);
-    await new Promise(r => setTimeout(r, 500));
+    // Dispatch a synthetic storage event mimicking cross-tab notification.
+    window.dispatchEvent(new StorageEvent('storage', { key: 'dune_state_v4', oldValue: originalRaw, newValue: w2, storageArea: localStorage }));
+    await new Promise(r => setTimeout(r, 200));
     const canAuthAfter = window.Store.canAuthoriseLegacySeed();
     const auth = window.Store._currentTransitionAuth();
     return { canAuthBefore, canAuthAfter, authKind: auth && auth.kind };
@@ -4251,4 +4271,154 @@ test('FINAL-U4-REGRESSION-RECOVERY-VIA-RESET-BUTTON — clicking Reset resolves 
   });
   expect(proof.ok).toBe(true);
   expect(proof.blockerAfter).toBeFalsy();
+});
+
+// ────────────────────────────────────────────────────────
+// PRV-0.5 Pre-Push Amendment — FINAL-L* group. BINDING-1: NO LOCK = FAIL CLOSED.
+// For legacy conversion AND destructive recovery, if the required
+// exclusive Web Lock is unavailable, no primary mutation happens
+// and no success is reported.
+// ────────────────────────────────────────────────────────
+
+// FINAL-L1 — legacy conversion + no navigator.locks → refused;
+// disk unchanged; blocker intact.
+test('FINAL-L1-LEGACY-CONVERSION-NO-LOCK-FAILS-CLOSED — legacy source + navigator.locks unavailable → conversion refused, disk unchanged', async ({ page }) => {
+  await page.addInitScript((seed) => {
+    window.__prv05DisableBootHydration = true;
+    window.__prv05HydrationAutoRetryEnabled = false;
+    localStorage.setItem('dune_state_v4', seed);
+  }, _seedV13FullWrapper(33333, 1));
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(async () => {
+    const beforeRaw = localStorage.getItem('dune_state_v4');
+    const beforeBlocker = window.Store.getDurabilityBlocker();
+    // Remove navigator.locks so commitFullStateWrapper's dynamic
+    // lock-availability check refuses.
+    window.Store._testForceNoLock(true);
+    const cand = window.Store.get() || {};
+    cand.records = { deadlines: [], claims: [], risks: [], goals: [] };
+    cand.meta = Object.assign({}, cand.meta || {});
+    cand.meta.recordsMigration = { status: 'migrated', schemaVersion: 14, reason: 'no-lock-test' };
+    const gate = window.Store.beginFullStateTransaction({ force: true, reason: 'legacy-conversion' });
+    let res = null;
+    try { res = await window.Store.commitFullStateWrapper(gate.token, cand, 'legacy-conversion', { legacyConversion: true }); }
+    finally { try { window.Store.endFullStateTransaction(gate.token); } catch (e) {} }
+    const afterRaw = localStorage.getItem('dune_state_v4');
+    const afterBlocker = window.Store.getDurabilityBlocker();
+    return {
+      commitOk: res && res.ok,
+      commitError: res && res.error,
+      diskUnchanged: beforeRaw === afterRaw,
+      blockerPersisted: afterBlocker && afterBlocker.code === (beforeBlocker && beforeBlocker.code)
+    };
+  });
+  expect(proof.commitOk).toBe(false);
+  expect(proof.commitError).toBe('STORE_LOCK_UNAVAILABLE');
+  expect(proof.diskUnchanged).toBe(true);
+  expect(proof.blockerPersisted).toBe(true);
+});
+
+// FINAL-L2 — destructive recovery + no navigator.locks → refused;
+// disk unchanged; blocker intact.
+test('FINAL-L2-RECOVERY-NO-LOCK-FAILS-CLOSED — recovery + navigator.locks unavailable → recovery refused, disk unchanged', async ({ page }) => {
+  const CORRUPT = '{corrupt-json';
+  await page.addInitScript((seed) => { localStorage.setItem('dune_state_v4', seed); }, CORRUPT);
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(async () => {
+    const beforeRaw = localStorage.getItem('dune_state_v4');
+    const beforeBlocker = window.Store.getDurabilityBlocker();
+    window.Store.prepareRecoveryAuth();
+    window.Store._testForceNoLock(true);
+    const iso = new Date().toISOString();
+    const cand = {
+      money: { salary_net: 1, expenses: {} }, qatarVisit: {}, todayFocus: [], goals: {}, career: {}, easa: {}, about: {}, sbTasks: {}, apartments: [],
+      logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { sourceCounts: { tracker: 0, builder: 0 } }, drift: null },
+      reviews: [], decisions: [], timeline: [], bht: { habits: [], entries: [] }, telemetry: {}, ideas: [],
+      records: { deadlines: [], claims: [], risks: [], goals: [] },
+      meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'migrated', schemaVersion: 14, reason: 'no-lock-test' }}
+    };
+    const gate = window.Store.beginFullStateTransaction({ force: true, reason: 'test' });
+    let res = null;
+    try { res = await window.Store.commitFullStateWrapper(gate.token, cand, 'test', { recovery: true }); }
+    finally { try { window.Store.endFullStateTransaction(gate.token); } catch (e) {} }
+    const afterRaw = localStorage.getItem('dune_state_v4');
+    const afterBlocker = window.Store.getDurabilityBlocker();
+    return {
+      commitOk: res && res.ok,
+      commitError: res && res.error,
+      diskUnchanged: beforeRaw === afterRaw,
+      blockerCode: afterBlocker && afterBlocker.code
+    };
+  });
+  expect(proof.commitOk).toBe(false);
+  expect(proof.commitError).toBe('STORE_LOCK_UNAVAILABLE');
+  expect(proof.diskUnchanged).toBe(true);
+  expect(proof.blockerCode).toBe('STORE_CORRUPT_AUTHORITATIVE_STATE');
+});
+
+// ────────────────────────────────────────────────────────
+// PRV-0.5 Pre-Push Amendment — FINAL-M* group. BINDING-3 / §6:
+// evidence-based historical matrix.
+// ────────────────────────────────────────────────────────
+
+// FINAL-M1 — v<8 fails closed at the destructive import path.
+test('FINAL-M1-PRE-V8-UNSUPPORTED-FAIL-CLOSED — a v7 candidate is rejected as unsupported', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(() => {
+    return window.Store.validateLegacySourceRequiredFields(
+      { money: { salary_net: 1 }, qatarVisit: {} }, 7);
+  });
+  expect(proof.ok).toBe(false);
+  expect(proof.reason).toBe('version-unsupported');
+});
+
+// FINAL-M2 — v8 accepted with runtime floor (bht/telemetry introduced
+// at v7/v8, permissive per-version emission floor documented in
+// ADR-015 addendum #8 as scope-limited pending direct emission
+// evidence).
+test('FINAL-M2-V8-ACCEPTED-RUNTIME-FLOOR — v8 candidate with money+salary_net+qatarVisit accepted', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(() => {
+    return window.Store.validateLegacySourceRequiredFields(
+      { money: { salary_net: 1 }, qatarVisit: {} }, 8);
+  });
+  expect(proof.ok).toBe(true);
+});
+
+// FINAL-M3 — v12 candidate WITHOUT bht/telemetry rejected (strict
+// per-version matrix). Confirmed emission at v12 (521fe70) carried
+// bht + telemetry + ideas + logbook envelope.
+test('FINAL-M3-V12-STRICT-MATRIX — v12 missing bht is rejected', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(() => {
+    return window.Store.validateLegacySourceRequiredFields(
+      { money: { salary_net: 1 }, qatarVisit: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+        telemetry: {}, todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [], logbook: {} },
+      12);
+  });
+  expect(proof.ok).toBe(false);
+  expect(proof.reason).toBe('missing-bht');
+});
+
+// FINAL-M4 — getHistoricalRequirements exposes the matrix for tests
+// and diagnostics; v<12 returns null (permissive floor); v14+ returns
+// null (that's the current schema, not a historical import target).
+test('FINAL-M4-MATRIX-EXPOSED — Store.getHistoricalRequirements returns null for versions outside the strict matrix', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(() => {
+    return {
+      v7: window.Store.getHistoricalRequirements(7),
+      v8: window.Store.getHistoricalRequirements(8),
+      v11: window.Store.getHistoricalRequirements(11),
+      v12: window.Store.getHistoricalRequirements(12),
+      v13: window.Store.getHistoricalRequirements(13),
+      v14: window.Store.getHistoricalRequirements(14)
+    };
+  });
+  expect(proof.v7).toBeNull();
+  expect(proof.v8).toBeNull();
+  expect(proof.v11).toBeNull();
+  expect(proof.v12).not.toBeNull();
+  expect(proof.v13).not.toBeNull();
+  expect(proof.v14).toBeNull();
 });

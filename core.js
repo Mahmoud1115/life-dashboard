@@ -1083,13 +1083,21 @@
     if (!data.money || typeof data.money !== 'object' || Array.isArray(data.money)) return { ok: false, reason: 'missing-money' };
     if (typeof data.money.salary_net !== 'number') return { ok: false, reason: 'missing-money-salary_net' };
     if (!data.qatarVisit || typeof data.qatarVisit !== 'object' || Array.isArray(data.qatarVisit)) return { ok: false, reason: 'missing-qatarVisit' };
-    // v6..v11 predate the strict per-version emission floor; only
-    // money+salary_net + qatarVisit (the runtime validate() floor)
-    // is required. v12+ carries the strict Codex P1-08 requirements.
-    // <v6 fails closed — ancient wrappers must recover via the
-    // explicit legacy-only import path that goes through
-    // deriveStateFromLegacy.
-    if (version < 6) return { ok: false, reason: 'version-unsupported', version };
+    // PRV-0.5 Pre-Push Amendment §6 (evidence-based historical
+    // matrix): git-log evidence confirms `{version: N, data:{...}}`
+    // emission at v8 (85e1d22, 2026-06-14) and v12 (521fe70,
+    // 2026-08-25), plus the v13 wrapper with integer revision at
+    // 94254c4 (2026-08-25) and v14 with records subtree at 4ead699
+    // (2026-08-29). v0..v7 are BEFORE bht was introduced (5313b61)
+    // — no confirmed emission with the current defaultState shape
+    // exists in this branch's history. Fail closed for <v8. v8..v11
+    // are accepted at the runtime validate() floor (money+salary_net
+    // + qatarVisit) because pre-B0 wrappers wrote a minimal
+    // {version, data} envelope; the per-version emission set can be
+    // interpolated from migrateUp's field-introduction timeline but
+    // is not directly attested by a persisted-artifact fixture.
+    // v12+ carries the strict Codex P1-08 requirements.
+    if (version < 8) return { ok: false, reason: 'version-unsupported', version };
     if (version < 12) return { ok: true };
     const req = HISTORICAL_SCHEMA_REQUIREMENTS[Math.min(version, 13)];
     if (!req) return { ok: false, reason: 'no-requirements-matrix', version };
@@ -1822,14 +1830,28 @@
         // hydration on THIS boot may authorise a legacy seed. A
         // schema-14 raw wrapper NEVER grants this capability — a
         // current-schema wrapper cannot self-attest a prior transition.
+        //
+        // PRV-0.5 Pre-Push Amendment §2 (atomic legacy conversion):
+        // a legacy raw ALSO sets a STORE_LEGACY_CONVERSION_PENDING
+        // durability blocker so ordinary Store.set/update refuse
+        // until the atomic legacy-conversion commit completes.
+        // There is no "durable current-schema unmigrated + ordinary
+        // writes enabled" intermediate operating state.
         const legacyTransitionCapability =
           parsed && !parsed.corrupt && typeof parsed.version === 'number'
           && parsed.version < SCHEMA_VERSION;
-        return {
+        const result = {
           data: m.data, revision: parsed.revision, committedAt: parsed.committedAt,
           rawWrapper: raw,
           legacyTransitionCapability: legacyTransitionCapability
         };
+        if (legacyTransitionCapability) {
+          result.pendingBlocker = {
+            code: 'STORE_LEGACY_CONVERSION_PENDING',
+            detail: { sourceVersion: parsed.version, sourceRevision: parsed.revision }
+          };
+        }
+        return result;
       }
       // PRV-0.5 R5 (Codex Round-4 P1-4): a raw persisted wrapper exists
       // but Store's own parse/migrate/validate rejects it. That is a
@@ -1929,6 +1951,11 @@
   // ordinary). Never persisted to disk; lives only in this Store
   // instance's memory.
   let _transitionAuth = null;
+  // PRV-0.5 Pre-Push Amendment (BINDING-1): test-only flag that
+  // simulates a no-lock environment for destructive-commit fail-closed
+  // proofs. Production callers never touch this; the default false
+  // preserves normal cross-tab lock behavior.
+  let _testForceNoLockFlag = false;
   function _computeSourceIdentity(raw, parsed) {
     return {
       raw: raw,
@@ -2344,16 +2371,6 @@
     const wrapper = { version: SCHEMA_VERSION, revision: nextRevision, committedAt: committedAtNow, data: r.data };
     let payload;
     try { payload = JSON.stringify(wrapper); } catch (e) { emitError({ code: 'STORE_SERIALIZE_FAILED', error: e }); return { committed: false, reason: 'SERIALIZE' }; }
-    // PRV-0.5 Final Closure (INV-A): capture pre-write auth binding
-    // so a same-boot legacy-transition retry can rebind SAFELY —
-    // safely because (a) the rebase branch above invalidated auth on
-    // external adoption, and (b) our new payload is derived from
-    // baseState, which was derived from either the initial legacy
-    // source or a subsequent commit chain rooted in it.
-    const preWriteBaseWrapperRaw = baseWrapperRaw;
-    const authWasValidAtPreWrite = !!(_transitionAuth
-      && _transitionAuth.kind === 'legacy'
-      && _transitionAuth.sourceRawBytes === preWriteBaseWrapperRaw);
     try {
       localStorage.setItem(STATE_KEY, payload);
     } catch (e) {
@@ -2395,28 +2412,18 @@
     baseWrapperRaw = payload;
     pendingOps     = pendingOps.filter(op => op.seq > capturedMaxSeq);
     rebuildOptimistic();
-    // PRV-0.5 Final Closure (INV-A, R7-P1-01): legacy transition
-    // capability lifetime.
-    //
-    // - migrated marker → consume auth (transition complete).
-    // - unmigrated marker on this commit AND auth was valid at
-    //   pre-write baseline (baseWrapperRaw matched sourceRawBytes) →
-    //   rebind SAFELY. This is safe now because:
-    //     • the disk-rebase branch above INVALIDATES auth on any
-    //       external adoption whose bytes differ from sourceRawBytes
-    //       (the exact R7-P1-01 attack surface);
-    //     • our new payload is derived from baseState which chained
-    //       from the auth's source generation without external
-    //       intervention.
-    // - unmigrated marker AND auth was NOT valid pre-write → auth
-    //   is stale; do nothing (a later hydration retry will fail its
-    //   canAuthoriseLegacySeed check, as it should).
+    // PRV-0.5 Pre-Push Amendment §2 (no rebind architecture): ordinary
+    // CAS writes never mutate _transitionAuth. Legacy conversion is
+    // handled atomically via commitFullStateWrapper's legacyConversion
+    // mode, which consumes the auth in ONE write. If a rogue ordinary
+    // commit ever landed with the marker still 'unmigrated' (which
+    // is prevented now because STORE_LEGACY_CONVERSION_PENDING is
+    // set on any legacy raw at boot and blocks ordinary Store.set /
+    // update / commitLocked), it would not resurrect any auth here.
     try {
       const newMarker = baseState && baseState.meta && baseState.meta.recordsMigration;
       if (newMarker && newMarker.status === MARKER_STATUS_MIGRATED) {
         if (_transitionAuth && _transitionAuth.kind === 'legacy') _consumeTransitionAuth();
-      } else if (authWasValidAtPreWrite && _transitionAuth && _transitionAuth.kind === 'legacy') {
-        _transitionAuth.sourceRawBytes = baseWrapperRaw;
       }
     } catch (e) { /* ignore */ }
 
@@ -2647,6 +2654,29 @@
     if (!activeFullStateTransaction) return Promise.resolve({ ok: false, error: 'FULL_STATE_TRANSACTION_NOT_ACTIVE' });
     if (!fullStateTxToken || token !== fullStateTxToken) return Promise.resolve({ ok: false, error: 'FULL_STATE_TX_TOKEN_MISMATCH' });
     const recoveryMode = !!(opts && opts.recovery === true);
+    const legacyConversionMode = !!(opts && opts.legacyConversion === true);
+    // PRV-0.5 Pre-Push Amendment (BINDING-1): NO LOCK = FAIL CLOSED.
+    // Both destructive-mode commits (recovery + legacy conversion)
+    // require the cross-tab Web Lock. If navigator.locks is
+    // unavailable in this environment, refuse — do NOT fall back to
+    // the best-effort same-tab-only serializer for a destructive
+    // primary write.
+    if (recoveryMode || legacyConversionMode) {
+      // PRV-0.5 Pre-Push Amendment (BINDING-1): re-evaluate lock
+      // availability at commit time (not just module init). A test
+      // or environment that removes navigator.locks after Store
+      // construction must also refuse — this is a real fail-closed
+      // path, not a static capability tag. `_testForceNoLock`
+      // exists because Chromium's `navigator.locks` is a
+      // non-configurable native property and cannot be `delete`d;
+      // the test hook lets adversarial suites simulate a no-lock
+      // environment.
+      const dynamicLockAvailable = !_testForceNoLockFlag && !!(typeof navigator !== 'undefined' && navigator.locks && typeof navigator.locks.request === 'function');
+      if (!dynamicLockAvailable) {
+        return Promise.resolve({ ok: false, error: 'STORE_LOCK_UNAVAILABLE',
+          reason: 'no-web-locks-support', mode: recoveryMode ? 'recovery' : 'legacy-conversion' });
+      }
+    }
     // PRV-0.5 R7 (Codex Round-6 P1-2, INV-2, INV-3, INV-12): if the
     // caller declares recovery mode, an active recovery auth MUST
     // exist AND its sourceRawBytes MUST byte-match the disk raw the
@@ -2687,6 +2717,38 @@
           return { ok: false, error: 'RECOVERY_AUTH_BLOCKER_CHANGED',
                    authBlocker: _transitionAuth.blockerClassAtIssue,
                    currentBlocker: durabilityBlocker && durabilityBlocker.code };
+        }
+      } else if (legacyConversionMode) {
+        // PRV-0.5 Pre-Push Amendment §2 + §8 (atomic legacy conversion):
+        // legacy conversion requires a valid legacy transition auth
+        // that byte-matches the current disk raw (identity check
+        // under the exclusive lock). The auth is issued by
+        // initialLoad from the exact legacy raw wrapper the Store
+        // observed at boot; disk substitution between boot and
+        // conversion invalidates it.
+        const authCheck = _hasValidTransitionAuthForCurrentDisk('legacy');
+        if (!authCheck.ok) {
+          return { ok: false, error: 'LEGACY_CONVERSION_AUTH_INVALID',
+                   reason: authCheck.reason,
+                   disk: rawNow === null ? 'absent' : 'present' };
+        }
+        // Additionally re-validate the historical source against the
+        // frozen matrix under lock — a v13 raw that failed validation
+        // between boot and conversion (impossible via legitimate
+        // paths, but the check is cheap) fails closed.
+        const parsed = rawNow !== null ? parseWrapperRaw(rawNow) : null;
+        if (!parsed || parsed.corrupt) {
+          return { ok: false, error: 'LEGACY_CONVERSION_SOURCE_UNPARSEABLE',
+                   reason: parsed && parsed.reason };
+        }
+        if (parsed.version >= SCHEMA_VERSION) {
+          return { ok: false, error: 'LEGACY_CONVERSION_SOURCE_NOT_LEGACY',
+                   version: parsed.version };
+        }
+        const srcCheck = validateLegacySourceRequiredFields(parsed.data, parsed.version);
+        if (!srcCheck.ok) {
+          return { ok: false, error: 'LEGACY_CONVERSION_SOURCE_INVALID',
+                   reason: srcCheck.reason, version: parsed.version };
         }
       } else {
         // R6-compat: non-recovery mode still refuses corrupt disk.
@@ -2942,6 +3004,23 @@
     knownRevision  = parsed.revision;
     committedAt    = parsed.committedAt;
     baseWrapperRaw = rawWrapper;
+    // PRV-0.5 Pre-Push Amendment §2: if another tab's atomic legacy
+    // conversion committed a valid v14 AUTHORITATIVE_MIGRATED
+    // wrapper, this tab's STORE_LEGACY_CONVERSION_PENDING blocker
+    // is resolved by that adoption (the legacy source no longer
+    // exists on disk). Clear it so ordinary writes can resume.
+    if (durabilityBlocker && durabilityBlocker.code === 'STORE_LEGACY_CONVERSION_PENDING'
+        && parsed.version === SCHEMA_VERSION) {
+      const inner = evaluateCandidateData(data);
+      if (inner.classification === 'AUTHORITATIVE_MIGRATED') {
+        durabilityBlocker = null;
+        try {
+          if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+            window.dispatchEvent(new CustomEvent('lifeos:store-durability-cleared'));
+          }
+        } catch (e) { /* ignore */ }
+      }
+    }
     clearTimeout(saveTimer); saveTimer = null;
     const r = strictReplay(baseState, pendingOps);
     if (r.conflict) {
@@ -3181,6 +3260,10 @@
     // ordering for identity checks — the caller filters by key
     // suffix / getItem to select individual entries.
     listQuarantineKeys: function () { return _listQuarantineKeys(); },
+    // PRV-0.5 Pre-Push Amendment (BINDING-1): test hook. `true`
+    // forces every recovery + legacy-conversion commit to refuse
+    // with STORE_LOCK_UNAVAILABLE; `false` restores normal behavior.
+    _testForceNoLock: function (flag) { _testForceNoLockFlag = flag === true; },
     // Raised for tests / documentation of the canonical marker contract.
     MARKER_STATUS: { MIGRATED: MARKER_STATUS_MIGRATED, UNMIGRATED: MARKER_STATUS_UNMIGRATED },
     REQUIRED_RECORD_DOMAINS: REQUIRED_RECORD_DOMAINS.slice(),

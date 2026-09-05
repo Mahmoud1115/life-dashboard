@@ -232,12 +232,18 @@ async function _hydrateUnderLock() {
   // (no blocker) AND Store.canAuthoriseLegacySeed() (transaction-scoped
   // legacy-transition capability observed this boot).
   if (classification === 'VERIFIED_LEGACY_TRANSITION') {
-    if (persistedEval.seedLegacy !== true) {
+    // PRV-0.5 Pre-Push Amendment §2 (atomic legacy conversion):
+    // STORE_LEGACY_CONVERSION_PENDING is the EXPECTED blocker
+    // when a legacy raw is on disk at boot — atomic conversion
+    // is precisely what clears it. Any OTHER blocker still gates.
+    const blk = persistedEval.blocker;
+    const blockerIsLegacyPending = blk && blk.code === 'STORE_LEGACY_CONVERSION_PENDING';
+    if (!blockerIsLegacyPending && persistedEval.seedLegacy !== true) {
       return {
         ok: false,
         reason: 'recovery-required',
         classification: classification,
-        blocker: persistedEval.blocker || null
+        blocker: blk || null
       };
     }
     if (typeof window.Store.canAuthoriseLegacySeed === 'function'
@@ -306,10 +312,15 @@ async function _hydrateUnderLock() {
     };
   }
 
-  // ── Legacy-transition seed path ─────────────────────────────────
-  // Reached only from VERIFIED_LEGACY_TRANSITION with authorised
-  // capability, or from ABSENT with in-memory VERIFIED_LEGACY_TRANSITION
-  // + authorised capability.
+  // ── Atomic legacy conversion ──────────────────────────────────
+  // PRV-0.5 Pre-Push Amendment (Stage-1 amendment §2 / BINDING-1..3):
+  // supported legacy conversion is now a SINGLE full-state
+  // transaction. Ordinary Store writes are frozen for the duration.
+  // Inside the coordinator lock: reread source, verify identity,
+  // migrate in memory, validate current, single write, durable
+  // reread, verify authority. There is no "durable current-schema
+  // unmigrated + ordinary writes enabled" intermediate state and no
+  // rebind architecture.
   let goalsOv = {};
   try { const v = localStorage.getItem('dune_goals_v1'); if (v) goalsOv = JSON.parse(v) || {}; } catch (e) {}
   let claimsOv = {};
@@ -317,55 +328,58 @@ async function _hydrateUnderLock() {
   if (!window.LEGACY_RECORDS) return { ok: false, reason: 'no-seed' };
   const legacySeed = _buildHydratedRecords(window.LEGACY_RECORDS, goalsOv, claimsOv);
 
-  const merged = { deadlines: null, claims: null, risks: null, goals: null };
+  // Snapshot the in-memory state Store already migrated from the
+  // legacy source. This is byte-derived from the same raw source the
+  // Store observed at initialLoad; the coordinator lock inside
+  // commitFullStateWrapper rereads the disk raw and enforces
+  // source-identity match against the legacy auth's sourceRawBytes.
+  const inMemAll = window.Store.get() || {};
+  const candidate = Object.assign({}, inMemAll);
+  candidate.records = { deadlines: null, claims: null, risks: null, goals: null };
   for (const d of domains) {
-    const cur = window.Store.get('records.' + d);
-    // A pre-existing non-empty array from a partial prior migration
-    // attempt is authoritative user data and is preserved. Empty
-    // arrays from migrateUp's bootstrap are overwritten by the seed.
-    merged[d] = (Array.isArray(cur) && cur.length > 0) ? cur : legacySeed[d];
+    const cur = inMemAll.records && inMemAll.records[d];
+    candidate.records[d] = (Array.isArray(cur) && cur.length > 0) ? cur : legacySeed[d];
   }
-
-  for (const d of domains) {
-    const r = window.Store.set('records.' + d, merged[d]);
-    if (!r || r.ok !== true) {
-      try { console.warn('[PRV-0.5 R5 hydrate] set failed for ' + d, r); } catch (e) {}
-      return { ok: false, reason: 'set-failed', domain: d, res: r };
-    }
-  }
-  // R3 (P1-3) deterministic marker content; R5 (P2) requires exact
-  // canonical marker.schemaVersion.
-  const nextMarker = {
+  candidate.meta = Object.assign({}, inMemAll.meta || {});
+  candidate.meta.recordsMigration = {
     status: MIGRATION_MIGRATED,
     schemaVersion: window.Store.SCHEMA_VERSION,
-    reason: 'hydration-complete'
+    reason: 'atomic-legacy-conversion'
   };
-  const mRes = window.Store.set('meta.recordsMigration', nextMarker);
-  if (!mRes || mRes.ok !== true) {
-    try { console.warn('[PRV-0.5 R5 hydrate] set failed for meta.recordsMigration', mRes); } catch (e) {}
-    return { ok: false, reason: 'set-marker-failed', res: mRes };
+
+  const gate = window.Store.beginFullStateTransaction({ force: true, reason: 'legacy-conversion' });
+  if (!gate || !gate.ok) {
+    return { ok: false, reason: 'freeze-refused', error: gate && gate.error };
   }
-
-  // Await durable commit.
-  await new Promise((resolve) => {
-    let done = false;
-    const unsub = window.Store.onSave(() => {
-      if (done) return;
-      done = true;
-      try { unsub(); } catch (e) {}
-      resolve();
-    });
-    setTimeout(() => {
-      if (done) return;
-      done = true;
-      try { unsub(); } catch (e) {}
-      resolve();
-    }, 5000);
-  });
-
-  // Verify durability by re-evaluating persisted authority. A successful
-  // hydration means disk classifies as AUTHORITATIVE_MIGRATED (Codex
-  // P1-A export/reload invariant).
+  const token = gate.token;
+  let commitRes;
+  try {
+    commitRes = await window.Store.commitFullStateWrapper(token, candidate, 'legacy-conversion', { legacyConversion: true });
+  } finally {
+    try { window.Store.endFullStateTransaction(token); } catch (e) {}
+  }
+  if (!commitRes || !commitRes.ok) {
+    // Map commit-level error codes to the outer reason strings that
+    // existing PRV tests (R2/R3) assert against, while preserving
+    // the underlying error/classification for diagnostics.
+    const err = commitRes && commitRes.error;
+    let mappedReason = 'atomic-conversion-failed';
+    if (err === 'STORE_QUOTA') mappedReason = 'set-failed';
+    else if (err === 'FULL_STATE_DURABLE_VERIFY_FAILED'
+          || err === 'FULL_STATE_POST_WRITE_VERIFICATION_FAILED'
+          || err === 'STORE_ORDINARY_DURABLE_VERIFY_FAILED')
+      mappedReason = 'durability-verification-failed';
+    return {
+      ok: false,
+      reason: mappedReason,
+      error: err,
+      detail: commitRes && (commitRes.reason || commitRes.classification) || null
+    };
+  }
+  // Post-commit sanity: persisted authority now classifies as
+  // AUTHORITATIVE_MIGRATED. commitFullStateWrapper already asserted
+  // this via its post-write reread; re-checking here is
+  // belt-and-suspenders for the outer caller's contract.
   const verifiedEval = window.Store.evaluatePersistedAuthority();
   if (verifiedEval.classification !== 'AUTHORITATIVE_MIGRATED') {
     return {
