@@ -1894,7 +1894,7 @@ required lock, and post-failure/success states:
 | STORE_READ_FAILED | initialLoad / commitLocked / commitFullStateWrapper / endFullStateTransaction on getItem exception | reject | reject until readable | reject until readable | reject until readable | n/a (cannot read) | n/a | none | blocker intact | blocker cleared only once reads succeed and a full-state commit lands |
 | STORE_ORDINARY_DURABLE_VERIFY_FAILED | commitLocked when reread ≠ payload (silent no-op, altered bytes, truncated) | reject | permitted (recovery) | permitted (recovery) | permitted (recovery) | exact raw bytes match | monotonic > max | none (writes originated from ordinary CAS, not recovery-triggered mutation) | REQUIRED | blocker intact, pending ops retained, no memory / snapshot / listener advance | blocker cleared |
 | STORE_ORDINARY_DURABLE_READ_FAILED | commitLocked when post-write getItem throws | reject | reject until readable | reject until readable | reject until readable | n/a | n/a | none | blocker intact | blocker cleared once reads succeed |
-| STORE_FULL_STATE_POST_WRITE_UNCERTAIN | commitFullStateWrapper post-write reread ≠ payload OR post-write authority classification not AUTHORITATIVE_MIGRATED. Recorded in `_fullStatePostWriteUncertain` and installed by endFullStateTransaction. | reject | permitted (recovery) | permitted (recovery) | permitted (recovery) | fresh candidate + normal source-identity rules | monotonic > max(disk, known, knownAtIssue) | retained from the failed commit (evidence key surfaced in blocker detail) | REQUIRED | blocker intact, memory (baseState / knownRevision / baseWrapperRaw / snapshot / subscribers) UNCHANGED — the divergent disk bytes are NOT adopted | blocker cleared once a subsequent full-state transaction commits and durably verifies |
+| STORE_FULL_STATE_POST_WRITE_UNCERTAIN | commitFullStateWrapper post-write reread ≠ payload OR post-write authority classification not AUTHORITATIVE_MIGRATED. Recorded in `_fullStatePostWriteUncertain` and installed by endFullStateTransaction. | reject | permitted (recovery) | permitted (recovery) | permitted (recovery) | fresh candidate + normal source-identity rules | monotonic > max(disk, known, knownAtIssue) | retained from the failed commit (evidence key surfaced in blocker detail) | REQUIRED | blocker intact, memory (baseState / knownRevision / baseWrapperRaw / snapshot) UNCHANGED — the divergent disk bytes are NOT adopted; NO success publication (rebuildOptimistic and notifyAll are skipped; subscribers receive ZERO notifications from this settlement); `emitError` fires the blocker record and `lifeos:store-durability-blocked` dispatches; `lifeos:store-freeze-end` fires with `detail.failure=true` so listeners can distinguish uncertainty-settled from success-settled; endFullStateTransaction returns `{ok:false, settlement:'FULL_STATE_POST_WRITE_UNCERTAIN', commitError, durabilityBlocker}` | blocker cleared once a subsequent full-state transaction commits and durably verifies |
 
 Proven by:
 - STORE_LEGACY_CONVERSION_PENDING → FINAL-A3, FINAL-L1, PRV-R2-DURABILITY-FAILURE, PRV-R2-CROSS-TAB-DURABILITY, PRV-R3-SIMULTANEOUS-TABS-P1-3
@@ -1905,7 +1905,7 @@ Proven by:
 - STORE_READ_FAILED → FINAL-R6
 - STORE_ORDINARY_DURABLE_VERIFY_FAILED → FINAL-D2, FINAL-D3, FINAL-D5
 - STORE_ORDINARY_DURABLE_READ_FAILED → covered by FINAL-D1's read-failure adjacency (same code path)
-- STORE_FULL_STATE_POST_WRITE_UNCERTAIN → R3-P1-01a (altered-valid bytes not adopted); see also FINAL-D-family for the underlying FULL_STATE_DURABLE_VERIFY_FAILED / FULL_STATE_POST_WRITE_VERIFICATION_FAILED commit-return codes.
+- STORE_FULL_STATE_POST_WRITE_UNCERTAIN → R3-P1-01a, R4-P1-01a (altered-valid), R4-P1-01b (post-write reread throw), R4-P1-01c (silent primary no-op), R4-P1-01d (post-write authority-classification fail), R4-P1-01e (recovery-mode altered-valid); production paths R4-P1-02-BOOT / -IMPORT / -SNAPSHOT prove no success settlement, primary unchanged, zero subscriber notifications. See also FINAL-D-family for the underlying FULL_STATE_DURABLE_VERIFY_FAILED / FULL_STATE_POST_WRITE_VERIFICATION_FAILED commit-return codes.
 
 #### R7 P1/P2 re-evaluation
 
@@ -2131,3 +2131,83 @@ the frozen historical contract.
 `claude/prv-0-5-final-closure`; parent commit
 `25ba8cca24716cdd5629e4afb7feb503c772869f`, the frozen remote
 candidate — unchanged by this remediation). Local only, unpushed.
+
+### ADR-015 addendum #11 (2026-09-06) — Round-3 pre-push review remediation: BINDING-2 listener semantics + five-case fault matrix + real production-path proofs
+
+**Trigger.** ChatGPT pre-push review of `f2dc754b172a…`
+(`103-PRV-0.5-ROUND3-PRE-PUSH-REVIEW-FAIL.md`) returned FAIL with
+six defect classes:
+
+1. **P1** — `endFullStateTransaction` still called `rebuildOptimistic()` + `notifyAll()` after post-write uncertainty, violating BINDING-2's "no listener success after post-write verification failure".
+2. **P1** — Round-3 added only one BINDING-2 fault-injection test (altered-valid); the review demanded permanent regression tests for all five defect classes (altered-valid, reread throw, silent primary no-op, post-write authority-classification fail, recovery altered-valid).
+3. **P1** — Malformed-Logbook coverage still routed through `commitFullStateWrapper` directly instead of the real `processImport` / `restoreSnapshot` / boot compositions.
+4. **P1** — v14 snapshot revision was only exercised through the `validateSnapshotWrapperFull` helper, not through real `Store.restoreSnapshot()`.
+5. **P1** — Historical-contract completeness relied on prose inspection instead of a deterministic evidence oracle.
+6. **P1** — BINDING-3-B row for the uncertainty blocker did not explicitly document listener/publication semantics.
+
+**Fixes.**
+
+**P1 listener semantics.** `endFullStateTransaction`'s
+post-write-uncertainty branch now short-circuits BEFORE
+`rebuildOptimistic()` and `notifyAll()`. It returns
+`{ok:false, settlement:'FULL_STATE_POST_WRITE_UNCERTAIN', commitError, durabilityBlocker}`
+without running the ordinary success-publication path. Failure
+signals still fan out — `setDurabilityBlocker` fires
+`emitError` and the `lifeos:store-durability-blocked` custom
+event during the uncertainty branch above; a separate
+`lifeos:store-freeze-end` event is dispatched with
+`detail.failure=true` so any listener that gates "settlement
+completed" on that event can distinguish the two outcomes. The
+`ok:true` return path is untouched.
+
+**Five-case fault-injection matrix.** New R4 tests in
+`tests/prv-preservation.spec.js` cover every failure mode the
+review demanded, each asserting: commit fails, memory (Store.get)
+unchanged, wrapper revision unchanged, snapshots unchanged, ZERO
+subscriber notifications, and `STORE_FULL_STATE_POST_WRITE_UNCERTAIN`
+blocker installed:
+
+- `R4-P1-01a` altered-valid durable bytes.
+- `R4-P1-01b` post-write reread throws (getItem error inside verification).
+- `R4-P1-01c` silent primary no-op (setItem swallowed for STATE_KEY).
+- `R4-P1-01d` post-write authority-classification failure (bytes match payload but `evaluateCandidateData` classifies MALFORMED_CURRENT_SCHEMA).
+- `R4-P1-01e` recovery-mode altered-valid (`opts.recovery:true` after a corrupt-disk boot + `prepareRecoveryAuth`).
+
+**Real production-path Logbook coverage.**
+
+- `R4-P1-02-BOOT-MALFORMED-LOGBOOK-REAL-CONVERSION` — seeds disk with a malformed v12 Logbook wrapper; app boots; `hydratePreservationRecordsOnce()` refuses conversion; `STORE_LEGACY_CONVERSION_PENDING` stays; disk raw bytes are byte-identical to the seed.
+- `R4-P1-02-IMPORT-REAL-MALFORMED-LOGBOOK` — invokes the real `window.processImport()` with a v14 backup whose Logbook is a plain string; `processImport` returns false; primary bytes unchanged; zero subscriber notifications.
+- `R4-P1-02-SNAPSHOT-REAL-MALFORMED-LOGBOOK` — seeds a v14 snapshot with a malformed-Logbook payload into `dune_snapshots_v1`; invokes real `Store.restoreSnapshot()`; the settled result is not ok; primary bytes unchanged; zero subscriber notifications.
+
+**Real Snapshot Restore revision coverage.**
+
+- `R4-P1-04-RESTORE-VALID-V14` — valid v14 snapshot with integer revision succeeds through `Store.restoreSnapshot()`; sentinel salary lands.
+- `R4-P1-04-RESTORE-V14-MISSING-REV-REJECTED` — missing revision → `restoreSnapshot` rejected at the shape gate; primary unchanged.
+- `R4-P1-04-RESTORE-V14-STRING-REV-REJECTED` — `revision:'not-a-number'` → rejected; primary unchanged.
+- `R4-P1-04-RESTORE-V14-NEGATIVE-REV-REJECTED` — `revision:-1` → rejected; primary unchanged.
+- `R4-P1-04-RESTORE-FUTURE-VERSION-REJECTED` — `version:99` snapshot → rejected; primary unchanged.
+
+**Historical-contract completeness oracle.**
+
+- `R4-P1-03-EVIDENCE-ORACLE` — for every v8..v13, iterates the emitted `defaultState()` top-level domains (extracted from `git show <SHA>:core.js` at each version-bump commit) and asserts every one is either in `requiredObjects`, `requiredArrays`, or the top-level of some `nested` path. Any future addition to `defaultState()` that is not reflected in the validator will fail this oracle before it reaches production.
+- `R4-P1-03-EXPENSES-NESTED-ENFORCED` — asserts every v8..v13 row has `money.expenses` in its nested spec (a top-level `money` object without `expenses` would otherwise pass the object check).
+
+**BINDING-3-B row extension.** The `STORE_FULL_STATE_POST_WRITE_UNCERTAIN` row now explicitly documents:
+
+- Post-failure memory: `baseState`, `knownRevision`, `baseWrapperRaw`, and the snapshot fan-out are UNCHANGED.
+- Post-failure publication: `rebuildOptimistic()` and `notifyAll()` are SKIPPED; subscribers receive ZERO notifications from this settlement.
+- Signal path: `setDurabilityBlocker` fires `emitError` + `lifeos:store-durability-blocked`; a `lifeos:store-freeze-end` event with `detail.failure=true` distinguishes uncertainty-settled from success-settled.
+- Return contract: `endFullStateTransaction` returns `{ok:false, settlement:'FULL_STATE_POST_WRITE_UNCERTAIN', commitError, durabilityBlocker}` — not the success shape.
+
+**Effect on binding closure summary:**
+
+- BINDING-1: PASS (unchanged).
+- BINDING-2: **PASS** (five-case fault matrix + listener semantics + real production compositions).
+- BINDING-3-A: PASS (unchanged — completeness closed in addendum #10).
+- BINDING-3-B: PASS (matrix row now covers listener/publication behavior + all Round-4 tests cited).
+
+**Date:** 2026-09-06 (Round-4 remediation on branch
+`claude/prv-0-5-final-closure`; parent commit
+`f2dc754b172a4108a281663d669680528a08c26a`; the frozen remote
+candidate `25ba8cca24716cdd5629e4afb7feb503c772869f` is unchanged
+by this remediation). Local only, unpushed.

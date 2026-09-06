@@ -2038,6 +2038,14 @@
   // where a failed commit reported failure and settlement then
   // adopted the divergent bytes as success.
   let _fullStatePostWriteUncertain = null;
+  // PRV-0.5 Round-3 review remediation: track whether the current
+  // transaction's commitFullStateWrapper actually landed a successful
+  // durable write. Only a `true` value at endFullStateTransaction
+  // permits the ordinary success-publication path
+  // (rebuildOptimistic + notifyAll). Any pre-write rejection or
+  // post-write uncertainty leaves this false so subscribers do NOT
+  // see a "successful state change" for a transaction that failed.
+  let _fullStateCommitSucceeded = false;
   // Persistent durability blocker (corrupt disk, revision regression, etc.).
   // Set to a {code, since, detail?} record; when non-null Store rejects new
   // writes AND flushes with STORE_DURABILITY_BLOCKED until cleared via
@@ -2686,6 +2694,7 @@
     // of every new transaction so a prior transaction's uncertainty
     // flag never leaks into this one.
     _fullStatePostWriteUncertain = null;
+    _fullStateCommitSucceeded = false;
     activeFullStateTransaction = true;
     fullStateTxToken = { id: 'tx_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8), reason: opts.reason || 'full-state' };
     // Fire freeze-begin so UI can render the banner.
@@ -2777,17 +2786,84 @@
         }
       }
     }
-    rebuildOptimistic();
-    notifyAll();
+    // PRV-0.5 Codex-final Round-3 review (P1 listener semantics): on
+    // post-write uncertainty settlement, DO NOT run the ordinary
+    // success-publication path. Skip `rebuildOptimistic()` and
+    // `notifyAll()` so subscribers are NOT notified as if a
+    // successful state change landed — their contract is "the state
+    // moved to a new committed value", which is exactly false here.
+    // The failure/blocker signal is emitted separately below
+    // (setDurabilityBlocker already fired
+    // `lifeos:store-durability-blocked` + emitError from the
+    // uncertainty branch above; the freeze-end event is dispatched
+    // with an explicit `failure` marker so any listener that gates
+    // "settlement completed" on this event can distinguish the two
+    // outcomes).
+    if (postWriteUncertain) {
+      try {
+        if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+          window.dispatchEvent(new CustomEvent('lifeos:store-freeze-end', {
+            detail: {
+              failure: true,
+              commitError: postWriteUncertain.error,
+              durabilityBlocker: durabilityBlocker ? Object.assign({}, durabilityBlocker) : null
+            }
+          }));
+        }
+      } catch (e) { /* ignore */ }
+      // Ordinary CAS flush stays gated by `!durabilityBlocker` below;
+      // no need for an explicit refuse here.
+      return {
+        ok: false,
+        settlement: 'FULL_STATE_POST_WRITE_UNCERTAIN',
+        commitError: postWriteUncertain.error,
+        durabilityBlocker: durabilityBlocker ? Object.assign({}, durabilityBlocker) : null
+      };
+    }
+    // PRV-0.5 Round-3 review remediation: only fire the ordinary
+    // success-publication path (rebuildOptimistic + notifyAll) if
+    // commitFullStateWrapper actually landed a successful durable
+    // write during this transaction. Pre-write rejection or
+    // post-write uncertainty leaves `_fullStateCommitSucceeded ===
+    // false`, and subscribers must NOT be told a successful state
+    // change happened — the failure/blocker signal is on its own
+    // event stream (emitError + `lifeos:store-durability-blocked` +
+    // the freeze-end event with `detail.failure=true` below).
+    const committedThisTx = _fullStateCommitSucceeded;
+    _fullStateCommitSucceeded = false;
+    if (committedThisTx) {
+      rebuildOptimistic();
+      notifyAll();
+    }
     try {
       if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
         // Fire freeze-end AFTER settlement so listeners re-evaluating
-        // getDurabilityBlocker() see the final state.
-        window.dispatchEvent(new CustomEvent('lifeos:store-freeze-end', { detail: { durabilityBlocker: durabilityBlocker ? Object.assign({}, durabilityBlocker) : null } }));
+        // getDurabilityBlocker() see the final state. When commit
+        // did not succeed this transaction, mark the detail with
+        // `failure: true` so listeners can distinguish
+        // success-settled from failure-settled without inspecting
+        // the blocker code.
+        window.dispatchEvent(new CustomEvent('lifeos:store-freeze-end', {
+          detail: {
+            failure: !committedThisTx,
+            durabilityBlocker: durabilityBlocker ? Object.assign({}, durabilityBlocker) : null
+          }
+        }));
       }
     } catch (e) { /* ignore */ }
     if (pendingOps.length > 0 && !conflict && !durabilityBlocker) scheduleFlush();
-    return { ok: true, durabilityBlocker: durabilityBlocker ? Object.assign({}, durabilityBlocker) : null };
+    // `ok` reflects whether endFullStateTransaction ran successfully
+    // (valid token, transaction was active) — NOT whether the
+    // transaction committed a state change. The `settlement` field
+    // carries that outcome:
+    //   FULL_STATE_COMMITTED     → commitFullStateWrapper landed
+    //   FULL_STATE_NOT_COMMITTED → no commit was called or it failed pre-write
+    //   FULL_STATE_POST_WRITE_UNCERTAIN → uncertainty branch (early return above)
+    return {
+      ok: true,
+      settlement: committedThisTx ? 'FULL_STATE_COMMITTED' : 'FULL_STATE_NOT_COMMITTED',
+      durabilityBlocker: durabilityBlocker ? Object.assign({}, durabilityBlocker) : null
+    };
   }
   // Commit a full-state candidate (import / snapshot / reset) inside the
   // coordinator. Token guard enforces freeze; latest validated disk revision
@@ -3121,6 +3197,9 @@
       conflict       = null;
       durabilityBlocker = null;
       _consumeTransitionAuth();
+      // PRV-0.5 Round-3 review remediation: authorise the ordinary
+      // success-publication path in endFullStateTransaction.
+      _fullStateCommitSucceeded = true;
       return {
         ok: true,
         revision: nextRevision,

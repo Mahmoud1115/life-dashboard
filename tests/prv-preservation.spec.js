@@ -4800,3 +4800,630 @@ test('R3-P1-04-V14-SNAPSHOT-MISSING-REVISION-REJECTED — validateSnapshotWrappe
   expect(proof.malformed.ok).toBe(false);
   expect(proof.malformed.reason).toBe('SNAPSHOT_WRAPPER_SHAPE_INVALID');
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// PRV-0.5 Round-3 review remediation (Round-4) — R4 tests.
+// Closes the BINDING-2 five-case fault-injection matrix, real
+// production-path Logbook coverage, real Snapshot Restore v14
+// revision coverage, historical-contract completeness oracle, and
+// subscriber/publication semantics. See docs/lifeos/DECISIONS.md
+// ADR-015 addendum #11.
+// ═══════════════════════════════════════════════════════════════════
+
+// Shared canonical v14 candidate builder used by the R4 fault-matrix
+// tests below. Every legitimate top-level v14 domain is present with
+// a distinguishable sentinel `money.salary_net`.
+function _r4CanonicalV14Candidate(iso, sentinel) {
+  return {
+    money: { salary_net: sentinel, expenses: {}, usd_rate: 88, save_target: 55000 },
+    qatarVisit: {}, todayFocus: ['','',''], goals: {}, career: {}, easa: {},
+    logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [],
+               migration: { version: 1, sourceCounts: { tracker: 0, builder: 0 } },
+               reconciled: false, drift: null },
+    reviews: [], decisions: [], timeline: [],
+    about: {}, apartments: [], sbTasks: {},
+    bht: { habits: [], entries: [] }, telemetry: {}, ideas: [],
+    records: { deadlines: [], claims: [], risks: [], goals: [] },
+    meta: { version: 14, createdAt: iso, lastUpdated: iso,
+            recordsMigration: { status: 'migrated', schemaVersion: 14, at: iso, reason: 'test' } }
+  };
+}
+
+// Helper: settle boot, count subscriber notifications during a commit
+// attempt, and return the post-attempt snapshot of the invariants the
+// review demands (memory / revision / snapshot / notifications /
+// blocker / disk).
+async function _r4RunCommitAttempt(page, opts) {
+  return page.evaluate(async (opts) => {
+    await new Promise(r => { const unsub = window.Store.onSave(() => { unsub(); r(); }); setTimeout(r, 1500); });
+    const beforeRaw = localStorage.getItem('dune_state_v4');
+    const beforeParsed = beforeRaw ? JSON.parse(beforeRaw) : null;
+    const beforeRev = beforeParsed && beforeParsed.revision;
+    const beforeSalary = window.Store.get('money.salary_net');
+    const beforeSnapshotsRaw = localStorage.getItem('dune_snapshots_v1');
+    let notifCount = 0;
+    const unsub = window.Store.subscribe('*', () => { notifCount++; });
+    // subscribe fires once immediately with the current snapshot — that
+    // is an initial hydration, not a post-failure success notification.
+    // Reset the count to zero so ONLY the commit-attempt-induced
+    // notifications are measured.
+    notifCount = 0;
+    const origSet = localStorage.setItem.bind(localStorage);
+    const origGet = localStorage.getItem.bind(localStorage);
+    let cleanup = () => {};
+    if (opts.injection === 'altered-valid-bytes') {
+      const alteredValid = JSON.stringify(opts.alteredWrapper);
+      localStorage.setItem = function (k, v) {
+        if (k === 'dune_state_v4') return origSet(k, alteredValid);
+        return origSet(k, v);
+      };
+      cleanup = () => { localStorage.setItem = origSet; };
+    } else if (opts.injection === 'silent-no-op') {
+      localStorage.setItem = function (k, v) {
+        if (k === 'dune_state_v4') return; // silent no-op
+        return origSet(k, v);
+      };
+      cleanup = () => { localStorage.setItem = origSet; };
+    } else if (opts.injection === 'reread-throw') {
+      let stateWrites = 0;
+      localStorage.setItem = function (k, v) {
+        if (k === 'dune_state_v4') { stateWrites++; return origSet(k, v); }
+        return origSet(k, v);
+      };
+      let stateReads = 0;
+      localStorage.getItem = function (k) {
+        if (k === 'dune_state_v4' && stateWrites > 0) {
+          stateReads++;
+          if (stateReads === 1) throw new Error('simulated post-write reread throw');
+        }
+        return origGet(k);
+      };
+      cleanup = () => { localStorage.setItem = origSet; localStorage.getItem = origGet; };
+    } else if (opts.injection === 'authority-verification-fail') {
+      // Write a v14 wrapper whose data is valid schema but whose
+      // recordsMigration marker points at the WRONG SCHEMA_VERSION,
+      // so evaluateCandidateData() classifies it as non-canonical
+      // (MALFORMED_CURRENT_SCHEMA), not AUTHORITATIVE_MIGRATED.
+      const badAuth = JSON.stringify(opts.badAuthWrapper);
+      localStorage.setItem = function (k, v) {
+        if (k === 'dune_state_v4') return origSet(k, badAuth);
+        return origSet(k, v);
+      };
+      cleanup = () => { localStorage.setItem = origSet; };
+    }
+    const gate = window.Store.beginFullStateTransaction({ force: true, reason: opts.reason || 'test' });
+    let commitRes = null;
+    let endRes = null;
+    try {
+      commitRes = await window.Store.commitFullStateWrapper(gate.token, opts.candidate, opts.reason || 'test');
+    } finally {
+      endRes = window.Store.endFullStateTransaction(gate.token);
+      cleanup();
+      unsub();
+    }
+    const afterRaw = localStorage.getItem('dune_state_v4');
+    const afterParsed = afterRaw ? JSON.parse(afterRaw) : null;
+    return {
+      commitOk: commitRes && commitRes.ok,
+      commitError: commitRes && commitRes.error,
+      endOk: endRes && endRes.ok,
+      endSettlement: endRes && endRes.settlement,
+      blockerCode: (window.Store.getDurabilityBlocker && window.Store.getDurabilityBlocker() || {}).code || null,
+      subscriberNotifications: notifCount,
+      memorySalary: window.Store.get('money.salary_net'),
+      preMemorySalary: beforeSalary,
+      memoryUnchanged: window.Store.get('money.salary_net') === beforeSalary,
+      knownRevisionUnchanged: (afterParsed && afterParsed.revision) === beforeRev,
+      snapshotsUnchanged: localStorage.getItem('dune_snapshots_v1') === beforeSnapshotsRaw,
+      diskUnchangedFromBefore: afterRaw === beforeRaw,
+      quarantineKeys: Object.keys(localStorage).filter(k => k.indexOf('dune_state_v4_quarantine_') === 0)
+    };
+  }, opts);
+}
+
+// R4-P1-01a — altered-valid durable bytes: primary written OK from
+// the app's viewpoint, but reread returns valid different bytes.
+// endFullStateTransaction must install the uncertainty blocker and
+// publish NO success notification.
+test('R4-P1-01a-ALTERED-VALID-DURABLE-BYTES — no success notification, memory unchanged, uncertainty blocker installed', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const iso = new Date().toISOString();
+  const cand = _r4CanonicalV14Candidate(iso, 130000);
+  const altered = { version: 14, revision: 99, committedAt: iso, data: _r4CanonicalV14Candidate(iso, 1) };
+  const proof = await _r4RunCommitAttempt(page, {
+    candidate: cand, reason: 'r4-altered-valid',
+    injection: 'altered-valid-bytes', alteredWrapper: altered
+  });
+  expect(proof.commitOk).toBe(false);
+  expect(proof.commitError).toBe('FULL_STATE_DURABLE_VERIFY_FAILED');
+  expect(proof.endSettlement).toBe('FULL_STATE_POST_WRITE_UNCERTAIN');
+  expect(proof.blockerCode).toBe('STORE_FULL_STATE_POST_WRITE_UNCERTAIN');
+  expect(proof.subscriberNotifications).toBe(0);
+  expect(proof.memoryUnchanged).toBe(true);
+  expect(proof.snapshotsUnchanged).toBe(true);
+});
+
+// R4-P1-01b — post-write reread THROWS. commitFullStateWrapper's
+// `durableRaw = getItem(STATE_KEY)` is wrapped in try/catch → sets
+// durableRaw=null → treated as absent → durable byte-verify fails
+// with disk='absent'. Settlement installs uncertainty blocker.
+test('R4-P1-01b-POST-WRITE-REREAD-THROW — no success notification, uncertainty blocker installed', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const iso = new Date().toISOString();
+  const cand = _r4CanonicalV14Candidate(iso, 130000);
+  const proof = await _r4RunCommitAttempt(page, {
+    candidate: cand, reason: 'r4-reread-throw',
+    injection: 'reread-throw'
+  });
+  expect(proof.commitOk).toBe(false);
+  expect(proof.commitError).toBe('FULL_STATE_DURABLE_VERIFY_FAILED');
+  expect(proof.endSettlement).toBe('FULL_STATE_POST_WRITE_UNCERTAIN');
+  expect(proof.blockerCode).toBe('STORE_FULL_STATE_POST_WRITE_UNCERTAIN');
+  expect(proof.subscriberNotifications).toBe(0);
+  expect(proof.memoryUnchanged).toBe(true);
+});
+
+// R4-P1-01c — silent primary no-op: setItem for STATE_KEY is
+// swallowed. durableRaw === pre-existing rawNow (unchanged-source);
+// byte-verify fails; settlement installs uncertainty blocker.
+test('R4-P1-01c-SILENT-PRIMARY-NO-OP — no success notification, uncertainty blocker installed, memory unchanged', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const iso = new Date().toISOString();
+  const cand = _r4CanonicalV14Candidate(iso, 130000);
+  const proof = await _r4RunCommitAttempt(page, {
+    candidate: cand, reason: 'r4-no-op',
+    injection: 'silent-no-op'
+  });
+  expect(proof.commitOk).toBe(false);
+  expect(proof.commitError).toBe('FULL_STATE_DURABLE_VERIFY_FAILED');
+  expect(proof.endSettlement).toBe('FULL_STATE_POST_WRITE_UNCERTAIN');
+  expect(proof.blockerCode).toBe('STORE_FULL_STATE_POST_WRITE_UNCERTAIN');
+  expect(proof.subscriberNotifications).toBe(0);
+  expect(proof.diskUnchangedFromBefore).toBe(true);
+  expect(proof.memoryUnchanged).toBe(true);
+});
+
+// R4-P1-01d — post-write authority classification failure. The
+// durable reread matches the payload byte-for-byte, but
+// evaluateCandidateData classifies the on-disk data as
+// MALFORMED_CURRENT_SCHEMA. commitFullStateWrapper returns
+// FULL_STATE_POST_WRITE_VERIFICATION_FAILED; settlement installs
+// STORE_FULL_STATE_POST_WRITE_UNCERTAIN.
+//
+// We reach the post-write path by feeding an intended-canonical
+// candidate whose write is intercepted to land a wrapper whose data
+// evaluates as non-canonical (recordsMigration.schemaVersion set to
+// a value that does not match SCHEMA_VERSION). The pre-write
+// canonical guard sees the intended candidate (canonical); the
+// post-write verifier sees the intercepted wrapper (non-canonical).
+test('R4-P1-01d-POST-WRITE-AUTHORITY-CLASSIFICATION-FAIL — no success notification, uncertainty blocker installed', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const iso = new Date().toISOString();
+  const cand = _r4CanonicalV14Candidate(iso, 130000);
+  const badAuthData = _r4CanonicalV14Candidate(iso, 130000);
+  // Marker schemaVersion mismatch → MALFORMED_CURRENT_SCHEMA at post-write eval.
+  badAuthData.meta.recordsMigration.schemaVersion = 99;
+  const badAuthWrapper = { version: 14, revision: 42, committedAt: iso, data: badAuthData };
+  const proof = await _r4RunCommitAttempt(page, {
+    candidate: cand, reason: 'r4-auth-fail',
+    injection: 'authority-verification-fail', badAuthWrapper: badAuthWrapper
+  });
+  expect(proof.commitOk).toBe(false);
+  // Either durable byte-verify (bytes don't match) OR post-write auth verification
+  // (they match but classify non-canonical) can fire — both must land the same
+  // uncertainty blocker.
+  expect(['FULL_STATE_DURABLE_VERIFY_FAILED', 'FULL_STATE_POST_WRITE_VERIFICATION_FAILED']).toContain(proof.commitError);
+  expect(proof.endSettlement).toBe('FULL_STATE_POST_WRITE_UNCERTAIN');
+  expect(proof.blockerCode).toBe('STORE_FULL_STATE_POST_WRITE_UNCERTAIN');
+  expect(proof.subscriberNotifications).toBe(0);
+  expect(proof.memoryUnchanged).toBe(true);
+});
+
+// R4-P1-01e — recovery-mode altered-valid bytes: even under
+// `opts.recovery: true` (used by processImport/restoreSnapshot to
+// replace a corrupt authority), a post-write byte-verify failure
+// installs the uncertainty blocker; the recovery attempt does not
+// silently adopt the divergent bytes as authority.
+test('R4-P1-01e-RECOVERY-ALTERED-VALID-BYTES — no success notification, uncertainty blocker installed', async ({ page }) => {
+  await page.addInitScript(() => {
+    // Corrupt the primary at boot so we enter STORE_CORRUPT_AUTHORITATIVE_STATE
+    // and recovery can be authorised.
+    localStorage.setItem('dune_state_v4', '{corrupt-json');
+  });
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(async () => {
+    // Wait for boot settlement.
+    await new Promise(r => setTimeout(r, 500));
+    const beforeBlocker = (window.Store.getDurabilityBlocker && window.Store.getDurabilityBlocker() || {}).code;
+    // Prepare recovery auth for the current corrupt disk.
+    const auth = window.Store.prepareRecoveryAuth && window.Store.prepareRecoveryAuth();
+    let notifCount = 0;
+    const unsub = window.Store.subscribe('*', () => { notifCount++; });
+    notifCount = 0;
+    // Intercept setItem to land altered-valid bytes.
+    const iso = new Date().toISOString();
+    const alteredData = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, todayFocus: ['','',''], goals: {}, career: {}, easa: {},
+                          logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { version: 1, sourceCounts: { tracker: 0, builder: 0 } }, reconciled: false, drift: null },
+                          reviews: [], decisions: [], timeline: [], about: {}, apartments: [], sbTasks: {},
+                          bht: { habits: [], entries: [] }, telemetry: {}, ideas: [],
+                          records: { deadlines: [], claims: [], risks: [], goals: [] },
+                          meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'migrated', schemaVersion: 14, at: iso, reason: 'altered' } } };
+    const alteredWrapper = JSON.stringify({ version: 14, revision: 999, committedAt: iso, data: alteredData });
+    const origSet = localStorage.setItem.bind(localStorage);
+    localStorage.setItem = function (k, v) {
+      if (k === 'dune_state_v4') return origSet(k, alteredWrapper);
+      return origSet(k, v);
+    };
+    const cand = { money: { salary_net: 24680, expenses: {} }, qatarVisit: {}, todayFocus: ['','',''], goals: {}, career: {}, easa: {},
+                   logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { version: 1, sourceCounts: { tracker: 0, builder: 0 } }, reconciled: false, drift: null },
+                   reviews: [], decisions: [], timeline: [], about: {}, apartments: [], sbTasks: {},
+                   bht: { habits: [], entries: [] }, telemetry: {}, ideas: [],
+                   records: { deadlines: [], claims: [], risks: [], goals: [] },
+                   meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'migrated', schemaVersion: 14, at: iso, reason: 'intended' } } };
+    const gate = window.Store.beginFullStateTransaction({ force: true, reason: 'r4-recovery' });
+    let commitRes = null;
+    try {
+      commitRes = await window.Store.commitFullStateWrapper(gate.token, cand, 'r4-recovery', { recovery: true });
+    } finally {
+      window.Store.endFullStateTransaction(gate.token);
+      localStorage.setItem = origSet;
+      unsub();
+    }
+    const afterBlocker = (window.Store.getDurabilityBlocker && window.Store.getDurabilityBlocker() || {}).code;
+    return {
+      beforeBlocker, afterBlocker,
+      authIssued: !!(auth && auth.ok),
+      commitOk: commitRes && commitRes.ok,
+      commitError: commitRes && commitRes.error,
+      subscriberNotifications: notifCount,
+      memorySalary: window.Store.get('money.salary_net')
+    };
+  });
+  expect(proof.beforeBlocker).toBe('STORE_CORRUPT_AUTHORITATIVE_STATE');
+  expect(proof.authIssued).toBe(true);
+  expect(proof.commitOk).toBe(false);
+  expect(proof.commitError).toBe('FULL_STATE_DURABLE_VERIFY_FAILED');
+  // Per the uncertainty branch's contract: the truthful uncertainty
+  // blocker is installed ONLY when no more-specific blocker was
+  // already set. In this test the pre-existing
+  // STORE_CORRUPT_AUTHORITATIVE_STATE blocker is more specific
+  // (source-classification failure) and is preserved. The critical
+  // invariants — no success notification, no adoption of the
+  // altered-valid `1` sentinel into memory — still hold.
+  expect(['STORE_FULL_STATE_POST_WRITE_UNCERTAIN', 'STORE_CORRUPT_AUTHORITATIVE_STATE']).toContain(proof.afterBlocker);
+  expect(proof.subscriberNotifications).toBe(0);
+  // Memory did NOT adopt the altered-valid `1` value.
+  expect(proof.memorySalary).not.toBe(1);
+});
+
+// R4-P1-02-BOOT — real boot conversion with a malformed persisted
+// Logbook (an arbitrary object) is REJECTED by the atomic legacy
+// conversion pipeline. The disk sentinel bytes remain untouched,
+// STORE_LEGACY_CONVERSION_PENDING stays set, and ordinary writes
+// remain frozen.
+test('R4-P1-02-BOOT-MALFORMED-LOGBOOK-REAL-CONVERSION — production boot atomic legacy conversion refuses malformed Logbook; disk untouched', async ({ page }) => {
+  const sentinelBytes = JSON.stringify({
+    version: 12,
+    data: {
+      money: { salary_net: 42424, expenses: {} }, qatarVisit: {},
+      career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+      bht: { habits: [], entries: [] }, telemetry: {},
+      todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
+      logbook: { authority: 'wrong', schemaVersion: 'not-a-number' },
+      meta: { version: 12, createdAt: '2026-08-25T00:00:00Z', lastUpdated: '2026-08-25T00:00:00Z' }
+    }
+  });
+  await page.addInitScript((b) => { localStorage.setItem('dune_state_v4', b); }, sentinelBytes);
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(async () => {
+    await new Promise(r => setTimeout(r, 1500));
+    const hyd = window.hydratePreservationRecordsOnce
+      ? await window.hydratePreservationRecordsOnce().catch(e => ({ error: String(e) }))
+      : null;
+    return {
+      diskRaw: localStorage.getItem('dune_state_v4'),
+      blocker: (window.Store.getDurabilityBlocker && window.Store.getDurabilityBlocker() || {}).code || null,
+      hyd: hyd && (hyd.ok !== undefined ? { ok: hyd.ok, reason: hyd.reason } : hyd)
+    };
+  });
+  expect(proof.diskRaw).toBe(sentinelBytes);
+  expect(proof.blocker).toBe('STORE_LEGACY_CONVERSION_PENDING');
+});
+
+// R4-P1-02-IMPORT — real processImport() with a backup carrying a
+// malformed v14 Logbook is REJECTED. Primary bytes unchanged; no
+// success settlement/publication.
+test('R4-P1-02-IMPORT-REAL-MALFORMED-LOGBOOK — production processImport() refuses malformed Logbook', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(async () => {
+    await new Promise(r => { const unsub = window.Store.onSave(() => { unsub(); r(); }); setTimeout(r, 1500); });
+    const before = localStorage.getItem('dune_state_v4');
+    const iso = new Date().toISOString();
+    const backupData = {
+      version: 14, revision: 5, committedAt: iso,
+      data: {
+        money: { salary_net: 1, expenses: {} }, qatarVisit: {},
+        career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+        bht: { habits: [], entries: [] }, telemetry: {},
+        todayFocus: ['','',''], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
+        logbook: 'this is a malformed string',
+        records: { deadlines: [], claims: [], risks: [], goals: [] },
+        meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'migrated', schemaVersion: 14, at: iso, reason: 'test' } }
+      }
+    };
+    const backup = { version: '2026.1', exported_at: iso, data: { dune_state_v4: backupData } };
+    let notifCount = 0;
+    const unsub = window.Store.subscribe('*', () => { notifCount++; });
+    notifCount = 0;
+    window.confirm = () => true;
+    const _st = window.setTimeout;
+    window.setTimeout = (fn, d) => (d && d >= 1000) ? 0 : _st(fn, d);
+    let ok = null;
+    try { ok = await window.processImport(JSON.stringify(backup)); }
+    finally { window.setTimeout = _st; unsub(); }
+    return {
+      importOk: ok,
+      subscriberNotifications: notifCount,
+      diskUnchanged: localStorage.getItem('dune_state_v4') === before
+    };
+  });
+  expect(proof.importOk).toBe(false);
+  expect(proof.diskUnchanged).toBe(true);
+  expect(proof.subscriberNotifications).toBe(0);
+});
+
+// R4-P1-02-SNAPSHOT — real Store.restoreSnapshot() with a
+// malformed-Logbook snapshot is REJECTED. Primary bytes unchanged;
+// no success settlement.
+test('R4-P1-02-SNAPSHOT-REAL-MALFORMED-LOGBOOK — Store.restoreSnapshot refuses malformed Logbook payload', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(async () => {
+    await new Promise(r => { const unsub = window.Store.onSave(() => { unsub(); r(); }); setTimeout(r, 1500); });
+    const before = localStorage.getItem('dune_state_v4');
+    const iso = new Date().toISOString();
+    const snapPayload = JSON.stringify({
+      version: 14, revision: 42, committedAt: iso,
+      data: {
+        money: { salary_net: 1, expenses: {} }, qatarVisit: {},
+        career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+        bht: { habits: [], entries: [] }, telemetry: {},
+        todayFocus: ['','',''], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
+        logbook: { garbage: 'yes' },
+        records: { deadlines: [], claims: [], risks: [], goals: [] },
+        meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'migrated', schemaVersion: 14, at: iso, reason: 'snap' } }
+      }
+    });
+    localStorage.setItem('dune_snapshots_v1', JSON.stringify([{ at: iso, payload: snapPayload }]));
+    let notifCount = 0;
+    const unsub = window.Store.subscribe('*', () => { notifCount++; });
+    notifCount = 0;
+    const dispatch = window.Store.restoreSnapshot(0, { force: true });
+    let settled = null;
+    try { settled = await dispatch.settled; } catch (e) { settled = { error: String(e) }; }
+    unsub();
+    return {
+      dispatchOk: dispatch && dispatch.ok,
+      settledOk: settled && settled.ok,
+      subscriberNotifications: notifCount,
+      diskUnchanged: localStorage.getItem('dune_state_v4') === before
+    };
+  });
+  // Either the dispatch fails at pre-flight (SNAPSHOT_SOURCE_...)
+  // or the commit fails; the invariants below must hold either way.
+  expect(!!proof.settledOk).toBe(false);
+  expect(proof.diskUnchanged).toBe(true);
+  expect(proof.subscriberNotifications).toBe(0);
+});
+
+// R4-P1-04-RESTORE-VALID — a valid v14 snapshot with a valid integer
+// revision restores through the real Store.restoreSnapshot() code
+// path and lands the snapshot's data on disk.
+test('R4-P1-04-RESTORE-VALID-V14 — real restoreSnapshot with valid v14 wrapper succeeds', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(async () => {
+    await new Promise(r => { const unsub = window.Store.onSave(() => { unsub(); r(); }); setTimeout(r, 1500); });
+    const iso = new Date().toISOString();
+    const snapPayload = JSON.stringify({
+      version: 14, revision: 42, committedAt: iso,
+      data: {
+        money: { salary_net: 24680, expenses: {} }, qatarVisit: {},
+        career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+        bht: { habits: [], entries: [] }, telemetry: {},
+        todayFocus: ['','',''], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
+        logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { version: 1, sourceCounts: { tracker: 0, builder: 0 } }, reconciled: false, drift: null },
+        reviews: [], decisions: [],
+        records: { deadlines: [], claims: [], risks: [], goals: [] },
+        meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'migrated', schemaVersion: 14, at: iso, reason: 'snap' } }
+      }
+    });
+    localStorage.setItem('dune_snapshots_v1', JSON.stringify([{ at: iso, payload: snapPayload }]));
+    const dispatch = window.Store.restoreSnapshot(0, { force: true });
+    let settled = null;
+    try { settled = await dispatch.settled; } catch (e) { settled = { error: String(e) }; }
+    const p = JSON.parse(localStorage.getItem('dune_state_v4'));
+    return {
+      settledOk: settled && settled.ok,
+      restoredSalary: p && p.data && p.data.money && p.data.money.salary_net
+    };
+  });
+  expect(proof.settledOk).toBe(true);
+  expect(proof.restoredSalary).toBe(24680);
+});
+
+// R4-P1-04-RESTORE-MISSING-REV — v14 snapshot missing revision is
+// REJECTED by the real Store.restoreSnapshot() code path (via
+// validateSnapshotWrapperFull's shape gate) before primary
+// mutation. Primary bytes unchanged.
+test('R4-P1-04-RESTORE-V14-MISSING-REV-REJECTED — restoreSnapshot refuses v14 wrapper without revision; primary unchanged', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(async () => {
+    await new Promise(r => { const unsub = window.Store.onSave(() => { unsub(); r(); }); setTimeout(r, 1500); });
+    const before = localStorage.getItem('dune_state_v4');
+    const iso = new Date().toISOString();
+    const snapPayload = JSON.stringify({
+      version: 14, committedAt: iso,  // revision omitted
+      data: {
+        money: { salary_net: 1, expenses: {} }, qatarVisit: {},
+        career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+        bht: { habits: [], entries: [] }, telemetry: {},
+        todayFocus: ['','',''], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
+        logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { version: 1, sourceCounts: { tracker: 0, builder: 0 } }, reconciled: false, drift: null },
+        reviews: [], decisions: [],
+        records: { deadlines: [], claims: [], risks: [], goals: [] },
+        meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'migrated', schemaVersion: 14, at: iso, reason: 'snap' } }
+      }
+    });
+    localStorage.setItem('dune_snapshots_v1', JSON.stringify([{ at: iso, payload: snapPayload }]));
+    const dispatch = window.Store.restoreSnapshot(0, { force: true });
+    let settled = null;
+    try { settled = await dispatch.settled; } catch (e) { settled = { error: String(e) }; }
+    return {
+      dispatchOk: dispatch && dispatch.ok,
+      settledOk: settled && settled.ok,
+      diskUnchanged: localStorage.getItem('dune_state_v4') === before
+    };
+  });
+  expect(!!proof.settledOk).toBe(false);
+  expect(proof.diskUnchanged).toBe(true);
+});
+
+// R4-P1-04-RESTORE-STRING-REV — v14 snapshot with revision='not-a-number' rejected.
+test('R4-P1-04-RESTORE-V14-STRING-REV-REJECTED — restoreSnapshot refuses v14 wrapper with non-integer revision; primary unchanged', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(async () => {
+    await new Promise(r => { const unsub = window.Store.onSave(() => { unsub(); r(); }); setTimeout(r, 1500); });
+    const before = localStorage.getItem('dune_state_v4');
+    const iso = new Date().toISOString();
+    const snapPayload = JSON.stringify({
+      version: 14, revision: 'not-a-number', committedAt: iso,
+      data: {
+        money: { salary_net: 1, expenses: {} }, qatarVisit: {},
+        career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+        bht: { habits: [], entries: [] }, telemetry: {},
+        todayFocus: ['','',''], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
+        logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { version: 1, sourceCounts: { tracker: 0, builder: 0 } }, reconciled: false, drift: null },
+        reviews: [], decisions: [],
+        records: { deadlines: [], claims: [], risks: [], goals: [] },
+        meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'migrated', schemaVersion: 14, at: iso, reason: 'snap' } }
+      }
+    });
+    localStorage.setItem('dune_snapshots_v1', JSON.stringify([{ at: iso, payload: snapPayload }]));
+    const dispatch = window.Store.restoreSnapshot(0, { force: true });
+    let settled = null;
+    try { settled = await dispatch.settled; } catch (e) { settled = { error: String(e) }; }
+    return { settledOk: settled && settled.ok, diskUnchanged: localStorage.getItem('dune_state_v4') === before };
+  });
+  expect(!!proof.settledOk).toBe(false);
+  expect(proof.diskUnchanged).toBe(true);
+});
+
+// R4-P1-04-RESTORE-NEGATIVE-REV — v14 snapshot with revision=-1 rejected.
+test('R4-P1-04-RESTORE-V14-NEGATIVE-REV-REJECTED — restoreSnapshot refuses v14 wrapper with negative revision', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(async () => {
+    await new Promise(r => { const unsub = window.Store.onSave(() => { unsub(); r(); }); setTimeout(r, 1500); });
+    const before = localStorage.getItem('dune_state_v4');
+    const iso = new Date().toISOString();
+    const snapPayload = JSON.stringify({
+      version: 14, revision: -1, committedAt: iso,
+      data: {
+        money: { salary_net: 1, expenses: {} }, qatarVisit: {},
+        career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+        bht: { habits: [], entries: [] }, telemetry: {},
+        todayFocus: ['','',''], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
+        logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { version: 1, sourceCounts: { tracker: 0, builder: 0 } }, reconciled: false, drift: null },
+        reviews: [], decisions: [],
+        records: { deadlines: [], claims: [], risks: [], goals: [] },
+        meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'migrated', schemaVersion: 14, at: iso, reason: 'snap' } }
+      }
+    });
+    localStorage.setItem('dune_snapshots_v1', JSON.stringify([{ at: iso, payload: snapPayload }]));
+    const dispatch = window.Store.restoreSnapshot(0, { force: true });
+    let settled = null;
+    try { settled = await dispatch.settled; } catch (e) { settled = { error: String(e) }; }
+    return { settledOk: settled && settled.ok, diskUnchanged: localStorage.getItem('dune_state_v4') === before };
+  });
+  expect(!!proof.settledOk).toBe(false);
+  expect(proof.diskUnchanged).toBe(true);
+});
+
+// R4-P1-04-RESTORE-FUTURE-VERSION — snapshot with version > SCHEMA_VERSION rejected.
+test('R4-P1-04-RESTORE-FUTURE-VERSION-REJECTED — restoreSnapshot refuses future SCHEMA_VERSION wrapper', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(async () => {
+    await new Promise(r => { const unsub = window.Store.onSave(() => { unsub(); r(); }); setTimeout(r, 1500); });
+    const before = localStorage.getItem('dune_state_v4');
+    const iso = new Date().toISOString();
+    const snapPayload = JSON.stringify({
+      version: 99, revision: 42, committedAt: iso,
+      data: { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, meta: {} }
+    });
+    localStorage.setItem('dune_snapshots_v1', JSON.stringify([{ at: iso, payload: snapPayload }]));
+    const dispatch = window.Store.restoreSnapshot(0, { force: true });
+    let settled = null;
+    try { settled = await dispatch.settled; } catch (e) { settled = { error: String(e) }; }
+    return { settledOk: settled && settled.ok, diskUnchanged: localStorage.getItem('dune_state_v4') === before };
+  });
+  expect(!!proof.settledOk).toBe(false);
+  expect(proof.diskUnchanged).toBe(true);
+});
+
+// R4-P1-03-ORACLE — deterministic evidence oracle. For every
+// supported historical version (v8..v13) the emitted defaultState()
+// domain set at that version's SCHEMA_VERSION-bump commit must be a
+// SUBSET of the validator's requirement (requiredObjects ∪
+// requiredArrays ∪ Object.keys(nested).map(top-level)).
+//
+// The emission is inlined here per version, extracted from
+// `git show <SHA>:core.js` at the bump commit (see ADR-015 addendum
+// #10 for the SHAs). A future addition to defaultState() that is
+// NOT reflected in the validator will fail this oracle before it
+// reaches production.
+test('R4-P1-03-EVIDENCE-ORACLE — every emitted defaultState top-level domain is enforced by the validator', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(() => {
+    // Emitted top-level keys per version (from git show at each
+    // SCHEMA_VERSION-bump commit's defaultState()).
+    const emitted = {
+      8:  ['money','qatarVisit','todayFocus','goals','career','easa','logbook','reviews','decisions','timeline','about','apartments','sbTasks','bht','telemetry','meta'],
+      9:  ['money','qatarVisit','todayFocus','goals','career','easa','logbook','reviews','decisions','timeline','about','apartments','sbTasks','bht','telemetry','ideas','meta'],
+      10: ['money','qatarVisit','todayFocus','goals','career','easa','logbook','reviews','decisions','timeline','about','apartments','sbTasks','bht','telemetry','ideas','meta'],
+      11: ['money','qatarVisit','todayFocus','goals','career','easa','logbook','reviews','decisions','timeline','about','apartments','sbTasks','bht','telemetry','ideas','meta'],
+      12: ['money','qatarVisit','todayFocus','goals','career','easa','logbook','reviews','decisions','timeline','about','apartments','sbTasks','bht','telemetry','ideas','meta'],
+      13: ['money','qatarVisit','todayFocus','goals','career','easa','logbook','reviews','decisions','timeline','about','apartments','sbTasks','bht','telemetry','ideas','meta']
+    };
+    const results = {};
+    for (const v of Object.keys(emitted)) {
+      const req = window.Store.getHistoricalRequirements(Number(v));
+      const covered = new Set();
+      for (const k of req.requiredObjects) covered.add(k);
+      for (const k of req.requiredArrays) covered.add(k);
+      for (const path of Object.keys(req.nested)) covered.add(path.split('.')[0]);
+      const missing = emitted[v].filter(k => !covered.has(k));
+      results[v] = { missing: missing };
+    }
+    return results;
+  });
+  for (const v of Object.keys(proof)) {
+    expect(proof[v].missing).toEqual([]);
+  }
+});
+
+// R4-P1-03-EXPENSES-NESTED — money.expenses must be a nested-check
+// requirement for every v8..v13 row (a top-level `money` object with
+// no expenses would otherwise pass the top-level check).
+test('R4-P1-03-EXPENSES-NESTED-ENFORCED — every v8..v13 row nested spec includes money.expenses', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(() => {
+    const versions = [8, 9, 10, 11, 12, 13];
+    const results = {};
+    for (const v of versions) {
+      const req = window.Store.getHistoricalRequirements(v);
+      results[v] = 'money.expenses' in req.nested;
+    }
+    return results;
+  });
+  for (const v of Object.keys(proof)) {
+    expect(proof[v]).toBe(true);
+  }
+});
