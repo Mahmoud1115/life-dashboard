@@ -1973,20 +1973,31 @@
     if (rawParsed.corrupt) return { ok: false };
     const rawData = rawParsed.data;
     // PRV-0.5 Round-6 (Claude-authored, P1-A + P1-B): source-validate
-    // the ORIGINAL wrapper data before migrateUp / normalize. A v14
-    // current-schema wrapper with a missing `logbook` (or a missing
-    // BHT/telemetry emitted path) is corruption, not a stale shape
-    // repairable by hydration — permitting it here would let the boot
-    // path silently fabricate an empty envelope and then commit that
-    // fabrication back to disk on the next mutation.
+    // the ORIGINAL wrapper data before migrateUp / normalize for
+    // CURRENT-schema wrappers only. A v14 wrapper with a missing
+    // `logbook` (or a missing BHT/telemetry emitted path) is
+    // corruption, not a stale shape repairable by hydration —
+    // permitting it here would let the boot path silently fabricate
+    // an empty envelope and then commit that fabrication back to
+    // disk on the next mutation.
     //
     // Legacy sources (v8..v13) continue through the soft-floor path
     // for boot-time hydration compatibility (see ADR-015 addendum #7):
     // rejecting a stale-shape v11 wrapper on boot would strand the
     // user with recovery-required on a wrapper the repository's own
-    // migrateUp pipeline supports. Destructive legacy-source validation
-    // remains enforced through evaluateCandidateWrapper (import path)
-    // and validateSnapshotWrapperFull (snapshot path).
+    // migrateUp pipeline supports. The Round-6 Pre-Push Amendment §C
+    // boot invariants for LEGACY sources are already satisfied by
+    // the STORE_LEGACY_CONVERSION_PENDING pathway: initialLoad
+    // installs the conversion-pending blocker for legacy raws, and
+    // the atomic legacy-conversion commit step then runs
+    // validateLegacySourceRequiredFields (core.js:3005) and refuses
+    // with LEGACY_CONVERSION_SOURCE_INVALID on any partial source —
+    // primary bytes preserved, no destructive conversion, ordinary
+    // writes blocked, user routed to explicit recovery.
+    //
+    // Destructive legacy-source validation remains enforced through
+    // evaluateCandidateWrapper (import path) and
+    // validateSnapshotWrapperFull (snapshot path).
     if (rawParsed.version === SCHEMA_VERSION) {
       const src = validateFullStateCanonical(rawData);
       if (!src.ok) return { ok: false, sourceInvalid: true, reason: src.reason };

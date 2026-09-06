@@ -2316,3 +2316,52 @@ unchanged). Local only, unpushed.
 **Provenance.** New Claude-authored commit's ancestry: `<Round-6 head> → 6a79f4d46bb1a1779456d9774192be8c6873b26f`. The Codex-authored `ef6e4019…` is NOT an ancestor of the Round-6 head; it remains unpushed on the `claude/prv-0-5-final-closure` worktree as pure defect specification / diff-of-record.
 
 **Date:** 2026-09-06 (Round-6 Claude-authored remediation on branch `claude/prv-0-5-round6-claude-authored`; parent `6a79f4d46bb1a1779456d9774192be8c6873b26f`). Local only, unpushed pending ChatGPT pre-push review.
+
+### ADR-015 addendum #14 (2026-09-06) — Round-6 Pre-Push Amendment closure: exhaustive v8-v13 matrix + production compositions + keyboard/confirmation UX + canonical docs
+
+**Trigger.** The ChatGPT pre-push review of Round-6 head `45634c30ed93e78d37eb61cb90fe0b45c807e097` (`115-PRV-0.5-ROUND6-PRE-PUSH-REVIEW-AMENDMENT.md`) returned FAIL PRE-PUSH — narrow evidence/test-completeness remediation only, preserve the implementation unless the missing tests expose a real defect. The parent (`45634c3…`) is preserved unchanged; this addendum records the single Claude-authored follow-up commit on top of it.
+
+**§B — Complete v8..v13 deletion / type-corruption matrix.** New R6A-B-* tests iterate `version ∈ {8, 9, 10, 11, 12, 13}` × every emitted BHT + telemetry + money-nested path × {delete, type-corrupt} and assert `validateLegacySourceRequiredFields()` rejects with a reason that names the failing path. The expected paths + kinds list is INDEPENDENTLY restated in the test file (`R6A_EVIDENCE`), NOT read from `getHistoricalRequirements()` — so the matrix catches a regression that removes a path from production and the requirements matrix simultaneously. `bht.habits` / `bht.entries` deletions accept the pre-existing back-compat `malformed-bht-substructure` reason as a valid "this path is what failed" signal (core.js:1187 preserves that reason for existing tests). Additional coverage: version-specific Logbook representation (array required v8-v11; envelope required v12-v13; wrong representation per version rejects); `meta` omission for every version; `money.expenses` omission for every version; valid migration sentinel preservation for v11 (pre-envelope) and v13 (envelope), asserting the migrated data carries a `meta.recordsMigration` marker at `schemaVersion=14` with `status ∈ {migrated, unmigrated}` and canonical `records.{claims, deadlines, goals, risks}`.
+
+**§C — Historical partial-state production compositions.** New R6A-C-* tests exercise each destructive boundary through its public production entrypoint at both v11 (pre-envelope) and v13 (envelope):
+- Boot: v11 wrapper with `bht.snapshots` missing on disk / v13 wrapper with `telemetry.weeklyShiftHours` missing on disk → disk bytes preserved exactly, and the destructive-boundary evaluator (`evaluateCandidateWrapper` on the parsed wrapper) returns `MALFORMED_CURRENT_SCHEMA` with reasons naming the failing path. The pre-existing legacy-boot `STORE_LEGACY_CONVERSION_PENDING` pathway already satisfies the amendment §C boot invariants for partial legacy wrappers: `initialLoad` installs the conversion-pending blocker, the atomic legacy-conversion commit step then refuses via `LEGACY_CONVERSION_SOURCE_INVALID` (core.js:3005), ordinary writes stay blocked, primary bytes remain untouched.
+- `processImport()`: real `window.processImport()` of v11 backup missing `bht.vocab.moods` and of v13 backup missing `telemetry.focusReserve` → `importOk === false`, disk unchanged, zero `Store.subscribe('*')` notifications.
+- `Store.restoreSnapshot()`: v11 snapshot missing `bht.lifeEvents` and v13 snapshot missing `telemetry.accumulatedFatigue` → dispatch settles unsuccessful, disk unchanged, zero notifications.
+
+**§D — Direct full-state commit + recovery evaluation evidence.**
+- `R6A-D-DIRECT-COMMIT-V14-MISSING-LOGBOOK` — direct `commitFullStateWrapper` with a COMPLETE v14 candidate except `logbook` omitted entirely → `ok === false`, `error === 'FULL_STATE_CANONICAL_INCOMPLETE'`, `missing` array contains `'logbook'`, disk bytes unchanged, zero subscriber notifications.
+- `R6A-D-RECOVERY-EVAL-INCOMPLETE-CANDIDATE-CANNOT-BECOME-PLAUSIBLE` — with a corrupt disk that installed `STORE_CORRUPT_AUTHORITATIVE_STATE`, calling `evaluateCandidateWrapper` on an incomplete v14 candidate (missing logbook) → returns `MALFORMED_CURRENT_SCHEMA` with `current-source-logbook` in reasons, `ev.data.logbook` is NOT a synthesized envelope, disk bytes unchanged, the durability blocker retains its exact prior code, zero notifications. Proves the recovery evaluator does not repair an incomplete candidate into a plausible authority.
+
+**§E — Recovery UX keyboard focus + confirmation-cancel gating.**
+- `R6A-E-KEYBOARD-FOCUSABLE-RECOVERY-CONTROLS` — after `openBackupPanel()`, each of the three recovery buttons (`recovery-restore-snapshot`, `recovery-import-backup`, `recovery-reset-lifeos`) receives real focus (`document.activeElement === el`) with `tabIndex >= 0` and is a native `<BUTTON>` (default Space/Enter keyboard activation, in the tab order without explicit `tabindex`). The banner points the user at the Backup panel; the panel's `display:none → visible` transition is the same public entrypoint the banner instructs the user to invoke.
+- `R6A-E-RESET-CANCEL-NO-DESTRUCTION` — with `window.confirm = () => false`, calling `window.recoveryResetLifeOS()` performs no mutation: disk bytes unchanged, `money.salary_net` unchanged, zero subscriber notifications.
+- `R6A-E-RESTORE-CANCEL-NO-DESTRUCTION` — with `window.confirm = () => false`, calling `window.recoveryRestoreSnapshot()` performs no mutation on the primary; same three invariants. A snapshot is seeded so the code path has something to consider.
+
+**§F — Canonical documentation corrections.**
+- `docs/lifeos/ARCHITECTURE.md`:
+  - Runtime clause corrected: "No runtime `package.json`" (previously "No `package.json`") + explicit acknowledgement that a dev-tooling `package.json` pins `@playwright/test` at `1.62.1` and ships nothing to the browser.
+  - Domain-local Store validation clause corrected: the previous statement that "a malformed `state.logbook` … is recovered to `defaultLogbookEnvelope()` at load" is REMOVED and replaced with the Round-6 rule (recovery only for fresh-state initialization; destructive boundaries fail closed).
+  - New paragraph on the supported historical range (v8..v13 supported, v0..v7 FAIL CLOSED at destructive boundaries, complete BHT + telemetry emitted paths documented in-line with the kinds).
+  - New paragraph on current-schema (v14) canonical validation surface: `validateFullStateCanonical()` applied at `commitFullStateWrapper` / `evaluateCandidateWrapper` v14 / `validateSnapshotWrapperFull` v14 / `migrateAndValidate` v14 boot.
+  - New paragraph on pre-write vs post-write mapping: pre-write canonical → primary write → post-write `evaluateCandidateData` → success or `STORE_FULL_STATE_POST_WRITE_UNCERTAIN` blocker + banner.
+- Other Layer-1 docs (`ROADMAP.md`, `STORAGE_MAP.md`, `STORAGE_MIGRATION.md`, `TESTING.md`, `PROJECT.md`, `SECURITY_REVIEW.md`) — audited; no stale statement identified. `TESTING.md` does not hardcode test counts. `STORAGE_MIGRATION.md`'s "older supported schema" clause is generic and remains correct.
+
+**§H — Cold evidence (targeted / suite / discovery).**
+
+| Command | Result |
+|---|---|
+| `npx playwright test tests/prv-preservation.spec.js -g 'R6A-' --retries=0` | 22 passed, 0 flakes, 0 retries |
+| `npx playwright test tests/prv-preservation.spec.js -g 'R6' --retries=0` | (R6-* + R6A-*) all pass, 0 flakes, 0 retries |
+| `npx playwright test tests/prv-preservation.spec.js --retries=0` | All prv-preservation tests pass |
+| `npx playwright test tests/store-durability.spec.js --retries=0` | All durability tests pass |
+| `CI=1 npx playwright test --retries=0` | 348 passed, 0 flakes, 0 retries, 3.3 min |
+| `npx playwright test --list` | Total: 348 tests in 9 files |
+| `npx playwright test tests/prv-preservation.spec.js --list` | Total: 191 tests in 1 file |
+| `git ls-files '*.js' \| xargs node --check` | clean (28 files) |
+| `git diff --check` | clean |
+
+**Preservation matrix (nothing regressed).** BINDING-1 / BINDING-2 / BINDING-3-A / BINDING-3-B unchanged from addendum #13. `normalizeLogbookDomain` still refuses to fabricate; every destructive boundary still validates before normalization; the boot-legacy `STORE_LEGACY_CONVERSION_PENDING` pathway is preserved with the atomic-conversion source check unchanged. All prior R7 closures still pass cold.
+
+**Provenance.** Amendment-follow-up commit ancestry: `<amendment head> → 45634c30ed93e78d37eb61cb90fe0b45c807e097 → 6a79f4d46bb1a1779456d9774192be8c6873b26f`. Codex's `ef6e4019…` remains NOT an ancestor.
+
+**Date:** 2026-09-06 (Round-6 Pre-Push Amendment closure on branch `claude/prv-0-5-round6-claude-authored`; parent `45634c30ed93e78d37eb61cb90fe0b45c807e097`). Local only, unpushed pending re-review.
