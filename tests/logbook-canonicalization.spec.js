@@ -78,16 +78,33 @@ async function waitReady(page) {
 // domain explicitly provided by the caller wins.
 function _fillLegacyStateDomains(state) {
   if (!state || typeof state !== 'object' || !state.data || typeof state.data !== 'object') return state;
+  // PRV-0.5 Codex-final P1-03: full emission audit added `meta` and
+  // `money.expenses` to every v8..v13 required set. Keep the fill
+  // helper aligned with the strict matrix so seeds pass validation
+  // whether the caller opts into v11 (logbook array) or v12+
+  // (logbook envelope) shape.
+  const isEnvelopeVersion = state.version && state.version >= 12;
+  const defaultLogbook = isEnvelopeVersion
+    ? { schemaVersion: 1, authority: 'legacy-mirror', entries: [],
+        migration: { version: 1, sourceCounts: { tracker: 0, builder: 0 } },
+        reconciled: false, drift: null }
+    : [];
   const defaults = {
-    money: { salary_net: 130000 },
+    money: { salary_net: 130000, expenses: {}, usd_rate: 88, save_target: 55000 },
     qatarVisit: {},
     career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
     bht: { habits: [], entries: [] },
     telemetry: {},
     todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
-    logbook: []
+    logbook: defaultLogbook,
+    meta: { version: state.version, createdAt: '2026-08-25T00:00:00Z', lastUpdated: '2026-08-25T00:00:00Z' }
   };
   const filled = Object.assign({}, defaults, state.data);
+  // If caller passed money without expenses, merge in the default
+  // expenses object rather than overriding money wholesale.
+  if (filled.money && typeof filled.money === 'object' && !Array.isArray(filled.money) && !filled.money.expenses) {
+    filled.money = Object.assign({}, defaults.money, filled.money);
+  }
   return Object.assign({}, state, { data: filled });
 }
 
@@ -270,11 +287,12 @@ test('L9 — empty Tracker key is authoritative: no resurrection from old envelo
     state: {
       version: 12,
       data: {
-        money: { salary_net: 130000 },
+        money: { salary_net: 130000, expenses: {} },
         qatarVisit: {},
         career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
         bht: { habits: [], entries: [] }, telemetry: {},
         todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
+        meta: { version: 12, createdAt: '2026-08-25T00:00:00Z', lastUpdated: '2026-08-25T00:00:00Z' },
         logbook: {
           schemaVersion: 1,
           authority: 'legacy-mirror',
@@ -342,11 +360,12 @@ test('L11 — empty Builder key is authoritative: no builder resurrection', asyn
     state: {
       version: 12,
       data: {
-        money: { salary_net: 130000 },
+        money: { salary_net: 130000, expenses: {} },
         qatarVisit: {},
         career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
         bht: { habits: [], entries: [] }, telemetry: {},
         todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
+        meta: { version: 12, createdAt: '2026-08-25T00:00:00Z', lastUpdated: '2026-08-25T00:00:00Z' },
         logbook: {
           schemaVersion: 1,
           authority: 'legacy-mirror',
@@ -510,7 +529,7 @@ test('L19 — malformed logbook in dune_state_v4 is rejected by the strict sourc
     state: {
       version: 12,
       data: {
-        money: { salary_net: 130000 },
+        money: { salary_net: 130000, expenses: {} },
         qatarVisit: {},
         logbook: 'this is not valid',
       }
@@ -535,11 +554,12 @@ test('L21 — schema-11 state-only Tracker recovery: legacy key absent, v11 Stor
     localStorage.setItem('dune_state_v4', JSON.stringify({
       version: 11,
       data: {
-        money: { salary_net: 130000 },
+        money: { salary_net: 130000, expenses: {} },
         qatarVisit: {},
         career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
         bht: { habits: [], entries: [] }, telemetry: {},
         todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
+        meta: { version: 12, createdAt: '2026-08-25T00:00:00Z', lastUpdated: '2026-08-25T00:00:00Z' },
         logbook: [
           { id: 'lb_1_recover', date: '2026-08-25', company: 'X',
             aircraft_type: 'A320', registration: 'S', engine_type: 'CFM',
@@ -567,11 +587,12 @@ test('L22 — schema-12 state-only Builder recovery: Builder legacy key absent, 
     localStorage.setItem('dune_state_v4', JSON.stringify({
       version: 12,
       data: {
-        money: { salary_net: 130000 },
+        money: { salary_net: 130000, expenses: {} },
         qatarVisit: {},
         career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
         bht: { habits: [], entries: [] }, telemetry: {},
         todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
+        meta: { version: 12, createdAt: '2026-08-25T00:00:00Z', lastUpdated: '2026-08-25T00:00:00Z' },
         logbook: {
           schemaVersion: 1,
           authority: 'legacy-mirror',
@@ -603,11 +624,12 @@ test('L23 — both legacy keys absent: canonical Tracker + Builder entries both 
     localStorage.setItem('dune_state_v4', JSON.stringify({
       version: 12,
       data: {
-        money: { salary_net: 130000 },
+        money: { salary_net: 130000, expenses: {} },
         qatarVisit: {},
         career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
         bht: { habits: [], entries: [] }, telemetry: {},
         todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
+        meta: { version: 12, createdAt: '2026-08-25T00:00:00Z', lastUpdated: '2026-08-25T00:00:00Z' },
         logbook: {
           schemaVersion: 1, authority: 'legacy-mirror',
           entries: [
@@ -645,11 +667,12 @@ test('L24 — empty legacy key suppresses recovery for that source', async ({ pa
     localStorage.setItem('dune_state_v4', JSON.stringify({
       version: 12,
       data: {
-        money: { salary_net: 130000 },
+        money: { salary_net: 130000, expenses: {} },
         qatarVisit: {},
         career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
         bht: { habits: [], entries: [] }, telemetry: {},
         todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
+        meta: { version: 12, createdAt: '2026-08-25T00:00:00Z', lastUpdated: '2026-08-25T00:00:00Z' },
         logbook: {
           schemaVersion: 1, authority: 'legacy-mirror',
           entries: [
@@ -916,6 +939,7 @@ test('L32 — malformed schema-12 Logbook: strict source rejection, blocker set,
         career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
         bht: { habits: [], entries: [] }, telemetry: {},
         todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
+        meta: { version: 12, createdAt: '2026-08-25T00:00:00Z', lastUpdated: '2026-08-25T00:00:00Z' },
         logbook: 'not an envelope',
       }
     }));
@@ -1191,11 +1215,12 @@ test('L40 — first reconciliation after schema-11 migration produces reconciled
     localStorage.setItem('dune_state_v4', JSON.stringify({
       version: 11,
       data: {
-        money: { salary_net: 130000 },
+        money: { salary_net: 130000, expenses: {} },
         qatarVisit: {},
         career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
         bht: { habits: [], entries: [] }, telemetry: {},
         todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
+        meta: { version: 12, createdAt: '2026-08-25T00:00:00Z', lastUpdated: '2026-08-25T00:00:00Z' },
         logbook: [
           { id: 'lb_stale', date: '2020-01-01', company: 'stale',
             aircraft_type: 'X', registration: 'X', engine_type: 'X',
@@ -1252,11 +1277,12 @@ test('L20 — old schema-11 array in dune_state_v4 migrates into envelope and re
       data: {
         // PRV-0.5 Pre-Push R2 / BINDING-3-A: v11 requires full
         // defaultState-shape emission (commit 8a1e374).
-        money: { salary_net: 130000 },
+        money: { salary_net: 130000, expenses: {} },
         qatarVisit: {},
         career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
         bht: { habits: [], entries: [] }, telemetry: {},
         todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
+        meta: { version: 12, createdAt: '2026-08-25T00:00:00Z', lastUpdated: '2026-08-25T00:00:00Z' },
         logbook: [
           { id: 'lb_from_state', date: '2026-08-01', company: 'X',
             aircraft_type: 'A320', registration: 'S', engine_type: 'CFM',

@@ -88,7 +88,10 @@ function _fullLegacyV11Data(salary) {
     bht: { habits: [], entries: [] },
     telemetry: {},
     todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [],
-    apartments: [], logbook: []
+    apartments: [], logbook: [],
+    // PRV-0.5 Codex-final P1-03: `meta` was emitted by v8..v13
+    // defaultState() and is now a strict required object.
+    meta: { version: 11, createdAt: '2026-08-25T00:00:00Z', lastUpdated: '2026-08-25T00:00:00Z' }
   };
 }
 function minState() {

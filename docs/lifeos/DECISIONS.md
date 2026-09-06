@@ -1894,6 +1894,7 @@ required lock, and post-failure/success states:
 | STORE_READ_FAILED | initialLoad / commitLocked / commitFullStateWrapper / endFullStateTransaction on getItem exception | reject | reject until readable | reject until readable | reject until readable | n/a (cannot read) | n/a | none | blocker intact | blocker cleared only once reads succeed and a full-state commit lands |
 | STORE_ORDINARY_DURABLE_VERIFY_FAILED | commitLocked when reread ≠ payload (silent no-op, altered bytes, truncated) | reject | permitted (recovery) | permitted (recovery) | permitted (recovery) | exact raw bytes match | monotonic > max | none (writes originated from ordinary CAS, not recovery-triggered mutation) | REQUIRED | blocker intact, pending ops retained, no memory / snapshot / listener advance | blocker cleared |
 | STORE_ORDINARY_DURABLE_READ_FAILED | commitLocked when post-write getItem throws | reject | reject until readable | reject until readable | reject until readable | n/a | n/a | none | blocker intact | blocker cleared once reads succeed |
+| STORE_FULL_STATE_POST_WRITE_UNCERTAIN | commitFullStateWrapper post-write reread ≠ payload OR post-write authority classification not AUTHORITATIVE_MIGRATED. Recorded in `_fullStatePostWriteUncertain` and installed by endFullStateTransaction. | reject | permitted (recovery) | permitted (recovery) | permitted (recovery) | fresh candidate + normal source-identity rules | monotonic > max(disk, known, knownAtIssue) | retained from the failed commit (evidence key surfaced in blocker detail) | REQUIRED | blocker intact, memory (baseState / knownRevision / baseWrapperRaw / snapshot / subscribers) UNCHANGED — the divergent disk bytes are NOT adopted | blocker cleared once a subsequent full-state transaction commits and durably verifies |
 
 Proven by:
 - STORE_LEGACY_CONVERSION_PENDING → FINAL-A3, FINAL-L1, PRV-R2-DURABILITY-FAILURE, PRV-R2-CROSS-TAB-DURABILITY, PRV-R3-SIMULTANEOUS-TABS-P1-3
@@ -1904,6 +1905,7 @@ Proven by:
 - STORE_READ_FAILED → FINAL-R6
 - STORE_ORDINARY_DURABLE_VERIFY_FAILED → FINAL-D2, FINAL-D3, FINAL-D5
 - STORE_ORDINARY_DURABLE_READ_FAILED → covered by FINAL-D1's read-failure adjacency (same code path)
+- STORE_FULL_STATE_POST_WRITE_UNCERTAIN → R3-P1-01a (altered-valid bytes not adopted); see also FINAL-D-family for the underlying FULL_STATE_DURABLE_VERIFY_FAILED / FULL_STATE_POST_WRITE_VERIFICATION_FAILED commit-return codes.
 
 #### R7 P1/P2 re-evaluation
 
@@ -2022,3 +2024,110 @@ rebinding was reintroduced.
 **Date:** 2026-09-06 (Round-2 remediation on branch
 `claude/prv-0-5-final-closure`; parent commit
 `7829009965bb41add17640766e4ee0f114e8cc78`). Local only, unpushed.
+
+### ADR-015 addendum #10 (2026-09-06) — Codex final-review Round-3 remediation: four P1 fixes + BINDING-3-B extension
+
+**Trigger.** The independent Codex final exact-SHA review of
+`25ba8cca24716cdd5629e4afb7feb503c772869f` returned FAIL
+(`101-PRV-0.5-CODEX-FINAL-GATE-REMEDIATION.md`) with four P1
+data-integrity defects and one P2 documentation defect. This
+remediation closes all five on the same Final Closure branch,
+local only.
+
+**Fixes.**
+
+**P1-01 — full-state transaction settlement.** A composition
+failure between `commitFullStateWrapper` and
+`endFullStateTransaction` let post-write uncertainty (durable
+reread ≠ payload, or post-write authority classification failure)
+be independently observed by settlement, which then adopted the
+divergent disk bytes as authority. Round-3 introduces the
+module-level `_fullStatePostWriteUncertain` flag: both post-write
+failure branches record uncertainty before returning failure;
+`beginFullStateTransaction` clears it on every entry;
+`endFullStateTransaction` consumes it and, when set, installs a
+truthful `STORE_FULL_STATE_POST_WRITE_UNCERTAIN` durability
+blocker and skips every adopt-newer/adopt-different branch —
+`baseState`, `knownRevision`, `committedAt`, `baseWrapperRaw`, the
+snapshot fan-out, and subscriber notifications are NOT advanced.
+Proof: `R3-P1-01a-ALTERED-VALID-BYTES-NOT-ADOPTED`.
+
+**P1-02 — Logbook validation before normalization.**
+`normalizeLogbookDomain` previously replaced a malformed persisted
+Logbook object with an empty envelope BEFORE source validation ran
+— erasing the sentinel bytes across boot conversion / import /
+snapshot restore. Round-3 pushes the version-specific Logbook
+contract into the strict source matrix (`_V8_NESTED` requires
+`'logbook': 'array'` for v8..v11 emission at 85e1d22..8a1e374;
+`_V12_NESTED` requires `'logbook': 'logbook-envelope'` for v12..v13
+emission from 521fe70 onward), tightens
+`validateFullStateCanonical` to reject arbitrary non-envelope
+objects as `logbook`, and changes `normalizeLogbookDomain` to
+perform only the contractually-permitted array→envelope migration
+(a genuinely absent `logbook` still gets a fresh default envelope;
+a present-but-malformed value is now LEFT for the caller's
+validator to reject). Proof: `R3-P1-02-V13-MALFORMED-LOGBOOK-OBJECT-REJECTED`
+and `R3-P1-02b-V11-OBJECT-LOGBOOK-REJECTED`.
+
+**P1-03 — Historical contract completeness + immutability.** The
+matrix in addendum #9 was incomplete: `meta` and `money.expenses`
+were emitted by every v8..v13 `defaultState()` but were not
+required by the validator (default-fill downstream could
+fabricate/erase persisted user state), and the generic
+`array-or-object` Logbook rule accepted arbitrary objects. Round-3
+adds `meta` to `_V8_REQUIRED_OBJECTS`, `money.expenses: 'object'`
+to `_V8_NESTED` and `_V12_NESTED`, and replaces the generic
+Logbook rule with version-specific `'array'` / `'logbook-envelope'`
+kinds (see P1-02). `HISTORICAL_SCHEMA_REQUIREMENTS` is now
+`Object.freeze`d at definition with `Object.freeze`d inner rows
+(and `Object.freeze`d inner containers); `getHistoricalRequirements`
+returns a fresh deep-frozen snapshot so mutation of the exposed
+object cannot alter internal validator behavior. Proofs:
+`R3-P1-03-META-REQUIRED`, `R3-P1-03-EXPENSES-REQUIRED`,
+`R3-P1-03-MUT-IMMUTABLE-DIAGNOSTIC`.
+
+**P1-04 — v14 snapshot revision enforcement.**
+`isValidSnapshotWrapperShape` previously required integer
+revision only for `parsed.version === 13`, leaving current v14
+(and any future ≥13 SCHEMA_VERSION bump) unvalidated at the
+wrapper level. Round-3 broadens the check to `parsed.version >= 13`
+so `validateSnapshotWrapperFull` refuses a v14 snapshot with a
+missing / malformed / out-of-range revision BEFORE
+`commitFullStateWrapper` is even called. Proof:
+`R3-P1-04-V14-SNAPSHOT-MISSING-REVISION-REJECTED`.
+
+**BINDING-3-B extension.** New row for
+`STORE_FULL_STATE_POST_WRITE_UNCERTAIN` documenting the actual
+implementation: ordinary writes reject; import/snapshot/reset
+permitted as explicit recovery; source identity uses the normal
+rules for the recovery attempt; revision advances monotonically;
+quarantine retained from the failed commit and surfaced in the
+blocker detail; lock required; post-failure state is
+memory-unchanged with disk uncertain and the blocker set;
+recovery clears the blocker only after a subsequent full-state
+transaction commits and durably verifies.
+
+**P2-01 — Documentation truthfulness.** Test count references in
+addendum #8 / #9 are superseded by this addendum's Round-3 cold
+Playwright output. Two logbook tests whose old assertions
+described obsolete "silent recovery from malformed source"
+semantics were rewritten in addendum #9 (L19, L32) to assert the
+new atomic-conversion-blocker semantics; both remain green.
+FINAL-C4 was retargeted from v13 (which now requires the
+envelope) to v11 (where the array shape was the actual
+emission), preserving the test's spirit while aligning it with
+the frozen historical contract.
+
+**Effect on binding closure summary:**
+
+- BINDING-1: PASS (unchanged).
+- BINDING-2: **PASS** (now covers post-write uncertainty).
+- BINDING-3-A: PASS (completeness gap closed — `meta`,
+  `money.expenses`, version-specific Logbook).
+- BINDING-3-B: PASS (matrix extended with
+  `STORE_FULL_STATE_POST_WRITE_UNCERTAIN`).
+
+**Date:** 2026-09-06 (Round-3 remediation on branch
+`claude/prv-0-5-final-closure`; parent commit
+`25ba8cca24716cdd5629e4afb7feb503c772869f`, the frozen remote
+candidate — unchanged by this remediation). Local only, unpushed.

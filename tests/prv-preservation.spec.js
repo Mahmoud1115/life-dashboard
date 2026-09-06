@@ -517,7 +517,10 @@ test('PRV-R2-IMPORT-PRE-PRV — production processImport() of a v13 backup ends 
       goals: {},
       career: { started: '', company: '', position: '', aircraft: [], engines: [], licenses: [], certificates: [], milestones: [] },
       easa: {},
-      logbook: [],
+      // PRV-0.5 Codex-final P1-02: v13 emitted the envelope shape.
+      logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [],
+                 migration: { version: 1, sourceCounts: { tracker: 0, builder: 0 } },
+                 reconciled: false, drift: null },
       reviews: [],
       decisions: [],
       timeline: [],
@@ -849,6 +852,7 @@ test('PRV-R3-PARTIAL-MIGRATED-BOOT — partial schema-14 migrated wrapper on dis
         reviews: [], decisions: [], timeline: [], about: {}, apartments: [], sbTasks: {},
         bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: '', model: '' }, meta: {} },
         telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [],
+        meta: { version: 13, createdAt: '2026-08-25T00:00:00Z', lastUpdated: '2026-08-25T00:00:00Z' },
         records: { deadlines: [], claims: [], risks: [] }, // goals missing!
         meta: {
           version: 14, createdAt: nowIso, lastUpdated: nowIso,
@@ -1669,7 +1673,7 @@ test('PRV-R5-P1-5-IMPORT-FUTURE-VERSION-REJECTED — schema-99 import wrapper is
   const proof = await page.evaluate(async () => {
     try { window.location.reload = function () {}; } catch (e) {}
     const nowIso = new Date().toISOString();
-    const futureWrapper = { version: 99, revision: 5, committedAt: nowIso, data: { money: { salary_net: 1 }, qatarVisit: {}, unknown_future_field: true } };
+    const futureWrapper = { version: 99, revision: 5, committedAt: nowIso, data: { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, meta: {}, unknown_future_field: true } };
     const payload = JSON.stringify({ version: '2026.1', exported_at: nowIso, data: { dune_state_v4: futureWrapper } });
     const ok = await window.processImport(payload);
     return {
@@ -1688,7 +1692,7 @@ test('PRV-R5-P1-5-SNAPSHOT-FUTURE-VERSION-REJECTED — schema-99 snapshot payloa
   await waitForNextSave(page);
   const proof = await page.evaluate(async () => {
     const nowIso = new Date().toISOString();
-    const futureData = { money: { salary_net: 1 }, qatarVisit: {}, unknown_future_field: true };
+    const futureData = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, meta: {}, unknown_future_field: true };
     const wrapper = { version: 99, revision: 5, committedAt: nowIso, data: futureData };
     localStorage.setItem('dune_snapshots_v1', JSON.stringify([{ at: nowIso, payload: JSON.stringify(wrapper) }]));
     const preMarker = window.Store.get('meta.recordsMigration');
@@ -1755,7 +1759,7 @@ test('PRV-R5-P2-MARKER-SCHEMA-VERSION-CANONICAL — import with marker.schemaVer
     const wrapper = {
       version: 14, revision: 42, committedAt: nowIso,
       data: {
-        money: { salary_net: 1 }, qatarVisit: {},
+        money: { salary_net: 1, expenses: {} }, qatarVisit: {}, meta: {},
         records: { deadlines: [], claims: [], risks: [], goals: [] },
         meta: { version: 14, createdAt: nowIso, lastUpdated: nowIso, recordsMigration: { status: 'migrated', schemaVersion: 99, at: nowIso, reason: 'test' } }
       }
@@ -1795,6 +1799,7 @@ test('PRV-R6-P1-1-FORGED-SCHEMA14-PROVENANCE-COLD-BOOT — schema-14 wrapper wit
         reviews: [], decisions: [], timeline: [], about: {}, apartments: [], sbTasks: {},
         bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: '', model: '' }, meta: {} },
         telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [],
+        meta: { version: 13, createdAt: '2026-08-25T00:00:00Z', lastUpdated: '2026-08-25T00:00:00Z' },
         records: { deadlines: [], claims: [], risks: [], goals: [] },
         meta: {
           version: 14, createdAt: iso, lastUpdated: iso,
@@ -1846,7 +1851,7 @@ test('PRV-R6-P1-1-FORGED-SCHEMA14-PROVENANCE-IMPORT — import with forged unmig
     const forged = {
       version: 14, revision: 42, committedAt: iso,
       data: {
-        money: { salary_net: 1 }, qatarVisit: {},
+        money: { salary_net: 1, expenses: {} }, qatarVisit: {}, meta: {},
         records: { deadlines: [], claims: [], risks: [], goals: [] },
         meta: {
           version: 14, createdAt: iso, lastUpdated: iso,
@@ -1891,11 +1896,12 @@ test('PRV-R6-P1-2-CORRUPT-DISK-SNAPSHOT-RECOVERY — restoreSnapshot atomically 
         money: { salary_net: 24681, expenses: { rent: 1, food: 1, transport: 1, utilities: 1, phone: 1, family_transfer: 0, other: 1, mai: 0 }, usd_rate: 88, save_target: 55000 },
         qatarVisit: { from_airport: 'SVO', to_airport: 'DOH', travel_month: '', flights: 0, hotel: 0, food: 0, transport: 0, misc: 0, emergency: 0, saved: 0, notes: '' },
         todayFocus: ['','',''], goals: {}, career: { started: '', licenses: [], milestones: [] }, easa: {},
-        logbook: [], reviews: [], decisions: [], timeline: [],
+        logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { version: 1, sourceCounts: { tracker: 0, builder: 0 } }, reconciled: false, drift: null }, reviews: [], decisions: [], timeline: [],
         about: { version: 2, createdAt: '', lastUpdated: '', strengths: [], lessons: [], vision: '', values: [], reminders: [] },
         apartments: [], sbTasks: {},
         bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: '', model: '' }, meta: {} },
-        telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: []
+        telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [],
+        meta: { version: 13, createdAt: '2026-08-25T00:00:00Z', lastUpdated: '2026-08-25T00:00:00Z' }
       }
     };
     localStorage.setItem('dune_snapshots_v1', JSON.stringify([{ at: iso, payload: JSON.stringify(good) }]));
@@ -1987,11 +1993,12 @@ test('PRV-R6-P1-2-CORRUPT-DISK-IMPORT-RECOVERY — processImport atomically repl
         money: { salary_net: 130000, expenses: { rent: 1, food: 1, transport: 1, utilities: 1, phone: 1, family_transfer: 0, other: 1, mai: 0 }, usd_rate: 88, save_target: 55000 },
         qatarVisit: { from_airport: 'SVO', to_airport: 'DOH', travel_month: '', flights: 0, hotel: 0, food: 0, transport: 0, misc: 0, emergency: 0, saved: 0, notes: '' },
         todayFocus: ['','',''], goals: {}, career: { started: '', licenses: [], milestones: [] }, easa: {},
-        logbook: [], reviews: [], decisions: [], timeline: [],
+        logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { version: 1, sourceCounts: { tracker: 0, builder: 0 } }, reconciled: false, drift: null }, reviews: [], decisions: [], timeline: [],
         about: { version: 2, createdAt: '', lastUpdated: '', strengths: [], lessons: [], vision: '', values: [], reminders: [] },
         apartments: [], sbTasks: {},
         bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: '', model: '' }, meta: {} },
         telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [],
+        meta: { version: 13, createdAt: '2026-08-25T00:00:00Z', lastUpdated: '2026-08-25T00:00:00Z' },
         meta: { version: 13, createdAt: iso, lastUpdated: iso }
       }
     };
@@ -2121,11 +2128,12 @@ test('PRV-R6-P1-5-SOURCE-INVALID-SNAPSHOT-SKIPPED — validateSnapshotWrapperFul
         money: { salary_net: 33333, expenses: { rent: 1, food: 1, transport: 1, utilities: 1, phone: 1, family_transfer: 0, other: 1, mai: 0 }, usd_rate: 88, save_target: 55000 },
         qatarVisit: { from_airport: 'SVO', to_airport: 'DOH', travel_month: '', flights: 0, hotel: 0, food: 0, transport: 0, misc: 0, emergency: 0, saved: 0, notes: '' },
         todayFocus: ['','',''], goals: {}, career: { started: '', licenses: [], milestones: [] }, easa: {},
-        logbook: [], reviews: [], decisions: [], timeline: [],
+        logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { version: 1, sourceCounts: { tracker: 0, builder: 0 } }, reconciled: false, drift: null }, reviews: [], decisions: [], timeline: [],
         about: { version: 2, createdAt: '', lastUpdated: '', strengths: [], lessons: [], vision: '', values: [], reminders: [] },
         apartments: [], sbTasks: {},
         bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: '', model: '' }, meta: {} },
-        telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: []
+        telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [],
+        meta: { version: 13, createdAt: '2026-08-25T00:00:00Z', lastUpdated: '2026-08-25T00:00:00Z' }
       }
     };
     // Test the SOURCE validator directly.
@@ -2163,11 +2171,12 @@ test('PRV-R6-P1-2-RECOVERY-SURVIVES-RELOAD — after snapshot recovery, reload s
         money: { salary_net: 24682, expenses: { rent: 1, food: 1, transport: 1, utilities: 1, phone: 1, family_transfer: 0, other: 1, mai: 0 }, usd_rate: 88, save_target: 55000 },
         qatarVisit: { from_airport: 'SVO', to_airport: 'DOH', travel_month: '', flights: 0, hotel: 0, food: 0, transport: 0, misc: 0, emergency: 0, saved: 0, notes: '' },
         todayFocus: ['','',''], goals: {}, career: { started: '', licenses: [], milestones: [] }, easa: {},
-        logbook: [], reviews: [], decisions: [], timeline: [],
+        logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { version: 1, sourceCounts: { tracker: 0, builder: 0 } }, reconciled: false, drift: null }, reviews: [], decisions: [], timeline: [],
         about: { version: 2, createdAt: '', lastUpdated: '', strengths: [], lessons: [], vision: '', values: [], reminders: [] },
         apartments: [], sbTasks: {},
         bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: '', model: '' }, meta: {} },
-        telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: []
+        telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [],
+        meta: { version: 13, createdAt: '2026-08-25T00:00:00Z', lastUpdated: '2026-08-25T00:00:00Z' }
       }
     };
     localStorage.setItem('dune_snapshots_v1', JSON.stringify([{ at: iso, payload: JSON.stringify(good) }]));
@@ -2295,7 +2304,7 @@ function fullV13Data(iso, salaryOverride) {
     money: { salary_net: salaryOverride == null ? 130000 : salaryOverride, expenses: { rent: 1, food: 1, transport: 1, utilities: 1, phone: 1, family_transfer: 0, other: 1, mai: 0 }, usd_rate: 88, save_target: 55000 },
     qatarVisit: { from_airport: 'SVO', to_airport: 'DOH', travel_month: '', flights: 0, hotel: 0, food: 0, transport: 0, misc: 0, emergency: 0, saved: 0, notes: '' },
     todayFocus: ['','',''], goals: {}, career: { started: '', licenses: [], milestones: [] }, easa: {},
-    logbook: [], reviews: [], decisions: [], timeline: [],
+    logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { version: 1, sourceCounts: { tracker: 0, builder: 0 } }, reconciled: false, drift: null }, reviews: [], decisions: [], timeline: [],
     about: { version: 2, createdAt: '', lastUpdated: '', strengths: [], lessons: [], vision: '', values: [], reminders: [] },
     apartments: [], sbTasks: {},
     bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: '', model: '' }, meta: {} },
@@ -2331,6 +2340,7 @@ test('PRV-R7-T1-STALE-LEGACY-AUTH-VS-UNRELATED-V14 — legacy auth issued for v1
         reviews: [], decisions: [], timeline: [], about: {}, apartments: [], sbTasks: {},
         bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: '', model: '' }, meta: {} },
         telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [],
+        meta: { version: 13, createdAt: '2026-08-25T00:00:00Z', lastUpdated: '2026-08-25T00:00:00Z' },
         records: { deadlines: [], claims: [], risks: [], goals: [] },
         meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'unmigrated', schemaVersion: 14, priorSchemaVersion: 13, reason: 'migrateUp-from-v13' } }
       }
@@ -2381,11 +2391,12 @@ test('PRV-R7-T2-STALE-LEGACY-AUTH-VS-DIFFERENT-V13 — legacy auth is bound to t
         money: { salary_net: 22222, expenses: { rent: 2, food: 2, transport: 2, utilities: 2, phone: 2, family_transfer: 0, other: 2, mai: 0 }, usd_rate: 88, save_target: 55000 },
         qatarVisit: { from_airport: 'A', to_airport: 'B', travel_month: '', flights: 0, hotel: 0, food: 0, transport: 0, misc: 0, emergency: 0, saved: 0, notes: '' },
         todayFocus: ['','',''], goals: {}, career: { started: '', licenses: [], milestones: [] }, easa: {},
-        logbook: [], reviews: [], decisions: [], timeline: [],
+        logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { version: 1, sourceCounts: { tracker: 0, builder: 0 } }, reconciled: false, drift: null }, reviews: [], decisions: [], timeline: [],
         about: { version: 2, createdAt: '', lastUpdated: '', strengths: [], lessons: [], vision: '', values: [], reminders: [] },
         apartments: [], sbTasks: {},
         bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: '', model: '' }, meta: {} },
         telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [],
+        meta: { version: 13, createdAt: '2026-08-25T00:00:00Z', lastUpdated: '2026-08-25T00:00:00Z' },
         meta: { version: 13, createdAt: iso2, lastUpdated: iso2 }
       }
     };
@@ -2464,6 +2475,7 @@ test('PRV-R7-T5-STALE-RECOVERY-DOES-NOT-OVERWRITE-HEALTHY — a recovery auth pr
         reviews: [], decisions: [], timeline: [], about: {}, apartments: [], sbTasks: {},
         bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: '', model: '' }, meta: {} },
         telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [],
+        meta: { version: 13, createdAt: '2026-08-25T00:00:00Z', lastUpdated: '2026-08-25T00:00:00Z' },
         records: { deadlines: [], claims: [], risks: [], goals: [] },
         meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'migrated', schemaVersion: 14, reason: 'test-healthy-h' } }
       }
@@ -3202,7 +3214,7 @@ function _v13Data() {
 test('FINAL-H1-V12-MISSING-CAREER-REJECTED — v12 source omitting career fails historical validation', async ({ page }) => {
   await page.goto('/'); await waitForApp(page);
   const proof = await page.evaluate(() => {
-    const d = { money: { salary_net: 1 }, qatarVisit: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+    const d = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, meta: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
                 bht: { habits: [], entries: [] }, telemetry: {},
                 todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
                 logbook: {} };
@@ -3216,7 +3228,7 @@ test('FINAL-H1-V12-MISSING-CAREER-REJECTED — v12 source omitting career fails 
 test('FINAL-H2-V12-MISSING-BHT-REJECTED — v12 source omitting bht fails historical validation', async ({ page }) => {
   await page.goto('/'); await waitForApp(page);
   const proof = await page.evaluate(() => {
-    const d = { money: { salary_net: 1 }, qatarVisit: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+    const d = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, meta: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
                 telemetry: {}, todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
                 logbook: {} };
     return window.Store.validateLegacySourceRequiredFields(d, 12);
@@ -3229,7 +3241,7 @@ test('FINAL-H2-V12-MISSING-BHT-REJECTED — v12 source omitting bht fails histor
 test('FINAL-H3-V12-MISSING-TELEMETRY-REJECTED — v12 source omitting telemetry fails historical validation', async ({ page }) => {
   await page.goto('/'); await waitForApp(page);
   const proof = await page.evaluate(() => {
-    const d = { money: { salary_net: 1 }, qatarVisit: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+    const d = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, meta: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
                 bht: { habits: [], entries: [] },
                 todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
                 logbook: {} };
@@ -3243,7 +3255,7 @@ test('FINAL-H3-V12-MISSING-TELEMETRY-REJECTED — v12 source omitting telemetry 
 test('FINAL-H4-V12-MISSING-IDEAS-REJECTED — v12 source omitting ideas fails historical validation', async ({ page }) => {
   await page.goto('/'); await waitForApp(page);
   const proof = await page.evaluate(() => {
-    const d = { money: { salary_net: 1 }, qatarVisit: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+    const d = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, meta: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
                 bht: { habits: [], entries: [] }, telemetry: {},
                 todayFocus: [], timeline: [], reviews: [], decisions: [], apartments: [],
                 logbook: {} };
@@ -3257,7 +3269,7 @@ test('FINAL-H4-V12-MISSING-IDEAS-REJECTED — v12 source omitting ideas fails hi
 test('FINAL-H5-MALFORMED-NESTED-BHT-REJECTED — v13 bht object without habits/entries arrays rejected', async ({ page }) => {
   await page.goto('/'); await waitForApp(page);
   const proof = await page.evaluate(() => {
-    const d = { money: { salary_net: 1 }, qatarVisit: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+    const d = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, meta: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
                 bht: { habits: 'not-array', entries: [] }, telemetry: {},
                 todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
                 logbook: {} };
@@ -3274,7 +3286,7 @@ test('FINAL-H5-MALFORMED-NESTED-BHT-REJECTED — v13 bht object without habits/e
 test('FINAL-H6-LEGITIMATE-V11-ACCEPTED — full-shape v11 wrapper (evidence: 8a1e374) accepted; minimal wrapper rejected', async ({ page }) => {
   await page.goto('/'); await waitForApp(page);
   const proof = await page.evaluate(() => {
-    const full = { money: { salary_net: 1 }, qatarVisit: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+    const full = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, meta: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
                    bht: { habits: [], entries: [] }, telemetry: {},
                    todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
                    logbook: [] };
@@ -3299,7 +3311,12 @@ test('FINAL-H7-V13-SALARY-SENTINEL-SURVIVES-MIGRATION — 24680 salary_net survi
                    qatarVisit: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
                    bht: { habits: [], entries: [] }, telemetry: {},
                    todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
-                   logbook: {} };
+                   // PRV-0.5 Codex-final P1-02: v13 emitted the envelope shape; a bare {} is
+                   // no longer accepted by the v12+ 'logbook-envelope' nested check.
+                   logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [],
+                              migration: { version: 1, sourceCounts: { tracker: 0, builder: 0 } },
+                              reconciled: false, drift: null },
+                   meta: { version: 13, createdAt: '2026-08-25T00:00:00Z', lastUpdated: '2026-08-25T00:00:00Z' } };
     const wrapper = { version: 13, revision: 5, committedAt: new Date().toISOString(), data };
     const ev = window.Store.evaluateCandidateWrapper(wrapper);
     return {
@@ -3317,7 +3334,7 @@ test('FINAL-H7-V13-SALARY-SENTINEL-SURVIVES-MIGRATION — 24680 salary_net survi
 test('FINAL-H8-NO-DEFAULT-FILL-HIDES-MISSING-DOMAIN — v12 candidate missing apartments fails at source validator, never reaches migrateUp defaults', async ({ page }) => {
   await page.goto('/'); await waitForApp(page);
   const proof = await page.evaluate(() => {
-    const data = { money: { salary_net: 1 }, qatarVisit: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+    const data = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, meta: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
                    bht: { habits: [], entries: [] }, telemetry: {},
                    todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [],
                    logbook: {} };
@@ -3440,20 +3457,24 @@ test('FINAL-C3-SNAPSHOT-MALFORMED-LOGBOOK-REJECTED — a snapshot with malformed
   expect(proof.error).toBe('FULL_STATE_CANDIDATE_MALFORMED_LOGBOOK');
 });
 
-// FINAL-C4 — legitimate historical v13 array-shaped logbook is
-// accepted and normalized by evaluateCandidateWrapper's migration
-// path (import path only; direct current-schema commits do NOT
-// silently accept an array shape). The array shape gets converted to
-// a canonical envelope by migrateUp+normalizeLogbookDomain.
-test('FINAL-C4-HISTORICAL-ARRAY-LOGBOOK-MIGRATES — a v13 wrapper with array logbook migrates to envelope', async ({ page }) => {
+// FINAL-C4 — legitimate historical v11 array-shaped logbook (the
+// emission at commit 8a1e374) is accepted and normalized by
+// evaluateCandidateWrapper's migration path. The v11→v12 step
+// converts the array to a canonical envelope via
+// normalizeLogbookDomain's array→envelope migration (the only
+// contractually permitted normalization since Codex P1-02).
+//
+// v13+ MUST NOT carry an array-shaped logbook — the envelope was
+// introduced at v12 (521fe70) — see FINAL-C5.
+test('FINAL-C4-HISTORICAL-ARRAY-LOGBOOK-MIGRATES — a v11 wrapper with array logbook migrates to envelope', async ({ page }) => {
   await page.goto('/'); await waitForApp(page);
   const proof = await page.evaluate(() => {
-    const iso = new Date().toISOString();
-    const data = { money: { salary_net: 24680 }, qatarVisit: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+    const data = { money: { salary_net: 24680, expenses: {} }, qatarVisit: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
                    bht: { habits: [], entries: [] }, telemetry: {},
                    todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
-                   logbook: [] };   // legacy array shape (empty)
-    const wrapper = { version: 13, revision: 1, committedAt: iso, data };
+                   logbook: [],
+                   meta: { version: 11, createdAt: '2026-06-19T00:00:00Z', lastUpdated: '2026-06-19T00:00:00Z' } };
+    const wrapper = { version: 11, data };
     const ev = window.Store.evaluateCandidateWrapper(wrapper);
     return {
       classification: ev.classification, canonical: ev.canonical,
@@ -3472,7 +3493,7 @@ test('FINAL-C5-HISTORICAL-MALFORMED-LOGBOOK-REJECTED-PRE-MIGRATION — v13 sourc
   const proof = await page.evaluate(() => {
     // v12+ matrix requires logbook to be array-or-object. A number
     // fails the source validator before migrateUp runs.
-    const data = { money: { salary_net: 1 }, qatarVisit: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+    const data = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, meta: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
                    bht: { habits: [], entries: [] }, telemetry: {},
                    todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
                    logbook: 42 };
@@ -4389,7 +4410,7 @@ test('FINAL-M1-PRE-V8-UNSUPPORTED-FAIL-CLOSED — a v7 candidate is rejected as 
 test('FINAL-M2-V8-STRICT-MATRIX — full-shape v8 accepted; minimal wrapper rejected as missing-domain', async ({ page }) => {
   await page.goto('/'); await waitForApp(page);
   const proof = await page.evaluate(() => {
-    const full = { money: { salary_net: 1 }, qatarVisit: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+    const full = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, meta: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
                    bht: { habits: [], entries: [] }, telemetry: {},
                    todayFocus: [], timeline: [], reviews: [], decisions: [], apartments: [], logbook: [] };
     const minimal = { money: { salary_net: 1 }, qatarVisit: {} };
@@ -4410,7 +4431,7 @@ test('FINAL-M3-V12-STRICT-MATRIX — v12 missing bht is rejected', async ({ page
   await page.goto('/'); await waitForApp(page);
   const proof = await page.evaluate(() => {
     return window.Store.validateLegacySourceRequiredFields(
-      { money: { salary_net: 1 }, qatarVisit: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+      { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, meta: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
         telemetry: {}, todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [], logbook: {} },
       12);
   });
@@ -4452,10 +4473,10 @@ test('FINAL-M4-MATRIX-EXPOSED — Store.getHistoricalRequirements returns strict
 test('FINAL-M5-V8-NO-IDEAS-REQUIRED-TELEMETRY-REQUIRED — v8 accepted without ideas; v8 without telemetry rejected', async ({ page }) => {
   await page.goto('/'); await waitForApp(page);
   const proof = await page.evaluate(() => {
-    const withoutIdeas = { money: { salary_net: 1 }, qatarVisit: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+    const withoutIdeas = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, meta: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
                            bht: { habits: [], entries: [] }, telemetry: {},
                            todayFocus: [], timeline: [], reviews: [], decisions: [], apartments: [], logbook: [] };
-    const withoutTelemetry = { money: { salary_net: 1 }, qatarVisit: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+    const withoutTelemetry = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, meta: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
                                bht: { habits: [], entries: [] },
                                todayFocus: [], timeline: [], reviews: [], decisions: [], apartments: [], logbook: [] };
     return {
@@ -4474,10 +4495,10 @@ test('FINAL-M5-V8-NO-IDEAS-REQUIRED-TELEMETRY-REQUIRED — v8 accepted without i
 test('FINAL-M6-V9-IDEAS-REQUIRED — v9 without ideas rejected; full-shape v9 accepted', async ({ page }) => {
   await page.goto('/'); await waitForApp(page);
   const proof = await page.evaluate(() => {
-    const withoutIdeas = { money: { salary_net: 1 }, qatarVisit: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+    const withoutIdeas = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, meta: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
                            bht: { habits: [], entries: [] }, telemetry: {},
                            todayFocus: [], timeline: [], reviews: [], decisions: [], apartments: [], logbook: [] };
-    const full = { money: { salary_net: 1 }, qatarVisit: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+    const full = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, meta: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
                    bht: { habits: [], entries: [] }, telemetry: {},
                    todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [], logbook: [] };
     return {
@@ -4495,9 +4516,9 @@ test('FINAL-M6-V9-IDEAS-REQUIRED — v9 without ideas rejected; full-shape v9 ac
 test('FINAL-M7-V10-SHARES-V9-SHAPE — v10 rejected on missing bht; full-shape v10 accepted', async ({ page }) => {
   await page.goto('/'); await waitForApp(page);
   const proof = await page.evaluate(() => {
-    const withoutBht = { money: { salary_net: 1 }, qatarVisit: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+    const withoutBht = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, meta: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
                          telemetry: {}, todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [], logbook: [] };
-    const full = { money: { salary_net: 1 }, qatarVisit: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+    const full = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, meta: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
                    bht: { habits: [], entries: [] }, telemetry: {},
                    todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [], logbook: [] };
     return {
@@ -4516,7 +4537,7 @@ test('FINAL-M7-V10-SHARES-V9-SHAPE — v10 rejected on missing bht; full-shape v
 test('FINAL-M8-V11-MALFORMED-BHT-REJECTED — v11 bht object without habits array rejected', async ({ page }) => {
   await page.goto('/'); await waitForApp(page);
   const proof = await page.evaluate(() => {
-    const malformed = { money: { salary_net: 1 }, qatarVisit: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+    const malformed = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, meta: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
                         bht: { habits: 'not-array', entries: [] }, telemetry: {},
                         todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [], logbook: [] };
     return window.Store.validateLegacySourceRequiredFields(malformed, 11);
@@ -4532,7 +4553,7 @@ test('FINAL-M8-V11-MALFORMED-BHT-REJECTED — v11 bht object without habits arra
 test('FINAL-M9-V7-FAIL-CLOSED-BOUNDARY — v7 fails closed regardless of shape', async ({ page }) => {
   await page.goto('/'); await waitForApp(page);
   const proof = await page.evaluate(() => {
-    const rich = { money: { salary_net: 1 }, qatarVisit: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+    const rich = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, meta: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
                    bht: { habits: [], entries: [] }, telemetry: {},
                    todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [], logbook: [] };
     return window.Store.validateLegacySourceRequiredFields(rich, 7);
@@ -4551,7 +4572,8 @@ test('FINAL-M10-V11-FULL-SHAPE-MIGRATES-TO-CANONICAL-V14 — sentinel salary pre
     const data = { money: { salary_net: 24680, expenses: {}, usd_rate: 88, save_target: 55000 },
                    qatarVisit: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
                    bht: { habits: [], entries: [] }, telemetry: {},
-                   todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [], logbook: [] };
+                   todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [], logbook: [],
+                   meta: { version: 11, createdAt: '2026-06-19T00:00:00Z', lastUpdated: '2026-06-19T00:00:00Z' } };
     const ev = window.Store.evaluateCandidateWrapper({ version: 11, data });
     return {
       classification: ev.classification, canonical: ev.canonical,
@@ -4560,4 +4582,221 @@ test('FINAL-M10-V11-FULL-SHAPE-MIGRATES-TO-CANONICAL-V14 — sentinel salary pre
   });
   expect(proof.canonical).toBe(true);
   expect(proof.migratedSalary).toBe(24680);
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// PRV-0.5 Codex Final-Gate Round-3 — R3 adversarial regressions.
+// Every test binds a Codex final-review reproduction into a permanent
+// regression. R3-P1-01..R3-P1-04 + R3-P1-03-MUT (matrix mutation
+// probe). See docs/lifeos/DECISIONS.md ADR-015 addendum #10.
+// ═══════════════════════════════════════════════════════════════════
+
+// R3-P1-01a — full-state altered-valid bytes: durable reread does
+// not match payload → uncertainty flag set → endFullStateTransaction
+// installs STORE_FULL_STATE_POST_WRITE_UNCERTAIN and does NOT adopt
+// the divergent bytes as authority. baseState / knownRevision /
+// baseWrapperRaw remain unchanged.
+test('R3-P1-01a-ALTERED-VALID-BYTES-NOT-ADOPTED — post-write bytes differ from payload; settlement installs uncertainty blocker and does not advance memory', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(async () => {
+    // Wait for boot to settle.
+    await new Promise(r => { const unsub = window.Store.onSave(() => { unsub(); r(); }); setTimeout(r, 1500); });
+    const beforeRaw = localStorage.getItem('dune_state_v4');
+    const beforeRev = window.Store.getKnownRevision ? window.Store.getKnownRevision() : null;
+    // Wire a setItem interceptor that lands DIFFERENT bytes than
+    // requested (an "altered-valid" wrapper) so durable reread fails
+    // byte-verify.
+    const origSet = localStorage.setItem.bind(localStorage);
+    const iso = new Date().toISOString();
+    const alteredValid = JSON.stringify({
+      version: 14, revision: 9999, committedAt: iso,
+      data: {
+        money: { salary_net: 1, expenses: {}, usd_rate: 88, save_target: 55000 },
+        qatarVisit: {}, todayFocus: ['','',''], goals: {}, career: {}, easa: {},
+        logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { version: 1, sourceCounts: { tracker: 0, builder: 0 } }, reconciled: false, drift: null },
+        reviews: [], decisions: [], timeline: [],
+        about: {}, apartments: [], sbTasks: {},
+        bht: { habits: [], entries: [] }, telemetry: {}, ideas: [],
+        records: { deadlines: [], claims: [], risks: [], goals: [] },
+        meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'migrated', schemaVersion: 14, at: iso, reason: 'altered' } }
+      }
+    });
+    localStorage.setItem = function (k, v) {
+      if (k === 'dune_state_v4') return origSet(k, alteredValid);
+      return origSet(k, v);
+    };
+    const cand = {
+      money: { salary_net: 130000, expenses: {}, usd_rate: 88, save_target: 55000 },
+      qatarVisit: {}, todayFocus: ['','',''], goals: {}, career: {}, easa: {},
+      logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { version: 1, sourceCounts: { tracker: 0, builder: 0 } }, reconciled: false, drift: null },
+      reviews: [], decisions: [], timeline: [],
+      about: {}, apartments: [], sbTasks: {},
+      bht: { habits: [], entries: [] }, telemetry: {}, ideas: [],
+      records: { deadlines: [], claims: [], risks: [], goals: [] },
+      meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'migrated', schemaVersion: 14, at: iso, reason: 'test' } }
+    };
+    const gate = window.Store.beginFullStateTransaction({ force: true, reason: 'test-altered-valid' });
+    let commitRes = null;
+    try {
+      commitRes = await window.Store.commitFullStateWrapper(gate.token, cand, 'test-altered-valid');
+    } finally {
+      window.Store.endFullStateTransaction(gate.token);
+      localStorage.setItem = origSet;
+    }
+    const afterBlocker = (window.Store.getDurabilityBlocker && window.Store.getDurabilityBlocker()) || null;
+    const afterInMemory = window.Store.get('money.salary_net');
+    return {
+      commitOk: commitRes && commitRes.ok,
+      commitError: commitRes && commitRes.error,
+      blockerCode: afterBlocker && afterBlocker.code,
+      inMemorySalary: afterInMemory,
+      preexistingSalary: (function () {
+        try { return JSON.parse(beforeRaw).data.money.salary_net; } catch (e) { return null; }
+      })()
+    };
+  });
+  expect(proof.commitOk).toBe(false);
+  expect(proof.commitError).toBe('FULL_STATE_DURABLE_VERIFY_FAILED');
+  expect(proof.blockerCode).toBe('STORE_FULL_STATE_POST_WRITE_UNCERTAIN');
+  // Memory did NOT adopt the divergent altered-valid wrapper.
+  expect(proof.inMemorySalary).not.toBe(1);
+});
+
+// R3-P1-02 — malformed historical Logbook object at v13 is REJECTED
+// by the source validator BEFORE normalizeLogbookDomain can silently
+// replace it. Prior behavior: {} was accepted by the array-or-object
+// rule, then normalizeLogbookDomain overwrote it with an empty
+// envelope, erasing the sentinel bytes.
+test('R3-P1-02-V13-MALFORMED-LOGBOOK-OBJECT-REJECTED — a v13 wrapper with logbook={garbage} fails the source validator; no normalize', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(() => {
+    const data = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, meta: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+                   bht: { habits: [], entries: [] }, telemetry: {},
+                   todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
+                   logbook: { garbage: 'yes', not_envelope: true } };
+    const wrapper = { version: 13, revision: 1, committedAt: new Date().toISOString(), data };
+    const ev = window.Store.evaluateCandidateWrapper(wrapper);
+    return { classification: ev.classification, canonical: ev.canonical, reasons: ev.reasons };
+  });
+  expect(proof.canonical).toBe(false);
+  expect(proof.classification).toBe('MALFORMED_CURRENT_SCHEMA');
+  expect(proof.reasons.join(',')).toMatch(/legacy-source-malformed-logbook/);
+});
+
+// R3-P1-02b — v11 emitted an array logbook; a v11 wrapper with an
+// object-shaped logbook is REJECTED. Confirms the version-specific
+// contract: pre-v12 = array, v12+ = envelope.
+test('R3-P1-02b-V11-OBJECT-LOGBOOK-REJECTED — v11 wrapper with envelope-shaped logbook fails the v8..v11 array-only contract', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(() => {
+    const data = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, meta: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+                   bht: { habits: [], entries: [] }, telemetry: {},
+                   todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
+                   logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [] } };
+    return window.Store.validateLegacySourceRequiredFields(data, 11);
+  });
+  expect(proof.ok).toBe(false);
+  expect(String(proof.reason)).toMatch(/^malformed-logbook/);
+});
+
+// R3-P1-03-META — every v8..v13 defaultState emitted `meta`. A v12
+// wrapper without `meta` is now REJECTED (was accepted before Round-3).
+test('R3-P1-03-META-REQUIRED — v12 candidate missing meta fails source validation', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(() => {
+    const data = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+                   bht: { habits: [], entries: [] }, telemetry: {},
+                   todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
+                   logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { version: 1, sourceCounts: { tracker: 0, builder: 0 } }, reconciled: false, drift: null } };
+    return window.Store.validateLegacySourceRequiredFields(data, 12);
+  });
+  expect(proof.ok).toBe(false);
+  expect(proof.reason).toBe('missing-meta');
+});
+
+// R3-P1-03-EXPENSES — every v8..v13 defaultState emitted
+// `money.expenses` as an object. A v12 wrapper with money but no
+// expenses is REJECTED.
+test('R3-P1-03-EXPENSES-REQUIRED — v12 candidate with money missing expenses fails source validation', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(() => {
+    const data = { money: { salary_net: 1 }, qatarVisit: {}, meta: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+                   bht: { habits: [], entries: [] }, telemetry: {},
+                   todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
+                   logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { version: 1, sourceCounts: { tracker: 0, builder: 0 } }, reconciled: false, drift: null } };
+    return window.Store.validateLegacySourceRequiredFields(data, 12);
+  });
+  expect(proof.ok).toBe(false);
+  expect(String(proof.reason)).toMatch(/money\.expenses/);
+});
+
+// R3-P1-03-MUT — mutating the object returned by getHistoricalRequirements
+// MUST NOT alter internal validator behavior. Immutability probe.
+test('R3-P1-03-MUT-IMMUTABLE-DIAGNOSTIC — mutating getHistoricalRequirements return does not weaken the live validator', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(() => {
+    const exposed = window.Store.getHistoricalRequirements(12);
+    // Attempt to mutate (may throw in strict mode; may silently
+    // no-op in sloppy mode — both are acceptable as long as internal
+    // behavior is unchanged).
+    let mutateThrew = false;
+    try {
+      exposed.requiredObjects.push('__hacked__');
+      exposed.requiredArrays.length = 0;
+      exposed.nested['logbook'] = 'array-or-object';
+      delete exposed.nested['money.expenses'];
+    } catch (e) { mutateThrew = true; }
+    // Re-verify the internal validator still rejects a v12 candidate
+    // missing meta (would pass if requiredObjects was mutated to
+    // exclude meta) and missing money.expenses (would pass if
+    // requiredArrays/nested was mutated).
+    const missingMeta = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+                          bht: { habits: [], entries: [] }, telemetry: {},
+                          todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
+                          logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { version: 1, sourceCounts: { tracker: 0, builder: 0 } }, reconciled: false, drift: null } };
+    const missingExpenses = Object.assign({}, missingMeta, { meta: {}, money: { salary_net: 1 } });
+    return {
+      mutateThrew,
+      metaCheck: window.Store.validateLegacySourceRequiredFields(missingMeta, 12),
+      expensesCheck: window.Store.validateLegacySourceRequiredFields(missingExpenses, 12)
+    };
+  });
+  expect(proof.metaCheck.ok).toBe(false);
+  expect(proof.metaCheck.reason).toBe('missing-meta');
+  expect(proof.expensesCheck.ok).toBe(false);
+});
+
+// R3-P1-04 — v14 snapshot wrapper missing revision fails before
+// destructive restore. Prior behavior: revision check was v13-only,
+// so a v14 wrapper with omitted/malformed revision passed the shape
+// gate and reached commitFullStateWrapper.
+test('R3-P1-04-V14-SNAPSHOT-MISSING-REVISION-REJECTED — validateSnapshotWrapperFull refuses a v14 snapshot without an integer revision', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(() => {
+    const iso = new Date().toISOString();
+    // A v14 snapshot with EVERY required domain but NO revision.
+    const cand = {
+      version: 14,
+      // revision deliberately omitted.
+      committedAt: iso,
+      data: {
+        money: { salary_net: 1, expenses: {} }, qatarVisit: {}, todayFocus: ['','',''], goals: {}, career: {}, easa: {},
+        logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { version: 1, sourceCounts: { tracker: 0, builder: 0 } }, reconciled: false, drift: null },
+        reviews: [], decisions: [], timeline: [],
+        about: {}, apartments: [], sbTasks: {},
+        bht: { habits: [], entries: [] }, telemetry: {}, ideas: [],
+        records: { deadlines: [], claims: [], risks: [], goals: [] },
+        meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'migrated', schemaVersion: 14, at: iso, reason: 'no-rev' } }
+      }
+    };
+    const res = window.Store.validateSnapshotWrapperFull(cand);
+    // Also test malformed revision (string).
+    const cand2 = Object.assign({}, cand, { revision: 'not-a-number' });
+    const res2 = window.Store.validateSnapshotWrapperFull(cand2);
+    return { missing: res, malformed: res2 };
+  });
+  expect(proof.missing.ok).toBe(false);
+  expect(proof.missing.reason).toBe('SNAPSHOT_WRAPPER_SHAPE_INVALID');
+  expect(proof.malformed.ok).toBe(false);
+  expect(proof.malformed.reason).toBe('SNAPSHOT_WRAPPER_SHAPE_INVALID');
 });

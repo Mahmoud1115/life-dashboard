@@ -931,7 +931,13 @@
     if (!parsed || typeof parsed !== 'object') return false;
     if (typeof parsed.version !== 'number' || !Number.isInteger(parsed.version)) return false;
     if (parsed.version > SCHEMA_VERSION) return false;
-    if (parsed.version === 13) {
+    // PRV-0.5 Codex-final P1-04: the wrapper's integer revision was
+    // introduced at v13 (94254c4) and is a REQUIRED wrapper-level
+    // field for every schema >= 13, including current v14 and any
+    // future >=13 SCHEMA_VERSION bumps. Restricting the guard to
+    // v13 alone let a v14 snapshot with a missing/malformed revision
+    // reach destructive restore, violating the wrapper contract.
+    if (parsed.version >= 13) {
       const rev = parsed.revision;
       if (!(typeof rev === 'number' && Number.isFinite(rev) && Number.isInteger(rev) && rev >= 0 && rev <= Number.MAX_SAFE_INTEGER)) {
         return false;
@@ -1042,31 +1048,76 @@
   // required in a v<14 historical source (they would default-fill
   // downstream at migrateUp v13→v14, which is the legitimate
   // migration path).
-  const _V8_REQUIRED_OBJECTS = ['money', 'qatarVisit', 'career', 'easa', 'about', 'sbTasks', 'goals', 'bht', 'telemetry'];
+  // PRV-0.5 Codex-final P1-03: complete emission-audit — `meta`
+  // and `money.expenses` were emitted by every v8..v13 defaultState
+  // and are now REQUIRED. Version-specific Logbook contract replaces
+  // the generic `array-or-object` (which accepted arbitrary objects
+  // and let malformed persisted Logbook survive strict validation).
+  //
+  // Emission evidence (verified via `git show <SHA>:core.js` per
+  // version-bump commit — see HISTORICAL_SCHEMA_REQUIREMENTS header):
+  //   v8..v11: defaultState().logbook = [] (ARRAY)
+  //   v12..v13: defaultState().logbook = defaultLogbookEnvelope()
+  //             (schemaVersion:1, authority:'legacy-mirror',
+  //              entries:array, migration:{version, sourceCounts},
+  //              reconciled:bool, drift:null)
+  //   v8..v13: defaultState().meta = { version:int,
+  //             createdAt:ISO, lastUpdated:ISO }
+  //   v8..v13: defaultState().money.expenses = { rent, food,
+  //             transport, utilities, phone, family_transfer,
+  //             other, mai } (object)
+  const _V8_REQUIRED_OBJECTS = ['money', 'qatarVisit', 'career', 'easa', 'about', 'sbTasks', 'goals', 'bht', 'telemetry', 'meta'];
   const _V8_REQUIRED_ARRAYS  = ['todayFocus', 'timeline', 'reviews', 'decisions', 'apartments'];
+  // Base nested spec shared by v8..v11 (Logbook required as ARRAY —
+  // pre-envelope emission). money.expenses required as an object.
   const _V8_NESTED = {
     'bht.habits': 'array', 'bht.entries': 'array',
-    'logbook': 'array-or-object',   // v8..v11 emit legacy array; v12+ envelope object also acceptable
-    'money.salary_net': 'number'
+    'logbook': 'array',
+    'money.salary_net': 'number',
+    'money.expenses': 'object'
   };
   const _V9_REQUIRED_ARRAYS  = _V8_REQUIRED_ARRAYS.concat(['ideas']);
-  const HISTORICAL_SCHEMA_REQUIREMENTS = {
-    // v8 (85e1d22): telemetry introduced; ideas not yet present.
-    8:  { requiredObjects: _V8_REQUIRED_OBJECTS, requiredArrays: _V8_REQUIRED_ARRAYS, nested: _V8_NESTED },
-    // v9 (cea0dab): ideas array introduced. Same domains through v11.
-    9:  { requiredObjects: _V8_REQUIRED_OBJECTS, requiredArrays: _V9_REQUIRED_ARRAYS, nested: _V8_NESTED },
-    10: { requiredObjects: _V8_REQUIRED_OBJECTS, requiredArrays: _V9_REQUIRED_ARRAYS, nested: _V8_NESTED },
-    11: { requiredObjects: _V8_REQUIRED_OBJECTS, requiredArrays: _V9_REQUIRED_ARRAYS, nested: _V8_NESTED },
-    // v12 (521fe70): same domain floor; logbook may now be an envelope
-    // object OR the legacy Tracker array. Emission adds records mirror
-    // but that domain migrates in at v13→v14, so we do not require it
-    // in the pre-migration source.
-    12: { requiredObjects: _V8_REQUIRED_OBJECTS, requiredArrays: _V9_REQUIRED_ARRAYS, nested: _V8_NESTED },
-    // v13 (94254c4): wrapper-level integer revision + committedAt.
-    // The data-shape requirement is unchanged from v12; the wrapper-
-    // level integer revision is enforced by parseWrapperRaw upstream.
-    13: { requiredObjects: _V8_REQUIRED_OBJECTS, requiredArrays: _V9_REQUIRED_ARRAYS, nested: _V8_NESTED }
+  // v12+ Logbook contract: must be a valid envelope OBJECT with the
+  // exact required shape (schemaVersion === LOGBOOK_ENVELOPE_VERSION,
+  // authority === 'legacy-mirror', entries is an array). The
+  // pre-normalization guard here (mirrored below by the same explicit
+  // envelope check) prevents an arbitrary non-envelope object from
+  // being silently normalized to an empty envelope during migration.
+  const _V12_NESTED = {
+    'bht.habits': 'array', 'bht.entries': 'array',
+    'logbook': 'logbook-envelope',
+    'money.salary_net': 'number',
+    'money.expenses': 'object'
   };
+  const HISTORICAL_SCHEMA_REQUIREMENTS = Object.freeze({
+    // v8 (85e1d22): telemetry introduced; ideas not yet present;
+    // logbook emitted as legacy array.
+    8:  Object.freeze({ requiredObjects: Object.freeze(_V8_REQUIRED_OBJECTS.slice()),
+                        requiredArrays: Object.freeze(_V8_REQUIRED_ARRAYS.slice()),
+                        nested: Object.freeze(Object.assign({}, _V8_NESTED)) }),
+    // v9 (cea0dab): ideas array introduced. Same shape through v11.
+    9:  Object.freeze({ requiredObjects: Object.freeze(_V8_REQUIRED_OBJECTS.slice()),
+                        requiredArrays: Object.freeze(_V9_REQUIRED_ARRAYS.slice()),
+                        nested: Object.freeze(Object.assign({}, _V8_NESTED)) }),
+    10: Object.freeze({ requiredObjects: Object.freeze(_V8_REQUIRED_OBJECTS.slice()),
+                        requiredArrays: Object.freeze(_V9_REQUIRED_ARRAYS.slice()),
+                        nested: Object.freeze(Object.assign({}, _V8_NESTED)) }),
+    11: Object.freeze({ requiredObjects: Object.freeze(_V8_REQUIRED_OBJECTS.slice()),
+                        requiredArrays: Object.freeze(_V9_REQUIRED_ARRAYS.slice()),
+                        nested: Object.freeze(Object.assign({}, _V8_NESTED)) }),
+    // v12 (521fe70): logbook transitions to envelope object. records
+    // mirror added but that domain migrates in at v13→v14, so we do
+    // not require it in the pre-migration source.
+    12: Object.freeze({ requiredObjects: Object.freeze(_V8_REQUIRED_OBJECTS.slice()),
+                        requiredArrays: Object.freeze(_V9_REQUIRED_ARRAYS.slice()),
+                        nested: Object.freeze(Object.assign({}, _V12_NESTED)) }),
+    // v13 (94254c4): wrapper-level integer revision + committedAt
+    // (enforced by parseWrapperRaw / isValidSnapshotWrapperShape).
+    // Data shape unchanged from v12.
+    13: Object.freeze({ requiredObjects: Object.freeze(_V8_REQUIRED_OBJECTS.slice()),
+                        requiredArrays: Object.freeze(_V9_REQUIRED_ARRAYS.slice()),
+                        nested: Object.freeze(Object.assign({}, _V12_NESTED)) })
+  });
   function _checkNestedShape(data, spec) {
     for (const path of Object.keys(spec)) {
       const parts = path.split('.');
@@ -1078,9 +1129,20 @@
       const kind = spec[path];
       if (kind === 'array' && !Array.isArray(cur)) return { ok: false, reason: 'malformed-' + path };
       if (kind === 'number' && typeof cur !== 'number') return { ok: false, reason: 'malformed-' + path };
+      if (kind === 'object') {
+        if (!(cur && typeof cur === 'object' && !Array.isArray(cur))) return { ok: false, reason: 'malformed-' + path };
+      }
       if (kind === 'array-or-object') {
         const ok = Array.isArray(cur) || (cur && typeof cur === 'object');
         if (!ok) return { ok: false, reason: 'malformed-' + path };
+      }
+      // PRV-0.5 Codex-final P1-02: version-specific Logbook contract.
+      // A v12+ source must carry the exact envelope shape (as emitted
+      // by defaultLogbookEnvelope() at 521fe70). This runs BEFORE any
+      // downstream normalization so a malformed persisted Logbook
+      // object cannot be silently replaced with an empty envelope.
+      if (kind === 'logbook-envelope') {
+        if (!isLogbookEnvelope(cur)) return { ok: false, reason: 'malformed-' + path };
       }
     }
     return { ok: true };
@@ -1128,10 +1190,24 @@
     if (!nested.ok) return { ok: false, reason: nested.reason, version };
     return { ok: true };
   }
+  // PRV-0.5 Codex-final P1-03b: return an immutable deep snapshot,
+  // not a reference to the internal matrix, so external callers cannot
+  // mutate the live validation policy. The matrix itself is already
+  // deep-frozen at definition (defense-in-depth); we additionally
+  // return fresh frozen copies so a caller that tries to reassign an
+  // array element or nested key gets a TypeError in strict mode (and
+  // a silent no-op in sloppy mode) — either way the internal
+  // validator behavior does not change.
   function getHistoricalRequirements(version) {
     if (typeof version !== 'number' || !Number.isInteger(version)) return null;
     if (version < 8 || version >= SCHEMA_VERSION) return null;
-    return HISTORICAL_SCHEMA_REQUIREMENTS[Math.min(version, 13)] || null;
+    const req = HISTORICAL_SCHEMA_REQUIREMENTS[Math.min(version, 13)];
+    if (!req) return null;
+    return Object.freeze({
+      requiredObjects: Object.freeze(req.requiredObjects.slice()),
+      requiredArrays: Object.freeze(req.requiredArrays.slice()),
+      nested: Object.freeze(Object.assign({}, req.nested))
+    });
   }
   // PRV-0.5 R7 (Codex Round-6 P1-3, INV-4): COMPLETE canonical
   // full-state validation for schema-14 destructive commits. Every
@@ -1150,8 +1226,19 @@
     for (const d of requiredArrays) {
       if (!Array.isArray(data[d])) missing.push(d);
     }
-    // logbook: envelope object OR (legacy) array — accepted.
-    if (!(Array.isArray(data.logbook) || (data.logbook && typeof data.logbook === 'object' && !Array.isArray(data.logbook)))) {
+    // PRV-0.5 Codex-final P1-02: v14 canonical Logbook must be a
+    // valid envelope object (schemaVersion === LOGBOOK_ENVELOPE_VERSION,
+    // authority === 'legacy-mirror', entries array). A legacy Tracker
+    // array is accepted only as a transitional shape (it will be
+    // migrated by the logbook-envelope constructor on downstream
+    // paths). Arbitrary non-envelope objects are REJECTED here — no
+    // silent normalization to an empty envelope is permitted at the
+    // canonical validation boundary.
+    if (Array.isArray(data.logbook)) {
+      // legacy array shape — accepted (Tracker array pending envelope).
+    } else if (isLogbookEnvelope(data.logbook)) {
+      // canonical envelope — accepted.
+    } else {
       missing.push('logbook');
     }
     // money nested invariants.
@@ -1710,6 +1797,16 @@
     };
   }
 
+  // PRV-0.5 Codex-final P1-02: normalizeLogbookDomain performs only
+  // the contractually normalizable array→envelope transition. It
+  // does NOT silently replace a malformed persisted Logbook with an
+  // empty envelope any more — that erasure was the exact defect
+  // Codex reproduced (malformed sentinel bytes replaced by empty
+  // canonical). A valid envelope passes through unchanged. Anything
+  // else (missing, wrong-type, envelope-shape-invalid) is left
+  // untouched so the caller's validation step (validateLegacySourceRequiredFields
+  // for legacy sources; validateFullStateCanonical for v14 candidates)
+  // rejects it explicitly.
   function normalizeLogbookDomain(data) {
     if (!data || typeof data !== 'object') return;
     if (Array.isArray(data.logbook)) {
@@ -1720,9 +1817,16 @@
       data.logbook = env;
       return;
     }
-    if (!isLogbookEnvelope(data.logbook)) {
+    if (data.logbook === undefined) {
+      // Field genuinely absent — install a fresh envelope. This is
+      // NOT a replacement of persisted sentinel bytes; there is
+      // nothing to erase.
       data.logbook = defaultLogbookEnvelope();
+      return;
     }
+    // Present but not an array and not a valid envelope: leave the
+    // malformed value in place. The caller's validation step is
+    // responsible for rejecting it.
   }
 
   // ── WRAPPER · LOAD ───────────────────────────────
@@ -1922,6 +2026,18 @@
   let activeFullStateTransaction = false;
   let fullStateTxToken = null;
   let deferredStorageEvents = [];
+  // PRV-0.5 Codex-final P1-01: explicit full-state settlement state.
+  // Set to `{ reason, ... }` whenever commitFullStateWrapper enters a
+  // POST-WRITE uncertainty (durable byte-verify failed, post-write
+  // authority classification failed, etc.). Consumed and cleared by
+  // endFullStateTransaction so it CANNOT independently adopt the
+  // divergent disk bytes as authority — instead a truthful
+  // STORE_FULL_STATE_POST_WRITE_UNCERTAIN blocker is installed and
+  // memory/knownRevision/baseWrapperRaw/snapshot/subscribers are NOT
+  // advanced. This closes the composition failure Codex reproduced
+  // where a failed commit reported failure and settlement then
+  // adopted the divergent bytes as success.
+  let _fullStatePostWriteUncertain = null;
   // Persistent durability blocker (corrupt disk, revision regression, etc.).
   // Set to a {code, since, detail?} record; when non-null Store rejects new
   // writes AND flushes with STORE_DURABILITY_BLOCKED until cleared via
@@ -2566,6 +2682,10 @@
     if (activeFullStateTransaction) return { ok: false, error: 'FULL_STATE_TRANSACTION_IN_PROGRESS' };
     if (pendingOps.length > 0 && !opts.force) return { ok: false, error: 'PENDING_CHANGES' };
     clearTimeout(saveTimer); saveTimer = null;
+    // PRV-0.5 Codex-final P1-01: reset settlement state at the start
+    // of every new transaction so a prior transaction's uncertainty
+    // flag never leaks into this one.
+    _fullStatePostWriteUncertain = null;
     activeFullStateTransaction = true;
     fullStateTxToken = { id: 'tx_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8), reason: opts.reason || 'full-state' };
     // Fire freeze-begin so UI can render the banner.
@@ -2588,11 +2708,43 @@
     // wrapper, lower revision than what we accepted. Adopt safely on a newer
     // valid wrapper.
     deferredStorageEvents.length = 0;
+    // PRV-0.5 Codex-final P1-01: consume the post-write uncertainty
+    // flag set by commitFullStateWrapper. If a full-state commit
+    // reported post-write uncertainty during this transaction, we
+    // MUST NOT independently adopt whatever bytes are on disk now
+    // as authority — those bytes could be the intended payload
+    // corrupted, an unrelated altered-but-valid wrapper, or the
+    // pre-write source. Install a truthful blocker and leave memory
+    // state (baseState / knownRevision / baseWrapperRaw / snapshot /
+    // subscribers) UNCHANGED so explicit recovery is required.
+    const postWriteUncertain = _fullStatePostWriteUncertain;
+    _fullStatePostWriteUncertain = null;
     let rawNow = null;
     let endReadFailed = false;
     try { rawNow = localStorage.getItem(STATE_KEY); }
     catch (e) { endReadFailed = true; rawNow = null; }
-    if (endReadFailed) {
+    if (postWriteUncertain) {
+      // The primary mutation was attempted and durable verification
+      // failed inside commitFullStateWrapper. Refuse to adopt any
+      // current disk state; only install the truthful uncertainty
+      // blocker if a more specific one is not already set.
+      if (!durabilityBlocker) {
+        setDurabilityBlocker('STORE_FULL_STATE_POST_WRITE_UNCERTAIN', {
+          where: 'endFullStateTransaction',
+          commitError: postWriteUncertain.error,
+          disk: postWriteUncertain.disk || null,
+          classification: postWriteUncertain.classification || null,
+          retainedEvidenceKey: postWriteUncertain.retainedEvidenceKey || null,
+          reason: postWriteUncertain.reason || null,
+          recovery: !!postWriteUncertain.recovery,
+          legacyConversion: !!postWriteUncertain.legacyConversion
+        });
+      }
+      // Deliberately DO NOT advance baseState / knownRevision /
+      // committedAt / baseWrapperRaw. Deliberately DO NOT rebuild
+      // optimistic memory from the divergent disk (rebuildOptimistic
+      // below still runs but reads the untouched baseState).
+    } else if (endReadFailed) {
       // PRV-0.5 Final Closure (INV-C): read failure ≠ absence.
       setDurabilityBlocker('STORE_READ_FAILED', { where: 'endFullStateTransaction' });
     } else if (rawNow === null) {
@@ -2916,9 +3068,22 @@
       let durableRaw;
       try { durableRaw = localStorage.getItem(STATE_KEY); } catch (e) { durableRaw = null; }
       if (durableRaw !== payload) {
+        // PRV-0.5 Codex-final P1-01: primary mutation was attempted;
+        // the durable reread did not match the intended payload. Flag
+        // post-write uncertainty so endFullStateTransaction refuses
+        // to adopt the divergent bytes as authority.
+        const diskKind = durableRaw === null ? 'absent' : (durableRaw === rawNow ? 'unchanged-source' : 'divergent-bytes');
+        _fullStatePostWriteUncertain = {
+          error: 'FULL_STATE_DURABLE_VERIFY_FAILED',
+          disk: diskKind,
+          retainedEvidenceKey: quarantineKey,
+          reason: reason || 'full-state',
+          recovery: recoveryMode,
+          legacyConversion: !!legacyConversionMode
+        };
         return {
           ok: false, error: 'FULL_STATE_DURABLE_VERIFY_FAILED',
-          disk: durableRaw === null ? 'absent' : (durableRaw === rawNow ? 'unchanged-source' : 'divergent-bytes'),
+          disk: diskKind,
           retainedEvidenceKey: quarantineKey
         };
       }
@@ -2929,6 +3094,18 @@
         ? evaluateCandidateData(verifyParsed.data)
         : { canonical: false, classification: 'PARSE_FAILED' };
       if (!verifyEval.canonical || verifyEval.classification !== 'AUTHORITATIVE_MIGRATED') {
+        // PRV-0.5 Codex-final P1-01: primary mutation was attempted;
+        // durable reread parses but does not classify as AUTHORITATIVE_MIGRATED.
+        // Flag post-write uncertainty; endFullStateTransaction must not
+        // adopt the divergent bytes as authority.
+        _fullStatePostWriteUncertain = {
+          error: 'FULL_STATE_POST_WRITE_VERIFICATION_FAILED',
+          classification: verifyEval.classification,
+          retainedEvidenceKey: quarantineKey,
+          reason: reason || 'full-state',
+          recovery: recoveryMode,
+          legacyConversion: !!legacyConversionMode
+        };
         return {
           ok: false, error: 'FULL_STATE_POST_WRITE_VERIFICATION_FAILED',
           classification: verifyEval.classification,
@@ -3234,6 +3411,12 @@
     evaluateCandidateWrapper: function (input) { return evaluateCandidateWrapper(input); },
     evaluateCandidateData: function (data) { return evaluateCandidateData(data); },
     validateLegacySourceRequiredFields: validateLegacySourceRequiredFields,
+    // PRV-0.5 Codex-final P1-04: expose the snapshot wrapper shape
+    // gate and the full snapshot validator so tests can adversarially
+    // assert v14 revision enforcement without relying on the internal
+    // restoreSnapshot side effects.
+    isValidSnapshotWrapperShape: isValidSnapshotWrapperShape,
+    validateSnapshotWrapperFull: validateSnapshotWrapperFull,
     // PRV-0.5 Final Closure (INV-I): expose the version-indexed
     // historical requirements matrix so tests / diagnostics can assert
     // the exact per-version emission expectations without duplicating

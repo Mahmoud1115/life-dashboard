@@ -66,14 +66,20 @@ async function seedFinance(page, { gen1 = null, gen2Money = null } = {}) {
       // the full defaultState-shape emitted at commit 8a1e374; a
       // minimal `{money, qatarVisit}` seed is UNPROVEN under the
       // strict matrix and would be rejected at boot.
+      // PRV-0.5 Codex-final P1-03: v8..v13 emitted meta and money.expenses.
+      const _g2mFull = Object.assign({ expenses: {} }, g2m);
+      if (!_g2mFull.expenses || typeof _g2mFull.expenses !== 'object' || Array.isArray(_g2mFull.expenses)) {
+        _g2mFull.expenses = {};
+      }
       localStorage.setItem('dune_state_v4', JSON.stringify({
         version: 11,
         data: {
-          money: g2m,
+          money: _g2mFull,
           qatarVisit: {},
           career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
           bht: { habits: [], entries: [] }, telemetry: {},
-          todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [], logbook: []
+          todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [], logbook: [],
+          meta: { version: 11, createdAt: '2026-06-19T00:00:00Z', lastUpdated: '2026-06-19T00:00:00Z' }
         },
       }));
     }

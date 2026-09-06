@@ -795,7 +795,9 @@ test('T-import-deferred-storage-event — storage event during import is deferre
       money: { salary_net: 314, expenses: {}, usd_rate: 88, save_target: 55000 },
       qatarVisit: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
       bht: { habits: [], entries: [] }, telemetry: {},
-      todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [], logbook: []
+      todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [], logbook: [],
+      // PRV-0.5 Codex-final P1-03: v8..v13 emitted `meta`.
+      meta: { version: 11, createdAt: '2026-06-19T00:00:00Z', lastUpdated: '2026-06-19T00:00:00Z' }
     };
     const backup = {
       version: '2026.1', exported_at: '2026-08-25T00:00:00Z',
