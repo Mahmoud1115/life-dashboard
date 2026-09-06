@@ -2089,6 +2089,13 @@
   // proofs. Production callers never touch this; the default false
   // preserves normal cross-tab lock behavior.
   let _testForceNoLockFlag = false;
+  // PRV-0.5 Round-4 review remediation: test-only hook that forces
+  // the post-write authority classification to fail non-canonical,
+  // so R4-P1-01d can deterministically reach
+  // FULL_STATE_POST_WRITE_VERIFICATION_FAILED without racing an
+  // external mutator. Analogous to _testForceNoLockFlag. Production
+  // never sets this; only exposed via Store._testForcePostWriteEvalFailure(bool).
+  let _testForcePostWriteEvalFailureFlag = false;
   function _computeSourceIdentity(raw, parsed) {
     return {
       raw: raw,
@@ -2733,26 +2740,39 @@
     try { rawNow = localStorage.getItem(STATE_KEY); }
     catch (e) { endReadFailed = true; rawNow = null; }
     if (postWriteUncertain) {
-      // The primary mutation was attempted and durable verification
-      // failed inside commitFullStateWrapper. Refuse to adopt any
-      // current disk state; only install the truthful uncertainty
-      // blocker if a more specific one is not already set.
-      if (!durabilityBlocker) {
-        setDurabilityBlocker('STORE_FULL_STATE_POST_WRITE_UNCERTAIN', {
-          where: 'endFullStateTransaction',
-          commitError: postWriteUncertain.error,
-          disk: postWriteUncertain.disk || null,
-          classification: postWriteUncertain.classification || null,
-          retainedEvidenceKey: postWriteUncertain.retainedEvidenceKey || null,
-          reason: postWriteUncertain.reason || null,
-          recovery: !!postWriteUncertain.recovery,
-          legacyConversion: !!postWriteUncertain.legacyConversion
-        });
-      }
+      // PRV-0.5 Round-4 review remediation: a primary mutation was
+      // attempted and durable verification failed. Any pre-existing
+      // blocker (e.g. STORE_CORRUPT_AUTHORITATIVE_STATE from a
+      // recovery flow) described the pre-write generation, which may
+      // have been REPLACED by whatever bytes are now on disk. That
+      // prior claim is no longer proven; keeping it as the active
+      // blocker would let a listener treat "old corrupt bytes are
+      // still there" as the truth. Overwrite unconditionally with
+      // STORE_FULL_STATE_POST_WRITE_UNCERTAIN and preserve the prior
+      // blocker as diagnostic history in `detail.priorBlocker`.
+      const priorBlocker = durabilityBlocker
+        ? {
+            code: durabilityBlocker.code,
+            since: durabilityBlocker.since,
+            detail: durabilityBlocker.detail
+          }
+        : null;
+      setDurabilityBlocker('STORE_FULL_STATE_POST_WRITE_UNCERTAIN', {
+        where: 'endFullStateTransaction',
+        commitError: postWriteUncertain.error,
+        disk: postWriteUncertain.disk || null,
+        classification: postWriteUncertain.classification || null,
+        retainedEvidenceKey: postWriteUncertain.retainedEvidenceKey || null,
+        reason: postWriteUncertain.reason || null,
+        recovery: !!postWriteUncertain.recovery,
+        legacyConversion: !!postWriteUncertain.legacyConversion,
+        priorBlocker: priorBlocker
+      });
       // Deliberately DO NOT advance baseState / knownRevision /
-      // committedAt / baseWrapperRaw. Deliberately DO NOT rebuild
-      // optimistic memory from the divergent disk (rebuildOptimistic
-      // below still runs but reads the untouched baseState).
+      // committedAt / baseWrapperRaw. rebuildOptimistic and notifyAll
+      // are gated below by _fullStateCommitSucceeded, so they will
+      // NOT fire on this branch (the flag remains false whenever
+      // commitFullStateWrapper reports post-write uncertainty).
     } else if (endReadFailed) {
       // PRV-0.5 Final Closure (INV-C): read failure ≠ absence.
       setDurabilityBlocker('STORE_READ_FAILED', { where: 'endFullStateTransaction' });
@@ -3166,9 +3186,15 @@
       // Re-parse the durable read (not just the payload we constructed)
       // and re-classify — belt-and-suspenders for schema conformance.
       const verifyParsed = parseWrapperRaw(durableRaw);
-      const verifyEval = verifyParsed && !verifyParsed.corrupt
-        ? evaluateCandidateData(verifyParsed.data)
-        : { canonical: false, classification: 'PARSE_FAILED' };
+      // PRV-0.5 Round-4 review remediation: `_testForcePostWriteEvalFailureFlag`
+      // deterministically drives the classifier's non-canonical branch
+      // so the R4-P1-01d probe reaches FULL_STATE_POST_WRITE_VERIFICATION_FAILED
+      // exactly. Production never sets this flag.
+      const verifyEval = _testForcePostWriteEvalFailureFlag
+        ? { canonical: false, classification: 'TEST_FORCED_NON_CANONICAL' }
+        : (verifyParsed && !verifyParsed.corrupt
+          ? evaluateCandidateData(verifyParsed.data)
+          : { canonical: false, classification: 'PARSE_FAILED' });
       if (!verifyEval.canonical || verifyEval.classification !== 'AUTHORITATIVE_MIGRATED') {
         // PRV-0.5 Codex-final P1-01: primary mutation was attempted;
         // durable reread parses but does not classify as AUTHORITATIVE_MIGRATED.
@@ -3535,6 +3561,7 @@
     // forces every recovery + legacy-conversion commit to refuse
     // with STORE_LOCK_UNAVAILABLE; `false` restores normal behavior.
     _testForceNoLock: function (flag) { _testForceNoLockFlag = flag === true; },
+    _testForcePostWriteEvalFailure: function (flag) { _testForcePostWriteEvalFailureFlag = flag === true; },
     // Raised for tests / documentation of the canonical marker contract.
     MARKER_STATUS: { MIGRATED: MARKER_STATUS_MIGRATED, UNMIGRATED: MARKER_STATUS_UNMIGRATED },
     REQUIRED_RECORD_DOMAINS: REQUIRED_RECORD_DOMAINS.slice(),

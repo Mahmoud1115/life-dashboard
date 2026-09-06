@@ -2211,3 +2211,38 @@ blocker installed:
 `f2dc754b172a4108a281663d669680528a08c26a`; the frozen remote
 candidate `25ba8cca24716cdd5629e4afb7feb503c772869f` is unchanged
 by this remediation). Local only, unpushed.
+
+### ADR-015 addendum #12 (2026-09-06) — Round-4 pre-push review remediation: blocker truth-fulness after post-write uncertainty + deterministic auth-classification probe
+
+**Trigger.** ChatGPT pre-push review of `711f793b85464605d2874803cc727b55a471707d`
+(`105-PRV-0.5-ROUND4-PRE-PUSH-REVIEW-FAIL.md`) returned FAIL with
+three narrow issues:
+
+1. **Recovery post-write blocker can preserve a stale pre-write blocker.** The Round-4 uncertainty branch guarded `setDurabilityBlocker` with `if (!durabilityBlocker)` — so a corrupt-authority recovery flow that then failed durable verification kept `STORE_CORRUPT_AUTHORITATIVE_STATE` as the active blocker. That claim describes the pre-write generation, which may have been REPLACED by the failed write. Preserving it lets a listener treat "old corrupt bytes are still there" as current truth.
+2. **Auth-classification probe not deterministic.** `R4-P1-01d` allowed either `FULL_STATE_DURABLE_VERIFY_FAILED` OR `FULL_STATE_POST_WRITE_VERIFICATION_FAILED`, so the intended branch wasn't proven to run.
+3. **Required `npx playwright test --list` command not executed.** Round-4 relied on the line reporter's `[N/N]` counter.
+
+**Fixes.**
+
+**Blocker truthfulness.** `endFullStateTransaction`'s uncertainty branch now UNCONDITIONALLY calls `setDurabilityBlocker('STORE_FULL_STATE_POST_WRITE_UNCERTAIN', detail)` — no guard on the pre-existing blocker. The prior blocker (if any) is retained in `detail.priorBlocker: {code, since, detail}` for diagnostic history. Ordinary-write acceptance / recovery-mode acceptance flow from the new active blocker's code, not from the retired history.
+
+**Deterministic auth-classification probe.** New test-only hook `Store._testForcePostWriteEvalFailure(bool)` — analogous to `_testForceNoLock`. When set, the post-write `evaluateCandidateData` call is replaced with `{canonical: false, classification: 'TEST_FORCED_NON_CANONICAL'}` so `commitFullStateWrapper` deterministically returns `FULL_STATE_POST_WRITE_VERIFICATION_FAILED`. `R4-P1-01d` uses the hook and asserts exactly that error code, `classification === 'TEST_FORCED_NON_CANONICAL'`, `endSettlement === 'FULL_STATE_POST_WRITE_UNCERTAIN'`, blocker `STORE_FULL_STATE_POST_WRITE_UNCERTAIN`, zero subscriber notifications, memory unchanged, snapshots unchanged.
+
+**Cold `--list` evidence.** Recorded in this remediation's cold run:
+
+- `npx playwright test --list` → **Total: 305 tests in 9 files**.
+- `npx playwright test tests/prv-preservation.spec.js --list` → **Total: 148 tests in 1 file**.
+- Both discovery counts match the executed suite.
+
+**Effect on binding closure summary:**
+
+- BINDING-1: PASS (unchanged).
+- BINDING-2: PASS (uncertainty blocker is now always truthful; the deterministic auth-classification branch is proven).
+- BINDING-3-A: PASS (unchanged).
+- BINDING-3-B: PASS (uncertainty row unchanged; the blocker-overwrite rule is a within-row policy tightening — the "post-failure state" column already committed to "active blocker code reflects the current epistemic state").
+
+**Date:** 2026-09-06 (Round-5 remediation on branch
+`claude/prv-0-5-final-closure`; parent commit
+`711f793b85464605d2874803cc727b55a471707d`; the frozen remote
+candidate `25ba8cca24716cdd5629e4afb7feb503c772869f` remains
+unchanged). Local only, unpushed.

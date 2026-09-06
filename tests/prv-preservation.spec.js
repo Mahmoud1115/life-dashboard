@@ -2780,7 +2780,14 @@ test('PRV-R7-T13-PRIMARY-WRITE-NOOP-DURABLE-CATCHES — a primary setItem that s
   expect(proof.authOk).toBe(true);
   expect(proof.commitOk).toBe(false);
   expect(proof.commitError).toBe('FULL_STATE_DURABLE_VERIFY_FAILED');
-  expect(proof.blockerCode).toBe('STORE_CORRUPT_AUTHORITATIVE_STATE');
+  // PRV-0.5 Round-4 review remediation (ADR-015 addendum #12): once
+  // the primary mutation has been attempted and durable verification
+  // fails, the pre-write STORE_CORRUPT_AUTHORITATIVE_STATE blocker
+  // is no longer proven — the current disk generation could be
+  // anything. endFullStateTransaction now UNCONDITIONALLY installs
+  // STORE_FULL_STATE_POST_WRITE_UNCERTAIN and preserves the prior
+  // blocker as diagnostic history in `detail.priorBlocker`.
+  expect(proof.blockerCode).toBe('STORE_FULL_STATE_POST_WRITE_UNCERTAIN');
   expect(proof.diskUnchanged).toBe(true);
 });
 
@@ -4983,40 +4990,69 @@ test('R4-P1-01c-SILENT-PRIMARY-NO-OP — no success notification, uncertainty bl
   expect(proof.memoryUnchanged).toBe(true);
 });
 
-// R4-P1-01d — post-write authority classification failure. The
-// durable reread matches the payload byte-for-byte, but
-// evaluateCandidateData classifies the on-disk data as
-// MALFORMED_CURRENT_SCHEMA. commitFullStateWrapper returns
-// FULL_STATE_POST_WRITE_VERIFICATION_FAILED; settlement installs
-// STORE_FULL_STATE_POST_WRITE_UNCERTAIN.
-//
-// We reach the post-write path by feeding an intended-canonical
-// candidate whose write is intercepted to land a wrapper whose data
-// evaluates as non-canonical (recordsMigration.schemaVersion set to
-// a value that does not match SCHEMA_VERSION). The pre-write
-// canonical guard sees the intended candidate (canonical); the
-// post-write verifier sees the intercepted wrapper (non-canonical).
-test('R4-P1-01d-POST-WRITE-AUTHORITY-CLASSIFICATION-FAIL — no success notification, uncertainty blocker installed', async ({ page }) => {
+// R4-P1-01d — post-write AUTHORITY-CLASSIFICATION failure branch,
+// deterministically reached via the test-only
+// `Store._testForcePostWriteEvalFailure(true)` hook (analogous to
+// `_testForceNoLock`). The durable byte-verify passes (payload was
+// written and read back unchanged); the post-write
+// evaluateCandidateData is forced to non-canonical, so
+// commitFullStateWrapper returns FULL_STATE_POST_WRITE_VERIFICATION_FAILED
+// specifically — NOT the byte-verify branch — and settlement
+// installs STORE_FULL_STATE_POST_WRITE_UNCERTAIN.
+test('R4-P1-01d-POST-WRITE-AUTHORITY-CLASSIFICATION-FAIL — deterministic FULL_STATE_POST_WRITE_VERIFICATION_FAILED; no success notification', async ({ page }) => {
   await page.goto('/'); await waitForApp(page);
-  const iso = new Date().toISOString();
-  const cand = _r4CanonicalV14Candidate(iso, 130000);
-  const badAuthData = _r4CanonicalV14Candidate(iso, 130000);
-  // Marker schemaVersion mismatch → MALFORMED_CURRENT_SCHEMA at post-write eval.
-  badAuthData.meta.recordsMigration.schemaVersion = 99;
-  const badAuthWrapper = { version: 14, revision: 42, committedAt: iso, data: badAuthData };
-  const proof = await _r4RunCommitAttempt(page, {
-    candidate: cand, reason: 'r4-auth-fail',
-    injection: 'authority-verification-fail', badAuthWrapper: badAuthWrapper
+  const proof = await page.evaluate(async () => {
+    await new Promise(r => { const unsub = window.Store.onSave(() => { unsub(); r(); }); setTimeout(r, 1500); });
+    const beforeRaw = localStorage.getItem('dune_state_v4');
+    const beforeSalary = window.Store.get('money.salary_net');
+    const beforeSnapshotsRaw = localStorage.getItem('dune_snapshots_v1');
+    let notifCount = 0;
+    const unsub = window.Store.subscribe('*', () => { notifCount++; });
+    notifCount = 0;
+    // Deterministic post-write eval failure.
+    window.Store._testForcePostWriteEvalFailure(true);
+    const iso = new Date().toISOString();
+    const cand = {
+      money: { salary_net: 130000, expenses: {}, usd_rate: 88, save_target: 55000 },
+      qatarVisit: {}, todayFocus: ['','',''], goals: {}, career: {}, easa: {},
+      logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [],
+                 migration: { version: 1, sourceCounts: { tracker: 0, builder: 0 } },
+                 reconciled: false, drift: null },
+      reviews: [], decisions: [], timeline: [],
+      about: {}, apartments: [], sbTasks: {},
+      bht: { habits: [], entries: [] }, telemetry: {}, ideas: [],
+      records: { deadlines: [], claims: [], risks: [], goals: [] },
+      meta: { version: 14, createdAt: iso, lastUpdated: iso,
+              recordsMigration: { status: 'migrated', schemaVersion: 14, at: iso, reason: 'test' } }
+    };
+    const gate = window.Store.beginFullStateTransaction({ force: true, reason: 'r4-auth-fail' });
+    let commitRes = null, endRes = null;
+    try {
+      commitRes = await window.Store.commitFullStateWrapper(gate.token, cand, 'r4-auth-fail');
+    } finally {
+      endRes = window.Store.endFullStateTransaction(gate.token);
+      window.Store._testForcePostWriteEvalFailure(false);
+      unsub();
+    }
+    return {
+      commitOk: commitRes && commitRes.ok,
+      commitError: commitRes && commitRes.error,
+      classification: commitRes && commitRes.classification,
+      endSettlement: endRes && endRes.settlement,
+      blockerCode: (window.Store.getDurabilityBlocker && window.Store.getDurabilityBlocker() || {}).code || null,
+      subscriberNotifications: notifCount,
+      memoryUnchanged: window.Store.get('money.salary_net') === beforeSalary,
+      snapshotsUnchanged: localStorage.getItem('dune_snapshots_v1') === beforeSnapshotsRaw
+    };
   });
   expect(proof.commitOk).toBe(false);
-  // Either durable byte-verify (bytes don't match) OR post-write auth verification
-  // (they match but classify non-canonical) can fire — both must land the same
-  // uncertainty blocker.
-  expect(['FULL_STATE_DURABLE_VERIFY_FAILED', 'FULL_STATE_POST_WRITE_VERIFICATION_FAILED']).toContain(proof.commitError);
+  expect(proof.commitError).toBe('FULL_STATE_POST_WRITE_VERIFICATION_FAILED');
+  expect(proof.classification).toBe('TEST_FORCED_NON_CANONICAL');
   expect(proof.endSettlement).toBe('FULL_STATE_POST_WRITE_UNCERTAIN');
   expect(proof.blockerCode).toBe('STORE_FULL_STATE_POST_WRITE_UNCERTAIN');
   expect(proof.subscriberNotifications).toBe(0);
   expect(proof.memoryUnchanged).toBe(true);
+  expect(proof.snapshotsUnchanged).toBe(true);
 });
 
 // R4-P1-01e — recovery-mode altered-valid bytes: even under
@@ -5069,9 +5105,11 @@ test('R4-P1-01e-RECOVERY-ALTERED-VALID-BYTES — no success notification, uncert
       localStorage.setItem = origSet;
       unsub();
     }
-    const afterBlocker = (window.Store.getDurabilityBlocker && window.Store.getDurabilityBlocker() || {}).code;
+    const blockerAfter = window.Store.getDurabilityBlocker && window.Store.getDurabilityBlocker();
     return {
-      beforeBlocker, afterBlocker,
+      beforeBlocker,
+      afterBlocker: blockerAfter && blockerAfter.code,
+      afterBlockerDetail: blockerAfter && blockerAfter.detail,
       authIssued: !!(auth && auth.ok),
       commitOk: commitRes && commitRes.ok,
       commitError: commitRes && commitRes.error,
@@ -5083,14 +5121,19 @@ test('R4-P1-01e-RECOVERY-ALTERED-VALID-BYTES — no success notification, uncert
   expect(proof.authIssued).toBe(true);
   expect(proof.commitOk).toBe(false);
   expect(proof.commitError).toBe('FULL_STATE_DURABLE_VERIFY_FAILED');
-  // Per the uncertainty branch's contract: the truthful uncertainty
-  // blocker is installed ONLY when no more-specific blocker was
-  // already set. In this test the pre-existing
-  // STORE_CORRUPT_AUTHORITATIVE_STATE blocker is more specific
-  // (source-classification failure) and is preserved. The critical
-  // invariants — no success notification, no adoption of the
-  // altered-valid `1` sentinel into memory — still hold.
-  expect(['STORE_FULL_STATE_POST_WRITE_UNCERTAIN', 'STORE_CORRUPT_AUTHORITATIVE_STATE']).toContain(proof.afterBlocker);
+  // PRV-0.5 Round-4 review remediation: once a recovery write has
+  // been attempted and durable verification failed, the pre-write
+  // corrupt-authority blocker is no longer proven — the current
+  // disk generation may be anything. The uncertainty branch now
+  // OVERWRITES that blocker with STORE_FULL_STATE_POST_WRITE_UNCERTAIN
+  // and preserves the prior blocker as diagnostic history in
+  // `detail.priorBlocker`.
+  expect(proof.afterBlocker).toBe('STORE_FULL_STATE_POST_WRITE_UNCERTAIN');
+  expect(proof.afterBlockerDetail).toBeTruthy();
+  expect(proof.afterBlockerDetail.recovery).toBe(true);
+  expect(proof.afterBlockerDetail.commitError).toBe('FULL_STATE_DURABLE_VERIFY_FAILED');
+  expect(proof.afterBlockerDetail.priorBlocker).toBeTruthy();
+  expect(proof.afterBlockerDetail.priorBlocker.code).toBe('STORE_CORRUPT_AUTHORITATIVE_STATE');
   expect(proof.subscriberNotifications).toBe(0);
   // Memory did NOT adopt the altered-valid `1` value.
   expect(proof.memorySalary).not.toBe(1);
