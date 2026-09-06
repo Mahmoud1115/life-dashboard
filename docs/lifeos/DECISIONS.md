@@ -2246,3 +2246,73 @@ three narrow issues:
 `711f793b85464605d2874803cc727b55a471707d`; the frozen remote
 candidate `25ba8cca24716cdd5629e4afb7feb503c772869f` remains
 unchanged). Local only, unpushed.
+
+### ADR-015 addendum #13 (2026-09-06) — Round-6 role-separation-recovery remediation: current-schema validation before normalization + complete historical emitted-paths contract
+
+**Trigger.** After Round-5 (`6a79f4d…`) was pushed for the final independent Codex HIGH-risk re-review, the Round-6 remediation specification intended for Claude was accidentally sent to Codex, who then implemented it as local commit `ef6e4019…`. Because Codex is the designated independent reviewer for HIGH-risk work, promoting the Codex-authored implementation would collapse implementer/reviewer separation and forfeit the review that gates PRV-0.5's merge (per ADR-012). The Round-6 handoff (`113-PRV-0.5-ROLE-SEPARATION-RECOVERY-CLAUDE-HANDOFF.md`) accordingly directed Claude to independently re-implement the remediation from the frozen reviewed parent `6a79f4d…` — the Codex commit remains unpushed, is not an ancestor of the Claude candidate, and is used only as defect specification, not as implementation authority.
+
+**Defects (independent Claude analysis, corroborated by Codex's report as evidence).**
+
+1. **Destructive fabrication when persisted current-schema `logbook` is missing.** `normalizeLogbookDomain` at `6a79f4d` contained a branch `if (data.logbook === undefined) { data.logbook = defaultLogbookEnvelope(); return; }`. This runs on every destructive boundary that calls it — `commitFullStateWrapper`, `evaluateCandidateWrapper`, `validateSnapshotWrapperFull`, `migrateAndValidate`. A persisted v14 wrapper whose bytes were corrupted such that `logbook` was absent, or an incoming Import / Snapshot Restore payload with `logbook` missing, was silently repaired with an empty envelope and then written back as the durable authority — erasing any real Logbook the user had. The R7-P1-04 gate at `commitFullState` only rejected present-but-malformed logbook values (arbitrary object that was neither array nor envelope); it did NOT reject `logbook===undefined` or `logbook===null`, letting them fall through to the fabrication.
+
+2. **Incomplete v14 canonical contract.** `validateFullStateCanonical` accepted an array-shaped `logbook` (legitimate only for legacy v8..v11 sources), only required `bht.habits` and `bht.entries` as arrays, and did not enforce any telemetry field. A v14 wrapper with a bare `bht: {habits:[], entries:[]}` and `telemetry: {}` therefore passed the canonical boundary — migrateUp / BHT.migrateSlice then default-filled the rest and the fabrication became authoritative.
+
+3. **Incomplete v8..v13 historical source contract.** `_V8_NESTED` and `_V12_NESTED` required only `bht.habits`, `bht.entries`, `logbook`, `money.salary_net`, and `money.expenses`. Every other BHT path emitted by every supported v8..v13 `defaultState()` (`bht.snapshots`, `bht.lifeEvents`, `bht.vocab` and its `triggers`/`coping`/`moods` arrays, `bht.ai` and its `provider`/`ollamaUrl`/`model` strings, `bht.meta`) and every telemetry field (`accumulatedFatigue`, `weeklyShiftHours`, `focusReserve` as numbers) were emitted at every attested version-bump commit but not enforced at the source stage. `migrateUp` calls `BHT.migrateSlice()` (bht.js:105) and `sanitizeAI()` (bht.js:136), and default-fills the telemetry three at core.js:638–640 — so a partial legacy source was silently repaired to a plausible v14 wrapper. Because destructive boundaries (`evaluateCandidateWrapper`, `validateSnapshotWrapperFull`) source-check via `validateLegacySourceRequiredFields`, this repair also passed the "was the source complete before migration" invariant that Round-3..Round-5 pinned.
+
+4. **`validateSnapshotWrapperFull` used the legacy source validator for v14 wrappers.** A v14 snapshot was checked against `validateLegacySourceRequiredFields` at the source stage. A legitimate v14 snapshot passed by coincidence (its shape is a superset of the v13 required shape), but a v14 snapshot with a missing logbook passed the array-or-object clause in the legacy matrix and was then silently repaired downstream.
+
+5. **`evaluateCandidateWrapper` had no current-schema source check.** v14 candidate wrappers (Import path, recovery-candidate evaluation) migrated straight into `normalizeLogbookDomain` — so a v14 wrapper with missing `logbook` was fabricated over.
+
+6. **Boot path (`migrateAndValidate`) had no current-schema source check.** A persisted v14 wrapper with missing `logbook` on disk would fabricate into memory on boot; the next mutation would then persist the fabricated envelope over the corrupt bytes, silently destroying evidence of the original corruption.
+
+**Fixes (independent Claude re-implementation, parent `6a79f4d…`).**
+
+- `normalizeLogbookDomain` no longer fabricates a default envelope when `logbook === undefined`. Only the contractually normalizable array→envelope transition remains. Missing / null / non-envelope non-array values are left untouched so the caller's validation gate rejects them explicitly. Fresh-storage initialization receives an envelope from `defaultState()`; persisted authority never receives one from the normalizer.
+- `_BHT_EMITTED_NESTED` and `_TELEMETRY_EMITTED_NESTED` — new deep-frozen per-version tables that record every BHT + telemetry path `defaultState()` emitted at every attested v8..v13 tag. `_V8_NESTED` and `_V12_NESTED` compose these into the version matrix, keeping the version-specific Logbook contract (array for v8..v11, envelope for v12..v13) intact.
+- `_checkNestedShape` gains a `'string'` kind so the BHT AI provider/ollamaUrl/model paths can be typed. All prior kinds (`array`, `number`, `object`, `array-or-object`, `logbook-envelope`) are preserved.
+- `validateFullStateCanonical` now enforces the same complete BHT + telemetry contract for v14 wrappers — no legacy-array acceptance, no bare-`bht.{habits,entries}` shortcut, no missing telemetry.
+- `evaluateCandidateWrapper` runs `validateFullStateCanonical` on the ORIGINAL v14 parsed data BEFORE migrateUp / normalize — the v14 branch matches the strict pattern the v8..v13 branch has held since Round-3 P1-5. Rejections carry `reasons: ['current-source-…']` prefixes so callers (Import, Snapshot Restore, recovery) can distinguish them.
+- `validateSnapshotWrapperFull` routes to `validateFullStateCanonical` for v14 sources; legacy versions continue through `validateLegacySourceRequiredFields`.
+- `commitFullStateWrapper` runs `validateFullStateCanonical` on the ORIGINAL cloned candidate BEFORE `normalizeLogbookDomain`. This is the single lowest destructive boundary — every public write path (Reset, Restore, Import inline hydration, direct full-state replacement) now gets the same complete pre-normalize source contract at the same location. The Round-5 logbook-only pre-normalize gate is a subset of this rule and is subsumed; existing tests that asserted the specific `FULL_STATE_CANDIDATE_MALFORMED_LOGBOOK` error code were updated to also accept `FULL_STATE_CANONICAL_INCOMPLETE` (the superset — same invariant, tighter gate) and the previously-required error remained accepted for scenarios that still triggered the narrower path.
+- `migrateAndValidate` runs `validateFullStateCanonical` on the ORIGINAL v14 raw data BEFORE migrateUp / normalize. Legacy v8..v13 boot continues through the soft-floor path documented in addendum #7 (a stale-shape v11 wrapper still boots and can be healed by app.js hydration — rejecting it at boot would strand the user on a wrapper the repository's own migrateUp pipeline supports). Legacy-source strictness on destructive boundaries is unchanged and still enforced through `evaluateCandidateWrapper` and `validateSnapshotWrapperFull`.
+
+**Recovery UX (P2).** The freeze banner in `index.html` gains a truthful branch for `STORE_FULL_STATE_POST_WRITE_UNCERTAIN`: "Durable storage could not be verified after the last write. Normal saving is blocked. Recover via Restore latest snapshot, Import backup file, or Reset LIFE OS — open the Backup panel." The three recovery controls (`data-testid="recovery-restore-snapshot"`, `recovery-import-backup`, `recovery-reset-lifeos`) already exist in the recovery section, are keyboard-reachable, and are confirmation-gated for destructive actions (Reset LIFE OS uses `window.confirm`). Regression: `R6-P2-UX-POST-WRITE-UNCERTAIN-BANNER`.
+
+**Historical oracle.** `getHistoricalRequirements(v)` (exposed on `window.Store`) already returned deep-frozen copies. The Round-6 test-side oracle iterates v8..v13 and asserts that every emitted BHT path is present in the per-version nested matrix with the correct kind (`R6-ORACLE-BHT-EMITTED-PATHS-ALL-VERSIONS`, `R6-ORACLE-TELEMETRY-EMITTED-PATHS-ALL-VERSIONS`, `R6-ORACLE-BHT-AI-STRING-KIND-ALL-VERSIONS`). The oracle is deterministic, version-specific, and covers required top-level domains + required arrays + required nested paths + exact type per path + version-specific Logbook contract + BHT + telemetry.
+
+**Production-path regressions added (17, all in `tests/prv-preservation.spec.js`).**
+
+- `R6-P1A-NORMALIZE-DOES-NOT-FABRICATE-EMPTY` — direct `normalizeLogbookDomain` on `{}`, `{logbook: null}`, `{logbook: 'string'}` leaves the value untouched; array is still normalized to envelope; envelope passes through unchanged.
+- `R6-P1A-VALIDATE-V14-REJECTS-MISSING-LOGBOOK`, `R6-P1A-VALIDATE-V14-REJECTS-NULL-LOGBOOK`, `R6-P1A-VALIDATE-V14-REJECTS-ARRAY-LOGBOOK` — canonical v14 validator strictness.
+- `R6-P1A-BOOT-V14-MISSING-LOGBOOK` — persisted v14 disk sentinel with no `logbook` fails boot; disk bytes preserved exactly; in-memory Store falls back to a fresh canonical envelope from `defaultState()` without touching disk.
+- `R6-P1A-IMPORT-V14-MISSING-LOGBOOK` — real `window.processImport()` of a v14 backup missing `logbook` returns false; disk unchanged; zero subscriber notifications.
+- `R6-P1A-SNAPSHOT-V14-MISSING-LOGBOOK` — real `Store.restoreSnapshot()` of a v14 snapshot missing `logbook` settles unsuccessful; disk unchanged; zero notifications.
+- `R6-P1A-EVALCANDWRAPPER-V14-MISSING-BHT-META` — `evaluateCandidateWrapper` on a v14 wrapper missing `bht.meta` returns `MALFORMED_CURRENT_SCHEMA` with `current-source-bht.meta` in reasons.
+- `R6-P1B-V11-BHT-MISSING-SNAPSHOTS`, `R6-P1B-V11-BHT-VOCAB-MISSING-TRIGGERS`, `R6-P1B-V13-BHT-AI-MISSING-PROVIDER`, `R6-P1B-V13-BHT-AI-PROVIDER-NON-STRING`, `R6-P1B-V11-TELEMETRY-MISSING-FATIGUE`, `R6-P1B-V13-TELEMETRY-FOCUS-RESERVE-NON-NUMBER` — legacy source rejection for each individually deleted / corrupted emitted path across the v11 (pre-envelope) and v13 (envelope) representative versions.
+- `R6-P1B-VALID-V11-CONTROL`, `R6-P1B-VALID-V13-CONTROL` — fully populated canonical samples pass legacy source validation.
+- `R6-CONTROL-CANONICAL-V14-BOOT-PASSES` — a fully populated v14 canonical wrapper boots normally; no durability blocker.
+
+**Test-suite hygiene.** Every prior test that seeded a v14 wrapper with the minimal `bht: {habits:[], entries:[]}` / `telemetry: {}` shape was updated in-place to seed the complete BHT + telemetry emitted contract. Pre-existing tests whose specific expected error codes were subsumed by the tightened gate (`FINAL-C1`, `FINAL-C2`, `FINAL-C3`, `FINAL-C6`, `PRV-R6-P1-3-DIRECT-MALFORMED-FULL-STATE-COMMIT-REJECTED`) were updated to accept either the prior narrow code or the new superset code — the semantic invariant each asserted (candidate refused before mutation + primary bytes unchanged + no subscriber notifications on the failed branch) is preserved.
+
+**Preservation matrix (nothing regressed).** BINDING-1 lock/source-bound authorization; BINDING-2 ordinary/full-state durable verify + post-write uncertainty settlement + `STORE_FULL_STATE_POST_WRITE_UNCERTAIN` blocker truthfulness + prior-blocker diagnostic-only retention + zero success advance on uncertainty; BINDING-3-A frozen historical matrix; BINDING-3-B recovery policy incl. v14 snapshot revision validation + revision regression + quarantine collision safety + stale recovery authorization + versionless/future fail closed. Round-5 test-only hooks (`Store._testForceNoLock`, `Store._testForcePostWriteEvalFailure`) unchanged and still gated behind test-only invocation.
+
+**Cold evidence.**
+
+- Port 4173 cleared before every run.
+- `CI=1 npx playwright test --retries=0` → 325/325 pass in ~3.0 min on the Round-6 head. See the completion report for run details.
+- `git ls-files '*.js' | xargs node --check` → clean.
+- `git diff --check` → clean.
+- Working tree clean after commit.
+- `npx playwright test --list` → **Total: 325 tests in 9 files**.
+- `npx playwright test tests/prv-preservation.spec.js --list` → **Total: 168 tests in 1 file**.
+
+**Effect on binding closure summary:**
+
+- BINDING-1: PASS (unchanged).
+- BINDING-2: PASS (unchanged).
+- BINDING-3-A: PASS (strengthened — the historical source contract now covers every emitted BHT + telemetry path per attested version; no soft floor before migration).
+- BINDING-3-B: PASS (strengthened — the v14 canonical + snapshot source + import + boot + direct commit boundaries all enforce the same complete pre-normalize contract, with no destructive fabrication for missing / null / malformed current-schema Logbook).
+
+**Provenance.** New Claude-authored commit's ancestry: `<Round-6 head> → 6a79f4d46bb1a1779456d9774192be8c6873b26f`. The Codex-authored `ef6e4019…` is NOT an ancestor of the Round-6 head; it remains unpushed on the `claude/prv-0-5-final-closure` worktree as pure defect specification / diff-of-record.
+
+**Date:** 2026-09-06 (Round-6 Claude-authored remediation on branch `claude/prv-0-5-round6-claude-authored`; parent `6a79f4d46bb1a1779456d9774192be8c6873b26f`). Local only, unpushed pending ChatGPT pre-push review.

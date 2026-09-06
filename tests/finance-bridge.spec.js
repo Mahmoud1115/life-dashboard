@@ -77,7 +77,7 @@ async function seedFinance(page, { gen1 = null, gen2Money = null } = {}) {
           money: _g2mFull,
           qatarVisit: {},
           career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
-          bht: { habits: [], entries: [] }, telemetry: {},
+          bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
           todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [], logbook: [],
           meta: { version: 11, createdAt: '2026-06-19T00:00:00Z', lastUpdated: '2026-06-19T00:00:00Z' }
         },

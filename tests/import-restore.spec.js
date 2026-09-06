@@ -85,8 +85,8 @@ function _fullLegacyV11Data(salary) {
     money: { salary_net: salary, expenses: {}, usd_rate: 88, save_target: 55000 },
     qatarVisit: {},
     career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
-    bht: { habits: [], entries: [] },
-    telemetry: {},
+    bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} },
+    telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
     todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [],
     apartments: [], logbook: [],
     // PRV-0.5 Codex-final P1-03: `meta` was emitted by v8..v13

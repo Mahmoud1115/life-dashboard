@@ -794,7 +794,7 @@ test('T-import-deferred-storage-event — storage event during import is deferre
     const _fullLegacyV11 = {
       money: { salary_net: 314, expenses: {}, usd_rate: 88, save_target: 55000 },
       qatarVisit: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
-      bht: { habits: [], entries: [] }, telemetry: {},
+      bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
       todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [], logbook: [],
       // PRV-0.5 Codex-final P1-03: v8..v13 emitted `meta`.
       meta: { version: 11, createdAt: '2026-06-19T00:00:00Z', lastUpdated: '2026-06-19T00:00:00Z' }

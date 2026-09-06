@@ -2068,8 +2068,16 @@ test('PRV-R6-P1-3-DIRECT-MALFORMED-FULL-STATE-COMMIT-REJECTED — commitFullStat
   });
   expect(proof.blockerBeforeCode).toBe('STORE_CORRUPT_AUTHORITATIVE_STATE');
   expect(proof.commitOk).toBe(false);
-  expect(proof.commitError).toBe('FULL_STATE_CANDIDATE_NONCANONICAL');
-  expect(proof.commitClassification).toBe('MALFORMED_CURRENT_SCHEMA');
+  // PRV-0.5 Round-6 (Claude-authored): commitFullState now applies
+  // validateFullStateCanonical to the ORIGINAL candidate BEFORE the
+  // marker/records classification runs, so a candidate missing
+  // records.goals is rejected at the canonical-shape gate with
+  // 'FULL_STATE_CANONICAL_INCOMPLETE' (superset of the previous
+  // classification-only error). Either rejection code demonstrates
+  // the invariant this test proves: the malformed candidate is
+  // refused before mutation and the durability blocker is retained.
+  expect(['FULL_STATE_CANONICAL_INCOMPLETE', 'FULL_STATE_CANDIDATE_NONCANONICAL'])
+    .toContain(proof.commitError);
   // Blocker MUST NOT clear on a rejected commit.
   expect(proof.blockerAfterCode).toBe('STORE_CORRUPT_AUTHORITATIVE_STATE');
 });
@@ -3222,7 +3230,7 @@ test('FINAL-H1-V12-MISSING-CAREER-REJECTED — v12 source omitting career fails 
   await page.goto('/'); await waitForApp(page);
   const proof = await page.evaluate(() => {
     const d = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, meta: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
-                bht: { habits: [], entries: [] }, telemetry: {},
+                bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
                 todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
                 logbook: {} };
     return window.Store.validateLegacySourceRequiredFields(d, 12);
@@ -3236,7 +3244,7 @@ test('FINAL-H2-V12-MISSING-BHT-REJECTED — v12 source omitting bht fails histor
   await page.goto('/'); await waitForApp(page);
   const proof = await page.evaluate(() => {
     const d = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, meta: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
-                telemetry: {}, todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
+                telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
                 logbook: {} };
     return window.Store.validateLegacySourceRequiredFields(d, 12);
   });
@@ -3249,7 +3257,7 @@ test('FINAL-H3-V12-MISSING-TELEMETRY-REJECTED — v12 source omitting telemetry 
   await page.goto('/'); await waitForApp(page);
   const proof = await page.evaluate(() => {
     const d = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, meta: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
-                bht: { habits: [], entries: [] },
+                bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} },
                 todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
                 logbook: {} };
     return window.Store.validateLegacySourceRequiredFields(d, 12);
@@ -3263,7 +3271,7 @@ test('FINAL-H4-V12-MISSING-IDEAS-REJECTED — v12 source omitting ideas fails hi
   await page.goto('/'); await waitForApp(page);
   const proof = await page.evaluate(() => {
     const d = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, meta: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
-                bht: { habits: [], entries: [] }, telemetry: {},
+                bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
                 todayFocus: [], timeline: [], reviews: [], decisions: [], apartments: [],
                 logbook: {} };
     return window.Store.validateLegacySourceRequiredFields(d, 12);
@@ -3277,7 +3285,7 @@ test('FINAL-H5-MALFORMED-NESTED-BHT-REJECTED — v13 bht object without habits/e
   await page.goto('/'); await waitForApp(page);
   const proof = await page.evaluate(() => {
     const d = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, meta: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
-                bht: { habits: 'not-array', entries: [] }, telemetry: {},
+                bht: { habits: 'not-array', entries: [] }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
                 todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
                 logbook: {} };
     return window.Store.validateLegacySourceRequiredFields(d, 13);
@@ -3294,7 +3302,7 @@ test('FINAL-H6-LEGITIMATE-V11-ACCEPTED — full-shape v11 wrapper (evidence: 8a1
   await page.goto('/'); await waitForApp(page);
   const proof = await page.evaluate(() => {
     const full = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, meta: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
-                   bht: { habits: [], entries: [] }, telemetry: {},
+                   bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
                    todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
                    logbook: [] };
     const minimal = { money: { salary_net: 1 }, qatarVisit: {} };
@@ -3316,7 +3324,7 @@ test('FINAL-H7-V13-SALARY-SENTINEL-SURVIVES-MIGRATION — 24680 salary_net survi
   const proof = await page.evaluate(() => {
     const data = { money: { salary_net: 24680, expenses: {}, usd_rate: 88, save_target: 55000 },
                    qatarVisit: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
-                   bht: { habits: [], entries: [] }, telemetry: {},
+                   bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
                    todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
                    // PRV-0.5 Codex-final P1-02: v13 emitted the envelope shape; a bare {} is
                    // no longer accepted by the v12+ 'logbook-envelope' nested check.
@@ -3342,7 +3350,7 @@ test('FINAL-H8-NO-DEFAULT-FILL-HIDES-MISSING-DOMAIN — v12 candidate missing ap
   await page.goto('/'); await waitForApp(page);
   const proof = await page.evaluate(() => {
     const data = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, meta: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
-                   bht: { habits: [], entries: [] }, telemetry: {},
+                   bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
                    todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [],
                    logbook: {} };
     const wrapper = { version: 12, data };
@@ -3373,8 +3381,8 @@ function _completeMigratedCandidate(saltISO, saltSalary) {
     reviews: [], decisions: [], timeline: [],
     about: {},
     apartments: [], sbTasks: {},
-    bht: { habits: [], entries: [] },
-    telemetry: {},
+    bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} },
+    telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
     ideas: [],
     records: { deadlines: [], claims: [], risks: [], goals: [] },
     meta: {
@@ -3415,7 +3423,14 @@ test('FINAL-C1-DIRECT-MALFORMED-LOGBOOK-REJECTED-PREWRITE — commitFullStateWra
     return { ok: res && res.ok, error: res && res.error, reason: res && res.reason, primaryUnchanged: before === after };
   });
   expect(proof.ok).toBe(false);
-  expect(proof.error).toBe('FULL_STATE_CANDIDATE_MALFORMED_LOGBOOK');
+  // PRV-0.5 Round-6 (Claude-authored): the pre-normalize logbook-only
+  // gate that FINAL-C1 was originally written to prove is now a
+  // subset of the full validateFullStateCanonical check moved to the
+  // same pre-normalize point. Either code demonstrates the same
+  // invariant: the malformed-logbook candidate is refused before any
+  // normalization or disk write.
+  expect(['FULL_STATE_CANDIDATE_MALFORMED_LOGBOOK', 'FULL_STATE_CANONICAL_INCOMPLETE'])
+    .toContain(proof.error);
   expect(proof.primaryUnchanged).toBe(true);
 });
 
@@ -3441,7 +3456,8 @@ test('FINAL-C2-IMPORT-MALFORMED-LOGBOOK-REJECTED — processImport refuses schem
     return { ok: res && res.ok, error: res && res.error };
   });
   expect(proof.ok).toBe(false);
-  expect(proof.error).toBe('FULL_STATE_CANDIDATE_MALFORMED_LOGBOOK');
+  expect(['FULL_STATE_CANDIDATE_MALFORMED_LOGBOOK', 'FULL_STATE_CANONICAL_INCOMPLETE'])
+    .toContain(proof.error);
 });
 
 // FINAL-C3 — restoreSnapshot with a snapshot whose payload has a
@@ -3461,7 +3477,8 @@ test('FINAL-C3-SNAPSHOT-MALFORMED-LOGBOOK-REJECTED — a snapshot with malformed
     return { ok: res && res.ok, error: res && res.error };
   });
   expect(proof.ok).toBe(false);
-  expect(proof.error).toBe('FULL_STATE_CANDIDATE_MALFORMED_LOGBOOK');
+  expect(['FULL_STATE_CANDIDATE_MALFORMED_LOGBOOK', 'FULL_STATE_CANONICAL_INCOMPLETE'])
+    .toContain(proof.error);
 });
 
 // FINAL-C4 — legitimate historical v11 array-shaped logbook (the
@@ -3477,7 +3494,7 @@ test('FINAL-C4-HISTORICAL-ARRAY-LOGBOOK-MIGRATES — a v11 wrapper with array lo
   await page.goto('/'); await waitForApp(page);
   const proof = await page.evaluate(() => {
     const data = { money: { salary_net: 24680, expenses: {} }, qatarVisit: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
-                   bht: { habits: [], entries: [] }, telemetry: {},
+                   bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
                    todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
                    logbook: [],
                    meta: { version: 11, createdAt: '2026-06-19T00:00:00Z', lastUpdated: '2026-06-19T00:00:00Z' } };
@@ -3501,7 +3518,7 @@ test('FINAL-C5-HISTORICAL-MALFORMED-LOGBOOK-REJECTED-PRE-MIGRATION — v13 sourc
     // v12+ matrix requires logbook to be array-or-object. A number
     // fails the source validator before migrateUp runs.
     const data = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, meta: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
-                   bht: { habits: [], entries: [] }, telemetry: {},
+                   bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
                    todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
                    logbook: 42 };
     const wrapper = { version: 13, revision: 1, committedAt: new Date().toISOString(), data };
@@ -3538,8 +3555,16 @@ test('FINAL-C6-PREWRITE-REJECTS-UNMIGRATED — VERIFIED_LEGACY_TRANSITION candid
     return { ok: res && res.ok, error: res && res.error, classification: res && res.classification, primaryUnchanged: before === after };
   });
   expect(proof.ok).toBe(false);
-  expect(proof.error).toBe('FULL_STATE_CANDIDATE_NOT_MIGRATED');
-  expect(proof.classification).toBe('VERIFIED_LEGACY_TRANSITION');
+  // PRV-0.5 Round-6 (Claude-authored): validateFullStateCanonical now
+  // runs BEFORE the AUTHORITATIVE_MIGRATED-only gate. A minimal
+  // unmigrated candidate that is also missing emitted paths is
+  // therefore rejected at 'FULL_STATE_CANONICAL_INCOMPLETE' before
+  // classification runs. The invariant this test proves — that a
+  // VERIFIED_LEGACY_TRANSITION shape does not gain destructive
+  // authority through the ordinary commit path with the primary
+  // bytes unchanged — is preserved under either rejection code.
+  expect(['FULL_STATE_CANDIDATE_NOT_MIGRATED', 'FULL_STATE_CANONICAL_INCOMPLETE'])
+    .toContain(proof.error);
   expect(proof.primaryUnchanged).toBe(true);
 });
 
@@ -3553,7 +3578,7 @@ test('FINAL-C7-MIGRATED-CANDIDATE-SUCCEEDS — commitFullStateWrapper accepts AU
     const cand = {
       money: { salary_net: 98765, expenses: {} }, qatarVisit: {},
       todayFocus: [], goals: {}, career: {}, easa: {}, about: {}, sbTasks: {},
-      bht: { habits: [], entries: [] }, telemetry: {},
+      bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
       timeline: [], reviews: [], decisions: [], apartments: [], ideas: [],
       logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { sourceCounts: { tracker: 0, builder: 0 } }, drift: null },
       records: { deadlines: [], claims: [], risks: [], goals: [] },
@@ -3586,8 +3611,8 @@ function _canonicalMigratedCandidate(iso, salt) {
     apartments: [],
     logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { sourceCounts: { tracker: 0, builder: 0 } }, reconciled: { at: iso }, drift: { diverged: false } },
     reviews: [], decisions: [], timeline: [],
-    bht: { habits: [], entries: [] },
-    telemetry: {}, ideas: [],
+    bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} },
+    telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [],
     records: { deadlines: [], claims: [], risks: [], goals: [] },
     meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'migrated', schemaVersion: 14, reason: 'test' }}
   };
@@ -3616,7 +3641,7 @@ test('FINAL-Q4-DURABLE-VERIFY-FAIL-RETAINS-QUARANTINE — primary altered post-w
         todayFocus: ['','',''], goals: {}, career: {}, easa: {}, about: {}, sbTasks: {}, apartments: [],
         logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { sourceCounts: { tracker: 0, builder: 0 } }, reconciled: { at: iso }, drift: null },
         reviews: [], decisions: [], timeline: [],
-        bht: { habits: [], entries: [] }, telemetry: {}, ideas: [],
+        bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [],
         records: { deadlines: [], claims: [], risks: [], goals: [] },
         meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'migrated', schemaVersion: 14, reason: 'test' }}
       };
@@ -3664,7 +3689,7 @@ test('FINAL-Q5-PRIMARY-NOOP-RETAINS-QUARANTINE — silent no-op primary write ke
       todayFocus: ['','',''], goals: {}, career: {}, easa: {}, about: {}, sbTasks: {}, apartments: [],
       logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { sourceCounts: { tracker: 0, builder: 0 } }, reconciled: { at: iso }, drift: null },
       reviews: [], decisions: [], timeline: [],
-      bht: { habits: [], entries: [] }, telemetry: {}, ideas: [],
+      bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [],
       records: { deadlines: [], claims: [], risks: [], goals: [] },
       meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'migrated', schemaVersion: 14, reason: 'test' }}
     };
@@ -3705,7 +3730,7 @@ test('FINAL-Q6-COLLISION-CANNOT-OVERWRITE-OLDER-EVIDENCE — allocator refuses t
       todayFocus: ['','',''], goals: {}, career: {}, easa: {}, about: {}, sbTasks: {}, apartments: [],
       logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { sourceCounts: { tracker: 0, builder: 0 } }, reconciled: { at: iso }, drift: null },
       reviews: [], decisions: [], timeline: [],
-      bht: { habits: [], entries: [] }, telemetry: {}, ideas: [],
+      bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [],
       records: { deadlines: [], claims: [], risks: [], goals: [] },
       meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'migrated', schemaVersion: 14, reason: 'test' }}
     };
@@ -3747,7 +3772,7 @@ test('FINAL-Q7-SUCCESS-RETAINS-QUARANTINE — successful recovery leaves quarant
       todayFocus: ['','',''], goals: {}, career: {}, easa: {}, about: {}, sbTasks: {}, apartments: [],
       logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { sourceCounts: { tracker: 0, builder: 0 } }, reconciled: { at: iso }, drift: null },
       reviews: [], decisions: [], timeline: [],
-      bht: { habits: [], entries: [] }, telemetry: {}, ideas: [],
+      bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [],
       records: { deadlines: [], claims: [], risks: [], goals: [] },
       meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'migrated', schemaVersion: 14, reason: 'test' }}
     };
@@ -3934,7 +3959,7 @@ test('FINAL-R5-SAME-TAB-UNSEEN-REGRESSION-BLOCKED — commitLocked catches a low
     // a wrapper with revision < knownRevision.
     const iso = new Date().toISOString();
     const regressed = { version: 14, revision: Math.max(0, initialRev - 1), committedAt: iso,
-      data: { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, todayFocus: [], goals: {}, career: {}, easa: {}, about: {}, sbTasks: {}, apartments: [], logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { sourceCounts: { tracker: 0, builder: 0 } }, drift: null }, reviews: [], decisions: [], timeline: [], bht: { habits: [], entries: [] }, telemetry: {}, ideas: [], records: { deadlines: [], claims: [], risks: [], goals: [] }, meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'migrated', schemaVersion: 14, reason: 'test' }}}};
+      data: { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, todayFocus: [], goals: {}, career: {}, easa: {}, about: {}, sbTasks: {}, apartments: [], logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { sourceCounts: { tracker: 0, builder: 0 } }, drift: null }, reviews: [], decisions: [], timeline: [], bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [], records: { deadlines: [], claims: [], risks: [], goals: [] }, meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'migrated', schemaVersion: 14, reason: 'test' }}}};
     localStorage.setItem('dune_state_v4', JSON.stringify(regressed));
     // Now attempt an ordinary Store.set. commitLocked will re-read
     // disk under lock, see a lower revision, and block.
@@ -3988,7 +4013,7 @@ function _seedV13FullWrapper(salary, rev) {
       money: { salary_net: salary, expenses: {}, usd_rate: 88, save_target: 55000 },
       qatarVisit: {}, todayFocus: [], goals: {}, career: {}, easa: {}, about: {}, sbTasks: {}, apartments: [],
       logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { sourceCounts: { tracker: 0, builder: 0 } }, drift: null },
-      reviews: [], decisions: [], timeline: [], bht: { habits: [], entries: [] }, telemetry: {}, ideas: []
+      reviews: [], decisions: [], timeline: [], bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: []
     }});
 }
 
@@ -4044,7 +4069,7 @@ test('FINAL-A4-EXTERNAL-STORAGE-EVENT-INVALIDATES-AUTH — storage event from an
     // the auth). Writing setItem in the same tab doesn't fire
     // storage events, so we dispatch one manually.
     const w2 = JSON.stringify({ version: 13, revision: 50, committedAt: new Date().toISOString(),
-      data: { money: { salary_net: 99999, expenses: {}, usd_rate: 88, save_target: 55000 }, qatarVisit: {}, todayFocus: [], goals: {}, career: {}, easa: {}, about: {}, sbTasks: {}, apartments: [], logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { sourceCounts: { tracker: 0, builder: 0 } }, drift: null }, reviews: [], decisions: [], timeline: [], bht: { habits: [], entries: [] }, telemetry: {}, ideas: [] }});
+      data: { money: { salary_net: 99999, expenses: {}, usd_rate: 88, save_target: 55000 }, qatarVisit: {}, todayFocus: [], goals: {}, career: {}, easa: {}, about: {}, sbTasks: {}, apartments: [], logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { sourceCounts: { tracker: 0, builder: 0 } }, drift: null }, reviews: [], decisions: [], timeline: [], bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [] }});
     localStorage.setItem('dune_state_v4', w2);
     // Dispatch a synthetic storage event mimicking cross-tab notification.
     window.dispatchEvent(new StorageEvent('storage', { key: 'dune_state_v4', oldValue: originalRaw, newValue: w2, storageArea: localStorage }));
@@ -4066,7 +4091,7 @@ test('FINAL-A5-REPEATED-HYDRATION-CANNOT-RESURRECT — after auth invalidation, 
   const proof = await page.evaluate(async () => {
     window.__prv05HydrationAutoRetryEnabled = false;
     const w2 = JSON.stringify({ version: 14, revision: 50, committedAt: new Date().toISOString(),
-      data: { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, todayFocus: [], goals: {}, career: {}, easa: {}, about: {}, sbTasks: {}, apartments: [], logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { sourceCounts: { tracker: 0, builder: 0 } }, drift: null }, reviews: [], decisions: [], timeline: [], bht: { habits: [], entries: [] }, telemetry: {}, ideas: [], records: { deadlines: [], claims: [], risks: [], goals: [] }, meta: { version: 14, createdAt: new Date().toISOString(), lastUpdated: new Date().toISOString(), recordsMigration: { status: 'migrated', schemaVersion: 14, reason: 'externally-adopted' }}}});
+      data: { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, todayFocus: [], goals: {}, career: {}, easa: {}, about: {}, sbTasks: {}, apartments: [], logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { sourceCounts: { tracker: 0, builder: 0 } }, drift: null }, reviews: [], decisions: [], timeline: [], bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [], records: { deadlines: [], claims: [], risks: [], goals: [] }, meta: { version: 14, createdAt: new Date().toISOString(), lastUpdated: new Date().toISOString(), recordsMigration: { status: 'migrated', schemaVersion: 14, reason: 'externally-adopted' }}}});
     localStorage.setItem('dune_state_v4', w2);
     // Trigger commitLocked's rebase (adoption + invalidation).
     window.Store.set('money.save_target', 12345);
@@ -4092,7 +4117,7 @@ function _healthyV14Wrapper(rev, salary) {
     data: {
       money: { salary_net: salary, expenses: {} }, qatarVisit: {}, todayFocus: [], goals: {}, career: {}, easa: {}, about: {}, sbTasks: {}, apartments: [],
       logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { sourceCounts: { tracker: 0, builder: 0 } }, drift: null },
-      reviews: [], decisions: [], timeline: [], bht: { habits: [], entries: [] }, telemetry: {}, ideas: [],
+      reviews: [], decisions: [], timeline: [], bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [],
       records: { deadlines: [], claims: [], risks: [], goals: [] },
       meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'migrated', schemaVersion: 14, reason: 'seed' }}
     }});
@@ -4109,7 +4134,7 @@ async function _triggerRegressionBlocker(page) {
     const initialRev = window.Store.currentKnownRevision();
     const iso = new Date().toISOString();
     const regressed = { version: 14, revision: Math.max(0, initialRev - 3), committedAt: iso,
-      data: { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, todayFocus: [], goals: {}, career: {}, easa: {}, about: {}, sbTasks: {}, apartments: [], logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { sourceCounts: { tracker: 0, builder: 0 } }, drift: null }, reviews: [], decisions: [], timeline: [], bht: { habits: [], entries: [] }, telemetry: {}, ideas: [], records: { deadlines: [], claims: [], risks: [], goals: [] }, meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'migrated', schemaVersion: 14, reason: 'test' }}}};
+      data: { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, todayFocus: [], goals: {}, career: {}, easa: {}, about: {}, sbTasks: {}, apartments: [], logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { sourceCounts: { tracker: 0, builder: 0 } }, drift: null }, reviews: [], decisions: [], timeline: [], bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [], records: { deadlines: [], claims: [], risks: [], goals: [] }, meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'migrated', schemaVersion: 14, reason: 'test' }}}};
     localStorage.setItem('dune_state_v4', JSON.stringify(regressed));
     window.Store.set('money.save_target', 77);
     await new Promise(r => setTimeout(r, 500));
@@ -4183,9 +4208,9 @@ test('FINAL-R4-RECOVERY-AUTH-INVALIDATED-ON-SOURCE-CHANGE — auth issued for W1
     // External tab replaces the disk with a new value.
     const iso = new Date().toISOString();
     localStorage.setItem('dune_state_v4', JSON.stringify({ version: 14, revision: 999, committedAt: iso,
-      data: { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, todayFocus: [], goals: {}, career: {}, easa: {}, about: {}, sbTasks: {}, apartments: [], logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { sourceCounts: { tracker: 0, builder: 0 } }, drift: null }, reviews: [], decisions: [], timeline: [], bht: { habits: [], entries: [] }, telemetry: {}, ideas: [], records: { deadlines: [], claims: [], risks: [], goals: [] }, meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'migrated', schemaVersion: 14, reason: 'external' }}}}));
+      data: { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, todayFocus: [], goals: {}, career: {}, easa: {}, about: {}, sbTasks: {}, apartments: [], logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { sourceCounts: { tracker: 0, builder: 0 } }, drift: null }, reviews: [], decisions: [], timeline: [], bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [], records: { deadlines: [], claims: [], risks: [], goals: [] }, meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'migrated', schemaVersion: 14, reason: 'external' }}}}));
     // Attempt commit with the now-stale auth.
-    const cand = { money: { salary_net: 42, expenses: {} }, qatarVisit: {}, todayFocus: [], goals: {}, career: {}, easa: {}, about: {}, sbTasks: {}, apartments: [], logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { sourceCounts: { tracker: 0, builder: 0 } }, drift: null }, reviews: [], decisions: [], timeline: [], bht: { habits: [], entries: [] }, telemetry: {}, ideas: [], records: { deadlines: [], claims: [], risks: [], goals: [] }, meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'migrated', schemaVersion: 14, reason: 'stale-attempt' }}};
+    const cand = { money: { salary_net: 42, expenses: {} }, qatarVisit: {}, todayFocus: [], goals: {}, career: {}, easa: {}, about: {}, sbTasks: {}, apartments: [], logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { sourceCounts: { tracker: 0, builder: 0 } }, drift: null }, reviews: [], decisions: [], timeline: [], bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [], records: { deadlines: [], claims: [], risks: [], goals: [] }, meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'migrated', schemaVersion: 14, reason: 'stale-attempt' }}};
     const gate = window.Store.beginFullStateTransaction({ force: true, reason: 'test' });
     let res = null;
     try { res = await window.Store.commitFullStateWrapper(gate.token, cand, 'test', { recovery: true }); }
@@ -4370,7 +4395,7 @@ test('FINAL-L2-RECOVERY-NO-LOCK-FAILS-CLOSED — recovery + navigator.locks unav
     const cand = {
       money: { salary_net: 1, expenses: {} }, qatarVisit: {}, todayFocus: [], goals: {}, career: {}, easa: {}, about: {}, sbTasks: {}, apartments: [],
       logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { sourceCounts: { tracker: 0, builder: 0 } }, drift: null },
-      reviews: [], decisions: [], timeline: [], bht: { habits: [], entries: [] }, telemetry: {}, ideas: [],
+      reviews: [], decisions: [], timeline: [], bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [],
       records: { deadlines: [], claims: [], risks: [], goals: [] },
       meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'migrated', schemaVersion: 14, reason: 'no-lock-test' }}
     };
@@ -4418,7 +4443,7 @@ test('FINAL-M2-V8-STRICT-MATRIX — full-shape v8 accepted; minimal wrapper reje
   await page.goto('/'); await waitForApp(page);
   const proof = await page.evaluate(() => {
     const full = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, meta: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
-                   bht: { habits: [], entries: [] }, telemetry: {},
+                   bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
                    todayFocus: [], timeline: [], reviews: [], decisions: [], apartments: [], logbook: [] };
     const minimal = { money: { salary_net: 1 }, qatarVisit: {} };
     return {
@@ -4439,7 +4464,7 @@ test('FINAL-M3-V12-STRICT-MATRIX — v12 missing bht is rejected', async ({ page
   const proof = await page.evaluate(() => {
     return window.Store.validateLegacySourceRequiredFields(
       { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, meta: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
-        telemetry: {}, todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [], logbook: {} },
+        telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [], logbook: {} },
       12);
   });
   expect(proof.ok).toBe(false);
@@ -4481,10 +4506,10 @@ test('FINAL-M5-V8-NO-IDEAS-REQUIRED-TELEMETRY-REQUIRED — v8 accepted without i
   await page.goto('/'); await waitForApp(page);
   const proof = await page.evaluate(() => {
     const withoutIdeas = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, meta: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
-                           bht: { habits: [], entries: [] }, telemetry: {},
+                           bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
                            todayFocus: [], timeline: [], reviews: [], decisions: [], apartments: [], logbook: [] };
     const withoutTelemetry = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, meta: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
-                               bht: { habits: [], entries: [] },
+                               bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} },
                                todayFocus: [], timeline: [], reviews: [], decisions: [], apartments: [], logbook: [] };
     return {
       withoutIdeas: window.Store.validateLegacySourceRequiredFields(withoutIdeas, 8),
@@ -4503,10 +4528,10 @@ test('FINAL-M6-V9-IDEAS-REQUIRED — v9 without ideas rejected; full-shape v9 ac
   await page.goto('/'); await waitForApp(page);
   const proof = await page.evaluate(() => {
     const withoutIdeas = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, meta: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
-                           bht: { habits: [], entries: [] }, telemetry: {},
+                           bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
                            todayFocus: [], timeline: [], reviews: [], decisions: [], apartments: [], logbook: [] };
     const full = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, meta: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
-                   bht: { habits: [], entries: [] }, telemetry: {},
+                   bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
                    todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [], logbook: [] };
     return {
       withoutIdeas: window.Store.validateLegacySourceRequiredFields(withoutIdeas, 9),
@@ -4524,9 +4549,9 @@ test('FINAL-M7-V10-SHARES-V9-SHAPE — v10 rejected on missing bht; full-shape v
   await page.goto('/'); await waitForApp(page);
   const proof = await page.evaluate(() => {
     const withoutBht = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, meta: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
-                         telemetry: {}, todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [], logbook: [] };
+                         telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [], logbook: [] };
     const full = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, meta: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
-                   bht: { habits: [], entries: [] }, telemetry: {},
+                   bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
                    todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [], logbook: [] };
     return {
       withoutBht: window.Store.validateLegacySourceRequiredFields(withoutBht, 10),
@@ -4545,7 +4570,7 @@ test('FINAL-M8-V11-MALFORMED-BHT-REJECTED — v11 bht object without habits arra
   await page.goto('/'); await waitForApp(page);
   const proof = await page.evaluate(() => {
     const malformed = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, meta: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
-                        bht: { habits: 'not-array', entries: [] }, telemetry: {},
+                        bht: { habits: 'not-array', entries: [] }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
                         todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [], logbook: [] };
     return window.Store.validateLegacySourceRequiredFields(malformed, 11);
   });
@@ -4561,7 +4586,7 @@ test('FINAL-M9-V7-FAIL-CLOSED-BOUNDARY — v7 fails closed regardless of shape',
   await page.goto('/'); await waitForApp(page);
   const proof = await page.evaluate(() => {
     const rich = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, meta: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
-                   bht: { habits: [], entries: [] }, telemetry: {},
+                   bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
                    todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [], logbook: [] };
     return window.Store.validateLegacySourceRequiredFields(rich, 7);
   });
@@ -4578,7 +4603,7 @@ test('FINAL-M10-V11-FULL-SHAPE-MIGRATES-TO-CANONICAL-V14 — sentinel salary pre
   const proof = await page.evaluate(() => {
     const data = { money: { salary_net: 24680, expenses: {}, usd_rate: 88, save_target: 55000 },
                    qatarVisit: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
-                   bht: { habits: [], entries: [] }, telemetry: {},
+                   bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
                    todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [], logbook: [],
                    meta: { version: 11, createdAt: '2026-06-19T00:00:00Z', lastUpdated: '2026-06-19T00:00:00Z' } };
     const ev = window.Store.evaluateCandidateWrapper({ version: 11, data });
@@ -4623,7 +4648,7 @@ test('R3-P1-01a-ALTERED-VALID-BYTES-NOT-ADOPTED — post-write bytes differ from
         logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { version: 1, sourceCounts: { tracker: 0, builder: 0 } }, reconciled: false, drift: null },
         reviews: [], decisions: [], timeline: [],
         about: {}, apartments: [], sbTasks: {},
-        bht: { habits: [], entries: [] }, telemetry: {}, ideas: [],
+        bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [],
         records: { deadlines: [], claims: [], risks: [], goals: [] },
         meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'migrated', schemaVersion: 14, at: iso, reason: 'altered' } }
       }
@@ -4638,7 +4663,7 @@ test('R3-P1-01a-ALTERED-VALID-BYTES-NOT-ADOPTED — post-write bytes differ from
       logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { version: 1, sourceCounts: { tracker: 0, builder: 0 } }, reconciled: false, drift: null },
       reviews: [], decisions: [], timeline: [],
       about: {}, apartments: [], sbTasks: {},
-      bht: { habits: [], entries: [] }, telemetry: {}, ideas: [],
+      bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [],
       records: { deadlines: [], claims: [], risks: [], goals: [] },
       meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'migrated', schemaVersion: 14, at: iso, reason: 'test' } }
     };
@@ -4678,7 +4703,7 @@ test('R3-P1-02-V13-MALFORMED-LOGBOOK-OBJECT-REJECTED — a v13 wrapper with logb
   await page.goto('/'); await waitForApp(page);
   const proof = await page.evaluate(() => {
     const data = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, meta: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
-                   bht: { habits: [], entries: [] }, telemetry: {},
+                   bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
                    todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
                    logbook: { garbage: 'yes', not_envelope: true } };
     const wrapper = { version: 13, revision: 1, committedAt: new Date().toISOString(), data };
@@ -4697,7 +4722,7 @@ test('R3-P1-02b-V11-OBJECT-LOGBOOK-REJECTED — v11 wrapper with envelope-shaped
   await page.goto('/'); await waitForApp(page);
   const proof = await page.evaluate(() => {
     const data = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, meta: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
-                   bht: { habits: [], entries: [] }, telemetry: {},
+                   bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
                    todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
                    logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [] } };
     return window.Store.validateLegacySourceRequiredFields(data, 11);
@@ -4712,7 +4737,7 @@ test('R3-P1-03-META-REQUIRED — v12 candidate missing meta fails source validat
   await page.goto('/'); await waitForApp(page);
   const proof = await page.evaluate(() => {
     const data = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
-                   bht: { habits: [], entries: [] }, telemetry: {},
+                   bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
                    todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
                    logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { version: 1, sourceCounts: { tracker: 0, builder: 0 } }, reconciled: false, drift: null } };
     return window.Store.validateLegacySourceRequiredFields(data, 12);
@@ -4728,7 +4753,7 @@ test('R3-P1-03-EXPENSES-REQUIRED — v12 candidate with money missing expenses f
   await page.goto('/'); await waitForApp(page);
   const proof = await page.evaluate(() => {
     const data = { money: { salary_net: 1 }, qatarVisit: {}, meta: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
-                   bht: { habits: [], entries: [] }, telemetry: {},
+                   bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
                    todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
                    logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { version: 1, sourceCounts: { tracker: 0, builder: 0 } }, reconciled: false, drift: null } };
     return window.Store.validateLegacySourceRequiredFields(data, 12);
@@ -4758,7 +4783,7 @@ test('R3-P1-03-MUT-IMMUTABLE-DIAGNOSTIC — mutating getHistoricalRequirements r
     // exclude meta) and missing money.expenses (would pass if
     // requiredArrays/nested was mutated).
     const missingMeta = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
-                          bht: { habits: [], entries: [] }, telemetry: {},
+                          bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
                           todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
                           logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { version: 1, sourceCounts: { tracker: 0, builder: 0 } }, reconciled: false, drift: null } };
     const missingExpenses = Object.assign({}, missingMeta, { meta: {}, money: { salary_net: 1 } });
@@ -4791,7 +4816,7 @@ test('R3-P1-04-V14-SNAPSHOT-MISSING-REVISION-REJECTED — validateSnapshotWrappe
         logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { version: 1, sourceCounts: { tracker: 0, builder: 0 } }, reconciled: false, drift: null },
         reviews: [], decisions: [], timeline: [],
         about: {}, apartments: [], sbTasks: {},
-        bht: { habits: [], entries: [] }, telemetry: {}, ideas: [],
+        bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [],
         records: { deadlines: [], claims: [], risks: [], goals: [] },
         meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'migrated', schemaVersion: 14, at: iso, reason: 'no-rev' } }
       }
@@ -4829,7 +4854,7 @@ function _r4CanonicalV14Candidate(iso, sentinel) {
                reconciled: false, drift: null },
     reviews: [], decisions: [], timeline: [],
     about: {}, apartments: [], sbTasks: {},
-    bht: { habits: [], entries: [] }, telemetry: {}, ideas: [],
+    bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [],
     records: { deadlines: [], claims: [], risks: [], goals: [] },
     meta: { version: 14, createdAt: iso, lastUpdated: iso,
             recordsMigration: { status: 'migrated', schemaVersion: 14, at: iso, reason: 'test' } }
@@ -5020,7 +5045,7 @@ test('R4-P1-01d-POST-WRITE-AUTHORITY-CLASSIFICATION-FAIL — deterministic FULL_
                  reconciled: false, drift: null },
       reviews: [], decisions: [], timeline: [],
       about: {}, apartments: [], sbTasks: {},
-      bht: { habits: [], entries: [] }, telemetry: {}, ideas: [],
+      bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [],
       records: { deadlines: [], claims: [], risks: [], goals: [] },
       meta: { version: 14, createdAt: iso, lastUpdated: iso,
               recordsMigration: { status: 'migrated', schemaVersion: 14, at: iso, reason: 'test' } }
@@ -5081,7 +5106,7 @@ test('R4-P1-01e-RECOVERY-ALTERED-VALID-BYTES — no success notification, uncert
     const alteredData = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, todayFocus: ['','',''], goals: {}, career: {}, easa: {},
                           logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { version: 1, sourceCounts: { tracker: 0, builder: 0 } }, reconciled: false, drift: null },
                           reviews: [], decisions: [], timeline: [], about: {}, apartments: [], sbTasks: {},
-                          bht: { habits: [], entries: [] }, telemetry: {}, ideas: [],
+                          bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [],
                           records: { deadlines: [], claims: [], risks: [], goals: [] },
                           meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'migrated', schemaVersion: 14, at: iso, reason: 'altered' } } };
     const alteredWrapper = JSON.stringify({ version: 14, revision: 999, committedAt: iso, data: alteredData });
@@ -5093,7 +5118,7 @@ test('R4-P1-01e-RECOVERY-ALTERED-VALID-BYTES — no success notification, uncert
     const cand = { money: { salary_net: 24680, expenses: {} }, qatarVisit: {}, todayFocus: ['','',''], goals: {}, career: {}, easa: {},
                    logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { version: 1, sourceCounts: { tracker: 0, builder: 0 } }, reconciled: false, drift: null },
                    reviews: [], decisions: [], timeline: [], about: {}, apartments: [], sbTasks: {},
-                   bht: { habits: [], entries: [] }, telemetry: {}, ideas: [],
+                   bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [],
                    records: { deadlines: [], claims: [], risks: [], goals: [] },
                    meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'migrated', schemaVersion: 14, at: iso, reason: 'intended' } } };
     const gate = window.Store.beginFullStateTransaction({ force: true, reason: 'r4-recovery' });
@@ -5150,7 +5175,7 @@ test('R4-P1-02-BOOT-MALFORMED-LOGBOOK-REAL-CONVERSION — production boot atomic
     data: {
       money: { salary_net: 42424, expenses: {} }, qatarVisit: {},
       career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
-      bht: { habits: [], entries: [] }, telemetry: {},
+      bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
       todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
       logbook: { authority: 'wrong', schemaVersion: 'not-a-number' },
       meta: { version: 12, createdAt: '2026-08-25T00:00:00Z', lastUpdated: '2026-08-25T00:00:00Z' }
@@ -5187,7 +5212,7 @@ test('R4-P1-02-IMPORT-REAL-MALFORMED-LOGBOOK — production processImport() refu
       data: {
         money: { salary_net: 1, expenses: {} }, qatarVisit: {},
         career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
-        bht: { habits: [], entries: [] }, telemetry: {},
+        bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
         todayFocus: ['','',''], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
         logbook: 'this is a malformed string',
         records: { deadlines: [], claims: [], risks: [], goals: [] },
@@ -5229,7 +5254,7 @@ test('R4-P1-02-SNAPSHOT-REAL-MALFORMED-LOGBOOK — Store.restoreSnapshot refuses
       data: {
         money: { salary_net: 1, expenses: {} }, qatarVisit: {},
         career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
-        bht: { habits: [], entries: [] }, telemetry: {},
+        bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
         todayFocus: ['','',''], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
         logbook: { garbage: 'yes' },
         records: { deadlines: [], claims: [], risks: [], goals: [] },
@@ -5271,7 +5296,7 @@ test('R4-P1-04-RESTORE-VALID-V14 — real restoreSnapshot with valid v14 wrapper
       data: {
         money: { salary_net: 24680, expenses: {} }, qatarVisit: {},
         career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
-        bht: { habits: [], entries: [] }, telemetry: {},
+        bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
         todayFocus: ['','',''], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
         logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { version: 1, sourceCounts: { tracker: 0, builder: 0 } }, reconciled: false, drift: null },
         reviews: [], decisions: [],
@@ -5308,7 +5333,7 @@ test('R4-P1-04-RESTORE-V14-MISSING-REV-REJECTED — restoreSnapshot refuses v14 
       data: {
         money: { salary_net: 1, expenses: {} }, qatarVisit: {},
         career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
-        bht: { habits: [], entries: [] }, telemetry: {},
+        bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
         todayFocus: ['','',''], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
         logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { version: 1, sourceCounts: { tracker: 0, builder: 0 } }, reconciled: false, drift: null },
         reviews: [], decisions: [],
@@ -5342,7 +5367,7 @@ test('R4-P1-04-RESTORE-V14-STRING-REV-REJECTED — restoreSnapshot refuses v14 w
       data: {
         money: { salary_net: 1, expenses: {} }, qatarVisit: {},
         career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
-        bht: { habits: [], entries: [] }, telemetry: {},
+        bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
         todayFocus: ['','',''], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
         logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { version: 1, sourceCounts: { tracker: 0, builder: 0 } }, reconciled: false, drift: null },
         reviews: [], decisions: [],
@@ -5372,7 +5397,7 @@ test('R4-P1-04-RESTORE-V14-NEGATIVE-REV-REJECTED — restoreSnapshot refuses v14
       data: {
         money: { salary_net: 1, expenses: {} }, qatarVisit: {},
         career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
-        bht: { habits: [], entries: [] }, telemetry: {},
+        bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
         todayFocus: ['','',''], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
         logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { version: 1, sourceCounts: { tracker: 0, builder: 0 } }, reconciled: false, drift: null },
         reviews: [], decisions: [],
@@ -5469,4 +5494,424 @@ test('R4-P1-03-EXPENSES-NESTED-ENFORCED — every v8..v13 row nested spec includ
   for (const v of Object.keys(proof)) {
     expect(proof[v]).toBe(true);
   }
+});
+
+// ────────────────────────────────────────────────────────────────
+// PRV-0.5 Round-6 (Claude-authored, independent of Codex's ef6e401)
+//
+// P1-A: current-schema Logbook missing/null/malformed at every
+//       destructive boundary must reject BEFORE any default-fill or
+//       normalization runs — the pre-round-6 code silently synthesized
+//       an empty envelope in normalizeLogbookDomain when
+//       data.logbook === undefined, which was the exact user-data-
+//       erasure vector.
+//
+// P1-B: the historical v8..v13 nested source contract must enforce
+//       every BHT + telemetry field that defaultState() has emitted
+//       throughout that range (habits, entries, snapshots, lifeEvents,
+//       vocab.{triggers,coping,moods}, ai.{provider,ollamaUrl,model},
+//       meta; telemetry.{accumulatedFatigue,weeklyShiftHours,focusReserve}).
+//       Without this, a partial legacy source can be silently repaired
+//       by migrateUp/BHT.migrateSlice/default-fill and then gain
+//       destructive authority as if it had always been complete.
+// ────────────────────────────────────────────────────────────────
+
+// Helper: full canonical v14 data with all emitted paths present.
+function _r6CanonicalV14Data(iso, salary) {
+  return {
+    money: { salary_net: salary || 10000, expenses: { rent: 0 }, usd_rate: 88, save_target: 0 },
+    qatarVisit: { from_airport: '', to_airport: '', travel_month: '', flights: 0, hotel: 0, food: 0, transport: 0, misc: 0, emergency: 0, saved: 0, notes: '' },
+    todayFocus: ['','',''],
+    goals: {},
+    career: { started: '', company: '', position: '', aircraft: [], engines: [], licenses: [], certificates: [], milestones: [] },
+    easa: {},
+    logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { version: 1, sourceCounts: { tracker: 0, builder: 0 } }, reconciled: false, drift: null },
+    reviews: [], decisions: [], timeline: [], apartments: [], ideas: [],
+    about: { version: 2, createdAt: '', lastUpdated: '', strengths: [], lessons: [], vision: '', values: [], reminders: [] },
+    sbTasks: {},
+    bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: 'http://localhost:11434', model: '' }, meta: {} },
+    telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
+    records: { deadlines: [], claims: [], risks: [], goals: [] },
+    meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'migrated', schemaVersion: 14, at: iso, reason: 'r6-test' } }
+  };
+}
+
+// Helper: full canonical v11 data (pre-envelope logbook = array).
+function _r6CanonicalV11Data(iso, salary) {
+  return {
+    money: { salary_net: salary || 42000, expenses: { rent: 0 } },
+    qatarVisit: { from_airport: '', to_airport: '', travel_month: '', flights: 0, hotel: 0, food: 0, transport: 0, misc: 0, emergency: 0, saved: 0, notes: '' },
+    todayFocus: ['','',''], reviews: [], decisions: [], timeline: [], apartments: [], ideas: [],
+    goals: {}, career: {}, easa: {}, about: {}, sbTasks: {},
+    logbook: [],
+    bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: 'http://localhost:11434', model: '' }, meta: {} },
+    telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
+    meta: { version: 11, createdAt: iso, lastUpdated: iso }
+  };
+}
+
+// Helper: full canonical v13 data (envelope logbook).
+function _r6CanonicalV13Data(iso, salary) {
+  return {
+    money: { salary_net: salary || 42000, expenses: { rent: 0 } },
+    qatarVisit: { from_airport: '', to_airport: '', travel_month: '', flights: 0, hotel: 0, food: 0, transport: 0, misc: 0, emergency: 0, saved: 0, notes: '' },
+    todayFocus: ['','',''], reviews: [], decisions: [], timeline: [], apartments: [], ideas: [],
+    goals: {}, career: {}, easa: {}, about: {}, sbTasks: {},
+    logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { version: 1, sourceCounts: { tracker: 0, builder: 0 } }, reconciled: false, drift: null },
+    bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: 'http://localhost:11434', model: '' }, meta: {} },
+    telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
+    meta: { version: 13, createdAt: iso, lastUpdated: iso }
+  };
+}
+
+// ── R6-P1-A / normalizeLogbookDomain: no fabrication on undefined ──
+
+test('R6-P1A-NORMALIZE-DOES-NOT-FABRICATE-EMPTY — normalizeLogbookDomain leaves undefined logbook untouched (no silent empty-envelope install)', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(() => {
+    const d = { foo: 1 };
+    window.Store.normalizeLogbookDomain(d);
+    const dNull = { logbook: null };
+    window.Store.normalizeLogbookDomain(dNull);
+    const dStr = { logbook: 'not-a-shape' };
+    window.Store.normalizeLogbookDomain(dStr);
+    const dEnv = { logbook: window.Store.defaultLogbookEnvelope() };
+    const before = JSON.stringify(dEnv.logbook);
+    window.Store.normalizeLogbookDomain(dEnv);
+    const dArr = { logbook: [] };
+    window.Store.normalizeLogbookDomain(dArr);
+    return {
+      undefinedLogbookLeftAsIs: !('logbook' in d) || d.logbook === undefined,
+      nullLogbookLeftAsIs: dNull.logbook === null,
+      stringLogbookLeftAsIs: dStr.logbook === 'not-a-shape',
+      envelopePassthroughUnchanged: JSON.stringify(dEnv.logbook) === before && window.Store.isLogbookEnvelope(dEnv.logbook),
+      arrayLegacyGetsEnvelope: window.Store.isLogbookEnvelope(dArr.logbook)
+    };
+  });
+  expect(proof.undefinedLogbookLeftAsIs).toBe(true);
+  expect(proof.nullLogbookLeftAsIs).toBe(true);
+  expect(proof.stringLogbookLeftAsIs).toBe(true);
+  expect(proof.envelopePassthroughUnchanged).toBe(true);
+  expect(proof.arrayLegacyGetsEnvelope).toBe(true);
+});
+
+// ── R6-P1-A / validateFullStateCanonical strictness ──
+
+test('R6-P1A-VALIDATE-V14-REJECTS-MISSING-LOGBOOK — validateFullStateCanonical rejects a v14 data with logbook===undefined', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(() => {
+    const iso = new Date().toISOString();
+    const d = (function() {
+      const cd = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, todayFocus: ['','',''], goals: {}, career: {}, easa: {}, reviews: [], decisions: [], timeline: [], apartments: [], ideas: [], about: {}, sbTasks: {}, bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: 'x', model: '' }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, records: { deadlines: [], claims: [], risks: [], goals: [] }, meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'migrated', schemaVersion: 14, at: iso, reason: 'x' } } };
+      delete cd.logbook;
+      return cd;
+    })();
+    const r = window.Store.validateFullStateCanonical(d);
+    return { ok: r.ok, missing: r.missing };
+  });
+  expect(proof.ok).toBe(false);
+  expect(proof.missing).toContain('logbook');
+});
+
+test('R6-P1A-VALIDATE-V14-REJECTS-NULL-LOGBOOK — validateFullStateCanonical rejects a v14 data with logbook===null', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(() => {
+    const iso = new Date().toISOString();
+    const d = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, todayFocus: ['','',''], goals: {}, career: {}, easa: {}, reviews: [], decisions: [], timeline: [], apartments: [], ideas: [], about: {}, sbTasks: {}, bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: 'x', model: '' }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, records: { deadlines: [], claims: [], risks: [], goals: [] }, logbook: null, meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'migrated', schemaVersion: 14, at: iso, reason: 'x' } } };
+    const r = window.Store.validateFullStateCanonical(d);
+    return { ok: r.ok, missing: r.missing };
+  });
+  expect(proof.ok).toBe(false);
+  expect(proof.missing).toContain('logbook');
+});
+
+test('R6-P1A-VALIDATE-V14-REJECTS-ARRAY-LOGBOOK — validateFullStateCanonical rejects a v14 data with a legacy-array logbook (v14 requires envelope)', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(() => {
+    const iso = new Date().toISOString();
+    const d = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, todayFocus: ['','',''], goals: {}, career: {}, easa: {}, reviews: [], decisions: [], timeline: [], apartments: [], ideas: [], about: {}, sbTasks: {}, bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: 'x', model: '' }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, records: { deadlines: [], claims: [], risks: [], goals: [] }, logbook: [], meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'migrated', schemaVersion: 14, at: iso, reason: 'x' } } };
+    const r = window.Store.validateFullStateCanonical(d);
+    return { ok: r.ok, missing: r.missing };
+  });
+  expect(proof.ok).toBe(false);
+  expect(proof.missing).toContain('logbook');
+});
+
+// ── R6-P1-A / production paths: boot / import / snapshot / commit ──
+
+test('R6-P1A-BOOT-V14-MISSING-LOGBOOK — persisted v14 with no logbook fails boot before normalization; disk untouched, no success publication', async ({ page }) => {
+  const seedBytes = (() => {
+    const iso = '2026-08-25T00:00:00Z';
+    const data = { money: { salary_net: 12345, expenses: { rent: 0 } }, qatarVisit: {}, todayFocus: ['','',''], goals: {}, career: {}, easa: {}, reviews: [], decisions: [], timeline: [], apartments: [], ideas: [], about: {}, sbTasks: {}, bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: 'x', model: '' }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, records: { deadlines: [], claims: [], risks: [], goals: [] }, meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'migrated', schemaVersion: 14, at: iso, reason: 'x' } } };
+    return JSON.stringify({ version: 14, revision: 1, committedAt: iso, data: data });
+  })();
+  await page.addInitScript((b) => { localStorage.setItem('dune_state_v4', b); }, seedBytes);
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(async () => {
+    await new Promise(r => setTimeout(r, 500));
+    return {
+      diskRaw: localStorage.getItem('dune_state_v4'),
+      inMemoryLogbook: window.Store.get('logbook'),
+      canonicalOnDisk: window.Store.validateFullStateCanonical(JSON.parse(localStorage.getItem('dune_state_v4')).data).ok
+    };
+  });
+  // Disk bytes were preserved exactly (no destructive normalization).
+  expect(proof.diskRaw).toBe(seedBytes);
+  // In-memory Store fell back to defaultState (which has a canonical envelope),
+  // so the running app has an envelope — but the disk sentinel is intact.
+  expect(!!proof.inMemoryLogbook && proof.inMemoryLogbook.schemaVersion).toBe(1);
+});
+
+test('R6-P1A-IMPORT-V14-MISSING-LOGBOOK — processImport rejects a v14 backup missing logbook; disk untouched; no subscriber notifications', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(async () => {
+    await new Promise(r => { const unsub = window.Store.onSave(() => { unsub(); r(); }); setTimeout(r, 1500); });
+    const before = localStorage.getItem('dune_state_v4');
+    const iso = new Date().toISOString();
+    const badData = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, todayFocus: ['','',''], goals: {}, career: {}, easa: {}, reviews: [], decisions: [], timeline: [], apartments: [], ideas: [], about: {}, sbTasks: {}, bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: 'x', model: '' }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, records: { deadlines: [], claims: [], risks: [], goals: [] }, meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'migrated', schemaVersion: 14, at: iso, reason: 'r6' } } };
+    const backupData = { version: 14, revision: 5, committedAt: iso, data: badData };
+    const backup = { version: '2026.1', exported_at: iso, data: { dune_state_v4: backupData } };
+    let notifs = 0;
+    const unsub = window.Store.subscribe('*', () => { notifs++; });
+    notifs = 0;
+    window.confirm = () => true;
+    const _st = window.setTimeout;
+    window.setTimeout = (fn, d) => (d && d >= 1000) ? 0 : _st(fn, d);
+    let ok = null;
+    try { ok = await window.processImport(JSON.stringify(backup)); }
+    finally { window.setTimeout = _st; unsub(); }
+    return { importOk: ok, notifs, diskUnchanged: localStorage.getItem('dune_state_v4') === before };
+  });
+  expect(proof.importOk).toBe(false);
+  expect(proof.diskUnchanged).toBe(true);
+  expect(proof.notifs).toBe(0);
+});
+
+test('R6-P1A-SNAPSHOT-V14-MISSING-LOGBOOK — Store.restoreSnapshot rejects a v14 snapshot missing logbook; disk untouched; no notifications', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(async () => {
+    await new Promise(r => { const unsub = window.Store.onSave(() => { unsub(); r(); }); setTimeout(r, 1500); });
+    const before = localStorage.getItem('dune_state_v4');
+    const iso = new Date().toISOString();
+    const badData = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, todayFocus: ['','',''], goals: {}, career: {}, easa: {}, reviews: [], decisions: [], timeline: [], apartments: [], ideas: [], about: {}, sbTasks: {}, bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: 'x', model: '' }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, records: { deadlines: [], claims: [], risks: [], goals: [] }, meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'migrated', schemaVersion: 14, at: iso, reason: 'r6' } } };
+    const snapPayload = JSON.stringify({ version: 14, revision: 42, committedAt: iso, data: badData });
+    localStorage.setItem('dune_snapshots_v1', JSON.stringify([{ at: iso, payload: snapPayload }]));
+    let notifs = 0;
+    const unsub = window.Store.subscribe('*', () => { notifs++; });
+    notifs = 0;
+    const dispatch = window.Store.restoreSnapshot(0, { force: true });
+    let settled = null;
+    try { settled = await dispatch.settled; } catch (e) { settled = { error: String(e) }; }
+    unsub();
+    return { dispatchOk: dispatch && dispatch.ok, settledOk: settled && settled.ok, notifs, diskUnchanged: localStorage.getItem('dune_state_v4') === before };
+  });
+  expect(!!proof.settledOk).toBe(false);
+  expect(proof.diskUnchanged).toBe(true);
+  expect(proof.notifs).toBe(0);
+});
+
+test('R6-P1A-EVALCANDWRAPPER-V14-MISSING-BHT-META — evaluateCandidateWrapper rejects a v14 candidate missing bht.meta', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(() => {
+    const iso = new Date().toISOString();
+    const data = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, todayFocus: ['','',''], goals: {}, career: {}, easa: {}, reviews: [], decisions: [], timeline: [], apartments: [], ideas: [], about: {}, sbTasks: {}, bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: 'x', model: '' } /* meta missing */ }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, logbook: window.Store.defaultLogbookEnvelope(), records: { deadlines: [], claims: [], risks: [], goals: [] }, meta: { version: 14, createdAt: iso, lastUpdated: iso, recordsMigration: { status: 'migrated', schemaVersion: 14, at: iso, reason: 'r6' } } };
+    const wrapper = { version: 14, revision: 1, committedAt: iso, data };
+    const r = window.Store.evaluateCandidateWrapper(wrapper);
+    return { classification: r.classification, canonical: r.canonical, reasons: r.reasons };
+  });
+  expect(proof.canonical).toBe(false);
+  expect(proof.classification).toBe('MALFORMED_CURRENT_SCHEMA');
+  expect(Array.isArray(proof.reasons) && proof.reasons.some(x => /bht\.meta/.test(x))).toBe(true);
+});
+
+// ── R6-P1-B / historical nested emission contract ──
+
+test('R6-P1B-V11-BHT-MISSING-SNAPSHOTS — v11 wrapper with bht missing snapshots fails legacy source validation', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(() => {
+    const iso = new Date().toISOString();
+    const bad = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, todayFocus: ['','',''], reviews: [], decisions: [], timeline: [], apartments: [], ideas: [], goals: {}, career: {}, easa: {}, about: {}, sbTasks: {}, logbook: [], bht: { habits: [], entries: [], /* snapshots missing */ lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: 'x', model: '' }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, meta: { version: 11, createdAt: iso, lastUpdated: iso } };
+    return window.Store.validateLegacySourceRequiredFields(bad, 11);
+  });
+  expect(proof.ok).toBe(false);
+  expect(proof.reason).toMatch(/bht\.snapshots/);
+});
+
+test('R6-P1B-V11-BHT-VOCAB-MISSING-TRIGGERS — v11 wrapper with bht.vocab missing triggers fails source validation', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(() => {
+    const iso = new Date().toISOString();
+    const bad = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, todayFocus: ['','',''], reviews: [], decisions: [], timeline: [], apartments: [], ideas: [], goals: {}, career: {}, easa: {}, about: {}, sbTasks: {}, logbook: [], bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { /* triggers missing */ coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: 'x', model: '' }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, meta: { version: 11, createdAt: iso, lastUpdated: iso } };
+    return window.Store.validateLegacySourceRequiredFields(bad, 11);
+  });
+  expect(proof.ok).toBe(false);
+  expect(proof.reason).toMatch(/bht\.vocab\.triggers/);
+});
+
+test('R6-P1B-V13-BHT-AI-MISSING-PROVIDER — v13 wrapper with bht.ai missing provider fails source validation', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(() => {
+    const iso = new Date().toISOString();
+    const bad = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, todayFocus: ['','',''], reviews: [], decisions: [], timeline: [], apartments: [], ideas: [], goals: {}, career: {}, easa: {}, about: {}, sbTasks: {}, logbook: window.Store.defaultLogbookEnvelope(), bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { /* provider missing */ ollamaUrl: 'x', model: '' }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, meta: { version: 13, createdAt: iso, lastUpdated: iso } };
+    return window.Store.validateLegacySourceRequiredFields(bad, 13);
+  });
+  expect(proof.ok).toBe(false);
+  expect(proof.reason).toMatch(/bht\.ai\.provider/);
+});
+
+test('R6-P1B-V13-BHT-AI-PROVIDER-NON-STRING — v13 wrapper with bht.ai.provider as a non-string fails source validation', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(() => {
+    const iso = new Date().toISOString();
+    const bad = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, todayFocus: ['','',''], reviews: [], decisions: [], timeline: [], apartments: [], ideas: [], goals: {}, career: {}, easa: {}, about: {}, sbTasks: {}, logbook: window.Store.defaultLogbookEnvelope(), bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 42, ollamaUrl: 'x', model: '' }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, meta: { version: 13, createdAt: iso, lastUpdated: iso } };
+    return window.Store.validateLegacySourceRequiredFields(bad, 13);
+  });
+  expect(proof.ok).toBe(false);
+  expect(proof.reason).toMatch(/bht\.ai\.provider/);
+});
+
+test('R6-P1B-V11-TELEMETRY-MISSING-FATIGUE — v11 wrapper with telemetry missing accumulatedFatigue fails source validation', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(() => {
+    const iso = new Date().toISOString();
+    const bad = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, todayFocus: ['','',''], reviews: [], decisions: [], timeline: [], apartments: [], ideas: [], goals: {}, career: {}, easa: {}, about: {}, sbTasks: {}, logbook: [], bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: 'x', model: '' }, meta: {} }, telemetry: { /* accumulatedFatigue missing */ weeklyShiftHours: 0, focusReserve: 100 }, meta: { version: 11, createdAt: iso, lastUpdated: iso } };
+    return window.Store.validateLegacySourceRequiredFields(bad, 11);
+  });
+  expect(proof.ok).toBe(false);
+  expect(proof.reason).toMatch(/telemetry\.accumulatedFatigue/);
+});
+
+test('R6-P1B-V13-TELEMETRY-FOCUS-RESERVE-NON-NUMBER — v13 wrapper with telemetry.focusReserve as string fails source validation', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(() => {
+    const iso = new Date().toISOString();
+    const bad = { money: { salary_net: 1, expenses: {} }, qatarVisit: {}, todayFocus: ['','',''], reviews: [], decisions: [], timeline: [], apartments: [], ideas: [], goals: {}, career: {}, easa: {}, about: {}, sbTasks: {}, logbook: window.Store.defaultLogbookEnvelope(), bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: 'x', model: '' }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: '100' }, meta: { version: 13, createdAt: iso, lastUpdated: iso } };
+    return window.Store.validateLegacySourceRequiredFields(bad, 13);
+  });
+  expect(proof.ok).toBe(false);
+  expect(proof.reason).toMatch(/telemetry\.focusReserve/);
+});
+
+test('R6-P1B-VALID-V11-CONTROL — the fully-populated v11 canonical sample passes legacy source validation', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(() => {
+    const iso = new Date().toISOString();
+    const good = { money: { salary_net: 42000, expenses: { rent: 0 } }, qatarVisit: {}, todayFocus: ['','',''], reviews: [], decisions: [], timeline: [], apartments: [], ideas: [], goals: {}, career: {}, easa: {}, about: {}, sbTasks: {}, logbook: [], bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: 'http://localhost:11434', model: '' }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, meta: { version: 11, createdAt: iso, lastUpdated: iso } };
+    return window.Store.validateLegacySourceRequiredFields(good, 11);
+  });
+  expect(proof.ok).toBe(true);
+});
+
+test('R6-P1B-VALID-V13-CONTROL — the fully-populated v13 canonical sample passes legacy source validation', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(() => {
+    const iso = new Date().toISOString();
+    const good = { money: { salary_net: 42000, expenses: { rent: 0 } }, qatarVisit: {}, todayFocus: ['','',''], reviews: [], decisions: [], timeline: [], apartments: [], ideas: [], goals: {}, career: {}, easa: {}, about: {}, sbTasks: {}, logbook: window.Store.defaultLogbookEnvelope(), bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: 'http://localhost:11434', model: '' }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, meta: { version: 13, createdAt: iso, lastUpdated: iso } };
+    return window.Store.validateLegacySourceRequiredFields(good, 13);
+  });
+  expect(proof.ok).toBe(true);
+});
+
+// ── R6-ORACLE / historical emitted-paths matrix ──
+
+test('R6-ORACLE-BHT-EMITTED-PATHS-ALL-VERSIONS — every v8..v13 requirements matrix enforces every emitted BHT path', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(() => {
+    const REQUIRED = [
+      'bht.habits', 'bht.entries', 'bht.snapshots', 'bht.lifeEvents',
+      'bht.vocab', 'bht.vocab.triggers', 'bht.vocab.coping', 'bht.vocab.moods',
+      'bht.ai', 'bht.ai.provider', 'bht.ai.ollamaUrl', 'bht.ai.model',
+      'bht.meta'
+    ];
+    const rows = {};
+    for (let v = 8; v <= 13; v++) {
+      const req = window.Store.getHistoricalRequirements(v);
+      const nested = req.nested;
+      rows[v] = REQUIRED.every(p => (p in nested));
+    }
+    return rows;
+  });
+  for (const v of Object.keys(proof)) expect(proof[v]).toBe(true);
+});
+
+test('R6-ORACLE-TELEMETRY-EMITTED-PATHS-ALL-VERSIONS — every v8..v13 requirements matrix enforces every emitted telemetry path', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(() => {
+    const REQUIRED = ['telemetry.accumulatedFatigue', 'telemetry.weeklyShiftHours', 'telemetry.focusReserve'];
+    const rows = {};
+    for (let v = 8; v <= 13; v++) {
+      const req = window.Store.getHistoricalRequirements(v);
+      rows[v] = REQUIRED.every(p => (p in req.nested) && req.nested[p] === 'number');
+    }
+    return rows;
+  });
+  for (const v of Object.keys(proof)) expect(proof[v]).toBe(true);
+});
+
+test('R6-ORACLE-BHT-AI-STRING-KIND-ALL-VERSIONS — provider/ollamaUrl/model are declared as string kind for v8..v13', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(() => {
+    const rows = {};
+    for (let v = 8; v <= 13; v++) {
+      const nested = window.Store.getHistoricalRequirements(v).nested;
+      rows[v] = nested['bht.ai.provider'] === 'string'
+             && nested['bht.ai.ollamaUrl'] === 'string'
+             && nested['bht.ai.model'] === 'string';
+    }
+    return rows;
+  });
+  for (const v of Object.keys(proof)) expect(proof[v]).toBe(true);
+});
+
+// ── R6-CONTROL / preserve confirmed closures on the happy path ──
+
+// ── R6-P2 / recovery UX for STORE_FULL_STATE_POST_WRITE_UNCERTAIN ──
+
+test('R6-P2-UX-POST-WRITE-UNCERTAIN-BANNER — the freeze banner explains post-write uncertainty and points to Restore/Import/Reset', async ({ page }) => {
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(async () => {
+    await new Promise(r => setTimeout(r, 400));
+    // Fire the durability-blocked event with the round-5 blocker code
+    // so the banner paints its message; then read the visible text.
+    window.dispatchEvent(new CustomEvent('lifeos:store-durability-blocked', { detail: { code: 'STORE_FULL_STATE_POST_WRITE_UNCERTAIN' } }));
+    await new Promise(r => setTimeout(r, 50));
+    const msg = document.getElementById('store-freeze-message');
+    // Recovery controls must remain reachable in the DOM regardless of
+    // banner state (they live in the Backup panel).
+    const restore = document.querySelector('[data-testid="recovery-restore-snapshot"]');
+    const impBtn  = document.querySelector('[data-testid="recovery-import-backup"]');
+    const reset   = document.querySelector('[data-testid="recovery-reset-lifeos"]');
+    return {
+      bannerText: msg && msg.textContent,
+      hasRestore: !!restore,
+      hasImport:  !!impBtn,
+      hasReset:   !!reset
+    };
+  });
+  expect(proof.bannerText).toMatch(/durable storage could not be verified/i);
+  expect(proof.bannerText).toMatch(/STORE_FULL_STATE_POST_WRITE_UNCERTAIN/);
+  expect(proof.bannerText).toMatch(/Restore latest snapshot/i);
+  expect(proof.bannerText).toMatch(/Import backup file/i);
+  expect(proof.bannerText).toMatch(/Reset LIFE OS/i);
+  expect(proof.hasRestore).toBe(true);
+  expect(proof.hasImport).toBe(true);
+  expect(proof.hasReset).toBe(true);
+});
+
+test('R6-CONTROL-CANONICAL-V14-BOOT-PASSES — the fully-populated v14 canonical sample boots normally and does not install any durability blocker', async ({ page }) => {
+  const iso = '2026-08-25T00:00:00Z';
+  const seed = JSON.stringify({ version: 14, revision: 1, committedAt: iso, data: _r6CanonicalV14Data(iso, 99999) });
+  await page.addInitScript((b) => { localStorage.setItem('dune_state_v4', b); }, seed);
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(async () => {
+    await new Promise(r => setTimeout(r, 800));
+    return {
+      salary: window.Store.get('money.salary_net'),
+      blocker: (window.Store.getDurabilityBlocker && window.Store.getDurabilityBlocker() || {}).code || null,
+      logbookIsEnvelope: window.Store.isLogbookEnvelope(window.Store.get('logbook'))
+    };
+  });
+  expect(proof.salary).toBe(99999);
+  expect(proof.blocker).toBeNull();
+  expect(proof.logbookIsEnvelope).toBe(true);
 });

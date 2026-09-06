@@ -963,7 +963,16 @@
   // historical schema are NOT required at the source stage.
   function validateSnapshotWrapperFull(parsed) {
     if (!isValidSnapshotWrapperShape(parsed)) return { ok: false, reason: 'SNAPSHOT_WRAPPER_SHAPE_INVALID' };
-    const sourceCheck = validateLegacySourceRequiredFields(parsed.data, parsed.version);
+    // PRV-0.5 Round-6 (Claude-authored, P1-A): a v14 snapshot must be
+    // held to the current canonical contract at the source stage,
+    // BEFORE any default-fill runs. Using validateLegacySourceRequiredFields
+    // on a v14 wrapper would apply the legacy-envelope contract to
+    // current-schema bytes — legitimate v14 sources would still pass
+    // by coincidence, but a v14 wrapper missing `logbook` would slip
+    // through the legacy-array clause and be silently repaired.
+    const sourceCheck = parsed.version === SCHEMA_VERSION
+      ? validateFullStateCanonical(parsed.data)
+      : validateLegacySourceRequiredFields(parsed.data, parsed.version);
     if (!sourceCheck.ok) return { ok: false, reason: 'SNAPSHOT_SOURCE_' + sourceCheck.reason };
     let migrated;
     try {
@@ -1068,14 +1077,51 @@
   //             other, mai } (object)
   const _V8_REQUIRED_OBJECTS = ['money', 'qatarVisit', 'career', 'easa', 'about', 'sbTasks', 'goals', 'bht', 'telemetry', 'meta'];
   const _V8_REQUIRED_ARRAYS  = ['todayFocus', 'timeline', 'reviews', 'decisions', 'apartments'];
+  // PRV-0.5 Round-6 (Claude-authored): complete emission audit for the
+  // BHT and telemetry subtrees. defaultState() (this file, line 495)
+  // has emitted the following BHT nested shape at every v8..v13 tag:
+  //   bht.habits[], entries[], snapshots[], lifeEvents[],
+  //       vocab.{triggers[], coping[], moods[]},
+  //       ai.{provider:string, ollamaUrl:string, model:string},
+  //       meta{}
+  // and telemetry.{accumulatedFatigue, weeklyShiftHours, focusReserve}
+  // as numbers. migrateUp() default-fills every one of these paths
+  // (see lines 638-640 for telemetry, defaultState() for BHT), so a
+  // partial persisted source can be silently repaired unless the
+  // source contract requires them BEFORE migration. Requiring them
+  // here at the source stage closes that vector.
+  //
+  // `bht.ai.apiKey` is intentionally NOT required at the source stage:
+  // ADR-005 removed it in v12 for privacy (no longer emitted by v12+
+  // defaultState). Older per-provider keys were emitted only under
+  // legacy provider modes and are not universally attested.
+  const _BHT_EMITTED_NESTED = {
+    'bht.habits':          'array',
+    'bht.entries':         'array',
+    'bht.snapshots':       'array',
+    'bht.lifeEvents':      'array',
+    'bht.vocab':           'object',
+    'bht.vocab.triggers':  'array',
+    'bht.vocab.coping':    'array',
+    'bht.vocab.moods':     'array',
+    'bht.ai':              'object',
+    'bht.ai.provider':     'string',
+    'bht.ai.ollamaUrl':    'string',
+    'bht.ai.model':        'string',
+    'bht.meta':            'object'
+  };
+  const _TELEMETRY_EMITTED_NESTED = {
+    'telemetry.accumulatedFatigue': 'number',
+    'telemetry.weeklyShiftHours':   'number',
+    'telemetry.focusReserve':       'number'
+  };
   // Base nested spec shared by v8..v11 (Logbook required as ARRAY —
   // pre-envelope emission). money.expenses required as an object.
-  const _V8_NESTED = {
-    'bht.habits': 'array', 'bht.entries': 'array',
+  const _V8_NESTED = Object.assign({}, _BHT_EMITTED_NESTED, _TELEMETRY_EMITTED_NESTED, {
     'logbook': 'array',
     'money.salary_net': 'number',
     'money.expenses': 'object'
-  };
+  });
   const _V9_REQUIRED_ARRAYS  = _V8_REQUIRED_ARRAYS.concat(['ideas']);
   // v12+ Logbook contract: must be a valid envelope OBJECT with the
   // exact required shape (schemaVersion === LOGBOOK_ENVELOPE_VERSION,
@@ -1083,12 +1129,11 @@
   // pre-normalization guard here (mirrored below by the same explicit
   // envelope check) prevents an arbitrary non-envelope object from
   // being silently normalized to an empty envelope during migration.
-  const _V12_NESTED = {
-    'bht.habits': 'array', 'bht.entries': 'array',
+  const _V12_NESTED = Object.assign({}, _BHT_EMITTED_NESTED, _TELEMETRY_EMITTED_NESTED, {
     'logbook': 'logbook-envelope',
     'money.salary_net': 'number',
     'money.expenses': 'object'
-  };
+  });
   const HISTORICAL_SCHEMA_REQUIREMENTS = Object.freeze({
     // v8 (85e1d22): telemetry introduced; ideas not yet present;
     // logbook emitted as legacy array.
@@ -1129,6 +1174,9 @@
       const kind = spec[path];
       if (kind === 'array' && !Array.isArray(cur)) return { ok: false, reason: 'malformed-' + path };
       if (kind === 'number' && typeof cur !== 'number') return { ok: false, reason: 'malformed-' + path };
+      // PRV-0.5 Round-6 (Claude-authored): string kind supports the
+      // bht.ai.{provider,ollamaUrl,model} historical emission contract.
+      if (kind === 'string' && typeof cur !== 'string') return { ok: false, reason: 'malformed-' + path };
       if (kind === 'object') {
         if (!(cur && typeof cur === 'object' && !Array.isArray(cur))) return { ok: false, reason: 'malformed-' + path };
       }
@@ -1226,29 +1274,36 @@
     for (const d of requiredArrays) {
       if (!Array.isArray(data[d])) missing.push(d);
     }
-    // PRV-0.5 Codex-final P1-02: v14 canonical Logbook must be a
-    // valid envelope object (schemaVersion === LOGBOOK_ENVELOPE_VERSION,
-    // authority === 'legacy-mirror', entries array). A legacy Tracker
-    // array is accepted only as a transitional shape (it will be
-    // migrated by the logbook-envelope constructor on downstream
-    // paths). Arbitrary non-envelope objects are REJECTED here — no
-    // silent normalization to an empty envelope is permitted at the
-    // canonical validation boundary.
-    if (Array.isArray(data.logbook)) {
-      // legacy array shape — accepted (Tracker array pending envelope).
-    } else if (isLogbookEnvelope(data.logbook)) {
-      // canonical envelope — accepted.
-    } else {
+    // PRV-0.5 Round-6 (Claude-authored, P1-A): v14 canonical Logbook
+    // must be a valid envelope OBJECT. Missing / null / malformed /
+    // legacy-array values are REJECTED here — no silent normalization
+    // to an empty envelope is permitted at the canonical validation
+    // boundary. defaultState() at v14 emits an envelope; any current
+    // persisted authority that fails this check is corruption, never
+    // permission to fabricate an empty envelope over the top of it.
+    // (v8..v11 array shape is accepted at the LEGACY source stage —
+    // see validateLegacySourceRequiredFields — never here.)
+    if (!isLogbookEnvelope(data.logbook)) {
       missing.push('logbook');
     }
     // money nested invariants.
     if (data.money && (typeof data.money.salary_net !== 'number' || !data.money.expenses || typeof data.money.expenses !== 'object')) {
       missing.push('money.salary_net-or-expenses');
     }
-    // bht nested invariants — habits/entries arrays required.
-    if (data.bht && (!Array.isArray(data.bht.habits) || !Array.isArray(data.bht.entries))) {
-      missing.push('bht.habits-or-entries');
-    }
+    // PRV-0.5 Round-6 (Claude-authored, P1-B): the same complete BHT
+    // and telemetry emitted-paths contract that guards legacy sources
+    // (see _BHT_EMITTED_NESTED / _TELEMETRY_EMITTED_NESTED) now guards
+    // the current-schema canonical boundary too. Without this, a v14
+    // wrapper with a bare `bht: {habits:[], entries:[]}` (or a
+    // telemetry missing accumulatedFatigue) would still pass canonical
+    // validation because migrateUp default-fills the rest — the exact
+    // silent-repair vector this remediation closes.
+    const currentNested = _checkNestedShape(data, Object.assign({},
+      _BHT_EMITTED_NESTED,
+      _TELEMETRY_EMITTED_NESTED,
+      { 'money.salary_net': 'number', 'money.expenses': 'object' }
+    ));
+    if (!currentNested.ok) missing.push(currentNested.reason);
     // records subtree (v14 addition).
     if (!data.records || typeof data.records !== 'object' || Array.isArray(data.records)) {
       missing.push('records');
@@ -1517,6 +1572,24 @@
         return {
           classification: 'MALFORMED_CURRENT_SCHEMA', canonical: false,
           reasons: ['legacy-source-' + src.reason],
+          wrapperVersion: parsed.version
+        };
+      }
+    } else {
+      // PRV-0.5 Round-6 (Claude-authored, P1-A): current-schema
+      // candidate wrappers arriving through Import / Snapshot Restore
+      // / recovery evaluation are held to the full canonical contract
+      // BEFORE normalizeLogbookDomain runs. A v14 wrapper missing
+      // `logbook`, or missing any BHT/telemetry emitted path, is
+      // corruption and is rejected here — not silently repaired by
+      // default-fill and then written back as durable authority.
+      const src = validateFullStateCanonical(parsed.data);
+      if (!src.ok) {
+        return {
+          classification: 'MALFORMED_CURRENT_SCHEMA', canonical: false,
+          reasons: ['current-source-' + src.reason].concat(
+            (src.missing || []).map(function (p) { return 'current-source-' + p; })
+          ),
           wrapperVersion: parsed.version
         };
       }
@@ -1817,16 +1890,20 @@
       data.logbook = env;
       return;
     }
-    if (data.logbook === undefined) {
-      // Field genuinely absent — install a fresh envelope. This is
-      // NOT a replacement of persisted sentinel bytes; there is
-      // nothing to erase.
-      data.logbook = defaultLogbookEnvelope();
-      return;
-    }
-    // Present but not an array and not a valid envelope: leave the
-    // malformed value in place. The caller's validation step is
-    // responsible for rejecting it.
+    // PRV-0.5 Round-6 (Claude-authored, P1-A): the previous branch
+    // here installed a fresh envelope whenever data.logbook was
+    // `undefined`. That was the destructive-fabrication defect: a v14
+    // persisted wrapper missing `logbook` (corruption) was silently
+    // repaired with an empty envelope and then written back as the
+    // durable authority — erasing the user's data. Fresh-storage
+    // initialization goes through defaultState(), which emits its own
+    // envelope; persisted authority never receives one here.
+    //
+    // Missing, wrong-type, or envelope-shape-invalid values now pass
+    // through untouched so the caller's validation step
+    // (validateLegacySourceRequiredFields for legacy sources;
+    // validateFullStateCanonical for v14 candidates) rejects them
+    // explicitly.
   }
 
   // ── WRAPPER · LOAD ───────────────────────────────
@@ -1895,19 +1972,30 @@
     if (!rawParsed) return { ok: false };
     if (rawParsed.corrupt) return { ok: false };
     const rawData = rawParsed.data;
+    // PRV-0.5 Round-6 (Claude-authored, P1-A + P1-B): source-validate
+    // the ORIGINAL wrapper data before migrateUp / normalize. A v14
+    // current-schema wrapper with a missing `logbook` (or a missing
+    // BHT/telemetry emitted path) is corruption, not a stale shape
+    // repairable by hydration — permitting it here would let the boot
+    // path silently fabricate an empty envelope and then commit that
+    // fabrication back to disk on the next mutation.
+    //
+    // Legacy sources (v8..v13) continue through the soft-floor path
+    // for boot-time hydration compatibility (see ADR-015 addendum #7):
+    // rejecting a stale-shape v11 wrapper on boot would strand the
+    // user with recovery-required on a wrapper the repository's own
+    // migrateUp pipeline supports. Destructive legacy-source validation
+    // remains enforced through evaluateCandidateWrapper (import path)
+    // and validateSnapshotWrapperFull (snapshot path).
+    if (rawParsed.version === SCHEMA_VERSION) {
+      const src = validateFullStateCanonical(rawData);
+      if (!src.ok) return { ok: false, sourceInvalid: true, reason: src.reason };
+    }
     const data = (rawParsed.version === SCHEMA_VERSION && rawData)
       ? rawData
       : migrateUp(rawData || {}, rawParsed.version || 0);
     normalizeLogbookDomain(data);
     if (!validate(data)) return { ok: false };
-    // PRV-0.5 Final Closure (INV-I, R7-P1-08): DESTRUCTIVE historical
-    // source validation is enforced through evaluateCandidateWrapper
-    // (import path). The boot path (migrateAndValidate) intentionally
-    // keeps the softer floor so a stale-shape v11 wrapper still
-    // loads and can be healed by app.js hydration — rejecting it here
-    // would strand the user with recovery-required on a wrapper the
-    // repository's own migrateUp pipeline supports. See ADR-015
-    // addendum #7.
     try {
       const cloned = clonePersistable(data);
       return { ok: true, data: cloned };
@@ -3029,22 +3117,25 @@
       }
       let cloned;
       try { cloned = clonePersistable(candidateData); } catch (e) { return { ok: false, error: 'STORE_UNPERSISTABLE' }; }
-      // PRV-0.5 Final Closure (INV-F, R7-P1-04): validate the ORIGINAL
-      // candidate shape BEFORE any normalization/default-fill runs.
-      // A malformed current-schema Logbook (an object that is neither
-      // a legitimate envelope nor a legacy array) must be rejected
-      // rather than silently replaced with an empty default envelope
-      // — that replacement destroys the user's own data.
-      if ('logbook' in cloned && cloned.logbook !== undefined && cloned.logbook !== null) {
-        const lb = cloned.logbook;
-        const validAsArray = Array.isArray(lb);   // legacy pre-v12 array shape
-        const validAsEnvelope = isLogbookEnvelope(lb);
-        if (!validAsArray && !validAsEnvelope) {
-          return {
-            ok: false, error: 'FULL_STATE_CANDIDATE_MALFORMED_LOGBOOK',
-            reason: 'logbook-neither-array-nor-envelope'
-          };
-        }
+      // PRV-0.5 Round-6 (Claude-authored, P1-A + P1-B): validate the
+      // COMPLETE original current-schema shape BEFORE any
+      // normalization/default-fill runs. commitFullState is the
+      // lowest destructive boundary for every public write path
+      // (Reset, Restore, Import inline hydration, direct full-state
+      // replacement); running validateFullStateCanonical here rejects
+      // missing `logbook`, missing BHT emitted paths, and missing
+      // telemetry fields at the origin rather than letting
+      // normalizeLogbookDomain fabricate an empty envelope or letting
+      // migrateUp/default-fill silently repair the source before it
+      // becomes durable authority. The single-field logbook check
+      // that R7-P1-04 introduced is a subset of this rule and is
+      // subsumed.
+      const originalFullEval = validateFullStateCanonical(cloned);
+      if (!originalFullEval.ok) {
+        return {
+          ok: false, error: 'FULL_STATE_CANONICAL_INCOMPLETE',
+          missing: originalFullEval.missing, reason: originalFullEval.reason
+        };
       }
       normalizeLogbookDomain(cloned);
       if (!validate(cloned)) return { ok: false, error: 'FULL_STATE_INVALID' };
@@ -3522,6 +3613,12 @@
     // restoreSnapshot side effects.
     isValidSnapshotWrapperShape: isValidSnapshotWrapperShape,
     validateSnapshotWrapperFull: validateSnapshotWrapperFull,
+    // PRV-0.5 Round-6 (Claude-authored): expose the v14 canonical
+    // full-state validator so production-path regression tests can
+    // assert missing-domain / missing-BHT-emitted-path / missing-
+    // telemetry-field rejection without duplicating the internal
+    // rule table.
+    validateFullStateCanonical: validateFullStateCanonical,
     // PRV-0.5 Final Closure (INV-I): expose the version-indexed
     // historical requirements matrix so tests / diagnostics can assert
     // the exact per-version emission expectations without duplicating

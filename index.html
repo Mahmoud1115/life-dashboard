@@ -697,8 +697,19 @@
       var isRecovery = code === 'STORE_CORRUPT_AUTHORITATIVE_STATE'
                     || code === 'STORE_REVISION_REGRESSION'
                     || code === 'STORE_STATE_CLEARED_EXTERNAL';
+      // PRV-0.5 Round-6 (Claude-authored, P2): post-write uncertainty
+      // is a distinct recovery state — the primary bytes may or may
+      // not have taken. Give the user truthful guidance: normal
+      // saving is blocked, no in-app repair is possible, and the
+      // three explicit recovery paths (Restore snapshot / Import
+      // backup / Reset LIFE OS) are the only safe next actions. All
+      // three controls are already keyboard-reachable in the
+      // recovery section (data-testid="recovery-section").
+      var isPostWriteUncertain = code === 'STORE_FULL_STATE_POST_WRITE_UNCERTAIN';
       if (isRecovery) {
         freezeMsg.textContent = 'Storage authority is invalid (' + code + '). Normal backup export is refused. Recover via Snapshot restore, Backup import, or Reset — open the Backup panel.';
+      } else if (isPostWriteUncertain) {
+        freezeMsg.textContent = 'Durable storage could not be verified after the last write (' + code + '). Normal saving is blocked. Recover via Restore latest snapshot, Import backup file, or Reset LIFE OS — open the Backup panel.';
       } else {
         freezeMsg.textContent = 'Saving is blocked (' + code + ').';
       }
