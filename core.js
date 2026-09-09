@@ -2823,6 +2823,16 @@
     // wrapper, lower revision than what we accepted. Adopt safely on a newer
     // valid wrapper.
     deferredStorageEvents.length = 0;
+    // PRV-0.5 Codex Round-6 P1-02: track whether settlement adopted a
+    // newer valid EXTERNAL authoritative wrapper without the current
+    // transaction having committed its own. The adoption path advances
+    // internal baseState / knownRevision / baseWrapperRaw / committedAt;
+    // the settlement completion block below rebuilds the OPTIMISTIC
+    // public state, fires `notifyAll()`, and emits a distinct
+    // `lifeos:store-external-adoption` convergence event so subscribers
+    // observe the adopted authority and no listener can misread an
+    // abandoned/failed transaction as committed.
+    let externalAdopted = null;
     // PRV-0.5 Codex-final P1-01: consume the post-write uncertainty
     // flag set by commitFullStateWrapper. If a full-state commit
     // reported post-write uncertainty during this transaction, we
@@ -2898,10 +2908,20 @@
           if (_transitionAuth && _transitionAuth.sourceRawBytes !== rawNow) {
             _consumeTransitionAuth();
           }
+          // PRV-0.5 Codex Round-6 P1-02: capture the adoption evidence
+          // BEFORE mutating internal state so the settlement
+          // completion block can rebuild optimistic public state and
+          // emit a convergence event using the transition details.
+          const _priorRevisionForAdoption = knownRevision;
           baseState      = m.data;
           knownRevision  = parsed.revision;
           committedAt    = parsed.committedAt;
           baseWrapperRaw = rawNow;
+          externalAdopted = {
+            priorRevision: _priorRevisionForAdoption,
+            adoptedRevision: parsed.revision,
+            adoptedCommittedAt: parsed.committedAt
+          };
         }
       }
     }
@@ -2950,9 +2970,36 @@
     // the freeze-end event with `detail.failure=true` below).
     const committedThisTx = _fullStateCommitSucceeded;
     _fullStateCommitSucceeded = false;
-    if (committedThisTx) {
+    // PRV-0.5 Codex Round-6 P1-02: an external-authority adoption
+    // (settlement observed a newer valid concurrent wrapper on disk
+    // while this transaction did NOT commit its own) advanced internal
+    // baseState / knownRevision / baseWrapperRaw / committedAt above.
+    // Rebuild the OPTIMISTIC public state so `Store.get()` reflects the
+    // adopted authority, then run `notifyAll()` so every subscriber
+    // observes the convergence. Emit a distinct
+    // `lifeos:store-external-adoption` event so listeners that need to
+    // distinguish "this tab committed" from "this tab converged onto
+    // another tab's commit" can do so without inspecting the wrapper.
+    // `settlement` becomes FULL_STATE_EXTERNAL_ADOPTION (never
+    // FULL_STATE_COMMITTED) so no listener can misread the abandoned
+    // transaction as committed.
+    const externalAdoptionThisTx = !committedThisTx && externalAdopted !== null;
+    if (committedThisTx || externalAdoptionThisTx) {
       rebuildOptimistic();
       notifyAll();
+    }
+    if (externalAdoptionThisTx) {
+      try {
+        if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+          window.dispatchEvent(new CustomEvent('lifeos:store-external-adoption', {
+            detail: {
+              priorRevision: externalAdopted.priorRevision,
+              adoptedRevision: externalAdopted.adoptedRevision,
+              adoptedCommittedAt: externalAdopted.adoptedCommittedAt
+            }
+          }));
+        }
+      } catch (e) { /* ignore */ }
     }
     try {
       if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
@@ -2961,10 +3008,14 @@
         // did not succeed this transaction, mark the detail with
         // `failure: true` so listeners can distinguish
         // success-settled from failure-settled without inspecting
-        // the blocker code.
+        // the blocker code. `externalAdoption: true` is set when
+        // settlement adopted an external wrapper without a local
+        // commit — a distinct settlement outcome that is neither
+        // success nor failure.
         window.dispatchEvent(new CustomEvent('lifeos:store-freeze-end', {
           detail: {
-            failure: !committedThisTx,
+            failure: !committedThisTx && !externalAdoptionThisTx,
+            externalAdoption: externalAdoptionThisTx,
             durabilityBlocker: durabilityBlocker ? Object.assign({}, durabilityBlocker) : null
           }
         }));
@@ -2975,12 +3026,26 @@
     // (valid token, transaction was active) — NOT whether the
     // transaction committed a state change. The `settlement` field
     // carries that outcome:
-    //   FULL_STATE_COMMITTED     → commitFullStateWrapper landed
-    //   FULL_STATE_NOT_COMMITTED → no commit was called or it failed pre-write
+    //   FULL_STATE_COMMITTED           → commitFullStateWrapper landed
+    //   FULL_STATE_EXTERNAL_ADOPTION   → PRV-0.5 Codex Round-6 P1-02:
+    //                                    this transaction did NOT commit;
+    //                                    settlement adopted a newer
+    //                                    valid external wrapper and
+    //                                    published it to subscribers.
+    //   FULL_STATE_NOT_COMMITTED       → no commit was called or it
+    //                                    failed pre-write and no external
+    //                                    authority was adopted.
     //   FULL_STATE_POST_WRITE_UNCERTAIN → uncertainty branch (early return above)
     return {
       ok: true,
-      settlement: committedThisTx ? 'FULL_STATE_COMMITTED' : 'FULL_STATE_NOT_COMMITTED',
+      settlement: committedThisTx
+        ? 'FULL_STATE_COMMITTED'
+        : (externalAdoptionThisTx ? 'FULL_STATE_EXTERNAL_ADOPTION' : 'FULL_STATE_NOT_COMMITTED'),
+      externalAdoption: externalAdoptionThisTx ? {
+        priorRevision: externalAdopted.priorRevision,
+        adoptedRevision: externalAdopted.adoptedRevision,
+        adoptedCommittedAt: externalAdopted.adoptedCommittedAt
+      } : null,
       durabilityBlocker: durabilityBlocker ? Object.assign({}, durabilityBlocker) : null
     };
   }
@@ -3185,7 +3250,37 @@
           missing: fullEval.missing, reason: fullEval.reason
         };
       }
-      if (diskRevision >= Number.MAX_SAFE_INTEGER) return { ok: false, error: 'STORE_REVISION_EXHAUSTED' };
+      // PRV-0.5 Codex Round-6 P1-01: revision exhaustion MUST be
+      // evaluated against the COMPLETE accepted monotonic baseline —
+      // the durable disk revision, Store's `knownRevision`, AND the
+      // revision-at-issue captured on any active recovery / legacy-
+      // transition auth — NOT durable disk revision alone. If Store
+      // already accepted a wrapper at Number.MAX_SAFE_INTEGER and disk
+      // then regressed to a lower value, a diskRevision-only guard
+      // computes `monotonicBaseline + 1 === 9007199254740992`, which
+      // is not a safe integer and therefore cannot be a legal
+      // authoritative revision. The check runs BEFORE any quarantine
+      // allocation and BEFORE any primary write, so on exhaustion:
+      // primary bytes are byte-exact preserved, no quarantine key is
+      // allocated, no snapshot is written, no success publication
+      // fires. Reset, Snapshot Restore, processImport-recovery and
+      // legacy conversion all reach this branch (single guard covers
+      // every recovery family).
+      const _exhaustionBaseline = Math.max(
+        diskRevision,
+        typeof knownRevision === 'number' ? knownRevision : 0,
+        _transitionAuth && typeof _transitionAuth.knownRevisionAtIssue === 'number' ? _transitionAuth.knownRevisionAtIssue : 0
+      );
+      if (_exhaustionBaseline >= Number.MAX_SAFE_INTEGER) {
+        return {
+          ok: false,
+          error: 'STORE_REVISION_EXHAUSTED',
+          baseline: _exhaustionBaseline,
+          diskRevision: diskRevision,
+          knownRevision: typeof knownRevision === 'number' ? knownRevision : null,
+          authRevisionAtIssue: _transitionAuth && typeof _transitionAuth.knownRevisionAtIssue === 'number' ? _transitionAuth.knownRevisionAtIssue : null
+        };
+      }
       // R7 P1-4, INV-5: quarantine BEFORE destructive replacement of
       // corrupt authority, WITH mandatory reread + byte-match
       // verification. Only proceed to primary write if quarantine
@@ -3242,11 +3337,13 @@
       // a recovery replay an earlier number, and a
       // regression-blocker recovery mints strictly greater than the
       // last accepted revision the Store observed.
-      const monotonicBaseline = Math.max(
-        diskRevision,
-        typeof knownRevision === 'number' ? knownRevision : 0,
-        _transitionAuth && typeof _transitionAuth.knownRevisionAtIssue === 'number' ? _transitionAuth.knownRevisionAtIssue : 0
-      );
+      //
+      // PRV-0.5 Codex Round-6 P1-01: baseline is the same value the
+      // exhaustion guard above already computed as `_exhaustionBaseline`
+      // (single source of truth so the two computations cannot drift).
+      // `_exhaustionBaseline + 1` is guaranteed a safe integer because
+      // the guard rejected `_exhaustionBaseline === MAX_SAFE_INTEGER`.
+      const monotonicBaseline = _exhaustionBaseline;
       const nextRevision = monotonicBaseline + 1;
       const committedAtNow = nowISO();
       const wrapper = { version: SCHEMA_VERSION, revision: nextRevision, committedAt: committedAtNow, data: cloned };
@@ -3665,11 +3762,24 @@
     // ordering for identity checks — the caller filters by key
     // suffix / getItem to select individual entries.
     listQuarantineKeys: function () { return _listQuarantineKeys(); },
-    // PRV-0.5 Pre-Push Amendment (BINDING-1): test hook. `true`
-    // forces every recovery + legacy-conversion commit to refuse
-    // with STORE_LOCK_UNAVAILABLE; `false` restores normal behavior.
-    _testForceNoLock: function (flag) { _testForceNoLockFlag = flag === true; },
-    _testForcePostWriteEvalFailure: function (flag) { _testForcePostWriteEvalFailureFlag = flag === true; },
+    // PRV-0.5 Codex Round-6 P2-03: test-only fault switches are
+    // conditionally attached below. Production runtime (no
+    // `window.__LIFEOS_TEST_ENV__` marker) never sees these setters
+    // on `window.Store`, so an XSS payload, rogue extension, or an
+    // unrelated bug in another script cannot call
+    // `Store._testForceNoLock(true)` (which would disable the
+    // destructive Web Lock check) or
+    // `Store._testForcePostWriteEvalFailure(true)` (which would
+    // deterministically drive the post-write authority-classification
+    // failure branch). Playwright specs that exercise these branches
+    // set the marker via `page.addInitScript` BEFORE navigation, so
+    // Store observes the marker at construction time and attaches the
+    // setters. The setter names themselves remain unchanged so
+    // existing tests continue to work once the marker is set.
+    ...((typeof window !== 'undefined' && window.__LIFEOS_TEST_ENV__ === true) ? {
+      _testForceNoLock: function (flag) { _testForceNoLockFlag = flag === true; },
+      _testForcePostWriteEvalFailure: function (flag) { _testForcePostWriteEvalFailureFlag = flag === true; }
+    } : {}),
     // Raised for tests / documentation of the canonical marker contract.
     MARKER_STATUS: { MIGRATED: MARKER_STATUS_MIGRATED, UNMIGRATED: MARKER_STATUS_UNMIGRATED },
     REQUIRED_RECORD_DOMAINS: REQUIRED_RECORD_DOMAINS.slice(),

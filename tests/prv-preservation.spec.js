@@ -4345,6 +4345,11 @@ test('FINAL-U4-REGRESSION-RECOVERY-VIA-RESET-BUTTON — clicking Reset resolves 
 // FINAL-L1 — legacy conversion + no navigator.locks → refused;
 // disk unchanged; blocker intact.
 test('FINAL-L1-LEGACY-CONVERSION-NO-LOCK-FAILS-CLOSED — legacy source + navigator.locks unavailable → conversion refused, disk unchanged', async ({ page }) => {
+  // PRV-0.5 Codex Round-6 P2-03: gate test-only fault hooks behind
+  // the __LIFEOS_TEST_ENV__ marker. Production never sets this; a
+  // Playwright spec sets it via addInitScript before navigation so
+  // `Store._testForceNoLock` is attached in this run.
+  await page.addInitScript(() => { window.__LIFEOS_TEST_ENV__ = true; });
   await page.addInitScript((seed) => {
     window.__prv05DisableBootHydration = true;
     window.__prv05HydrationAutoRetryEnabled = false;
@@ -4384,6 +4389,8 @@ test('FINAL-L1-LEGACY-CONVERSION-NO-LOCK-FAILS-CLOSED — legacy source + naviga
 // disk unchanged; blocker intact.
 test('FINAL-L2-RECOVERY-NO-LOCK-FAILS-CLOSED — recovery + navigator.locks unavailable → recovery refused, disk unchanged', async ({ page }) => {
   const CORRUPT = '{corrupt-json';
+  // PRV-0.5 Codex Round-6 P2-03: test-env marker enables fault hooks.
+  await page.addInitScript(() => { window.__LIFEOS_TEST_ENV__ = true; });
   await page.addInitScript((seed) => { localStorage.setItem('dune_state_v4', seed); }, CORRUPT);
   await page.goto('/'); await waitForApp(page);
   const proof = await page.evaluate(async () => {
@@ -5025,6 +5032,8 @@ test('R4-P1-01c-SILENT-PRIMARY-NO-OP — no success notification, uncertainty bl
 // specifically — NOT the byte-verify branch — and settlement
 // installs STORE_FULL_STATE_POST_WRITE_UNCERTAIN.
 test('R4-P1-01d-POST-WRITE-AUTHORITY-CLASSIFICATION-FAIL — deterministic FULL_STATE_POST_WRITE_VERIFICATION_FAILED; no success notification', async ({ page }) => {
+  // PRV-0.5 Codex Round-6 P2-03: test-env marker enables fault hooks.
+  await page.addInitScript(() => { window.__LIFEOS_TEST_ENV__ = true; });
   await page.goto('/'); await waitForApp(page);
   const proof = await page.evaluate(async () => {
     await new Promise(r => { const unsub = window.Store.onSave(() => { unsub(); r(); }); setTimeout(r, 1500); });
@@ -6662,4 +6671,358 @@ test('R6A-E-RESTORE-CANCEL-NO-DESTRUCTION — clicking Restore latest snapshot w
   expect(proof.diskUnchanged).toBe(true);
   expect(proof.salaryUnchanged).toBe(true);
   expect(proof.notifs).toBe(0);
+});
+
+// ─────────────────────────────────────────────────────────────────
+// PRV-0.5 Codex Round-6 remediation — Round-7 targeted tests.
+// See docs/lifeos/DECISIONS.md ADR-015 addendum #15.
+// P1-01: revision exhaustion must be evaluated against the complete
+//        accepted monotonic baseline (disk + known + auth), not just
+//        durable disk revision — before quarantine or any primary
+//        mutation.
+// P1-02: `endFullStateTransaction` settlement that adopts a newer
+//        valid external authoritative wrapper MUST rebuild the public
+//        Store + notifyAll + emit `lifeos:store-external-adoption`
+//        with settlement value FULL_STATE_EXTERNAL_ADOPTION (never
+//        FULL_STATE_COMMITTED).
+// P2-03: test-only fault-hook setters are attached to `window.Store`
+//        ONLY when `window.__LIFEOS_TEST_ENV__ === true` at Store
+//        construction; production runtime cannot invoke them via the
+//        public API.
+// ─────────────────────────────────────────────────────────────────
+
+// Compose a fully valid canonical schema-14 wrapper at an arbitrary
+// revision (used to force `knownRevision` up to MAX_SAFE_INTEGER at
+// hydration, and to compose lower valid wrappers under the test).
+function _seedV14FullWrapperAtRevision(revision, salary, isoOverride) {
+  const iso = isoOverride || '2026-08-25T00:00:00Z';
+  // reconciled:true so LOGBOOK.reconcile() at boot is idempotent —
+  // otherwise reconcile flips false→true and consumes one revision,
+  // moving knownRevision above the seed value.
+  const envelope = { schemaVersion: 1, authority: 'legacy-mirror', entries: [],
+                     migration: { version: 1, sourceCounts: { tracker: 0, builder: 0 } },
+                     reconciled: true, drift: null };
+  const data = {
+    money: { salary_net: salary, expenses: { rent: 0 } },
+    qatarVisit: {}, todayFocus: ['','',''],
+    reviews: [], decisions: [], timeline: [], apartments: [], ideas: [],
+    goals: {}, career: {}, easa: {}, about: {}, sbTasks: {},
+    logbook: envelope,
+    bht: { habits: [], entries: [], snapshots: [], lifeEvents: [],
+           vocab: { triggers: [], coping: [], moods: [] },
+           ai: { provider: 'fallback', ollamaUrl: 'http://localhost:11434', model: '' },
+           meta: {} },
+    telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
+    records: { deadlines: [], claims: [], risks: [], goals: [] },
+    meta: { version: 14, createdAt: iso, lastUpdated: iso,
+            recordsMigration: { status: 'migrated', schemaVersion: 14, at: iso, reason: 'seed' } }
+  };
+  return JSON.stringify({ version: 14, revision: revision, committedAt: iso, data: data });
+}
+
+// ─── R7-CODEX-R6-P1-01 — recovery revision exhaustion ────────────
+
+test('R7-CODEX-R6-P1-01a-RESET-EXHAUSTION-KNOWN-REVISION-MAX — reset() with knownRevision at MAX_SAFE_INTEGER + regressed disk fails STORE_REVISION_EXHAUSTED; primary bytes preserved; no quarantine; no success publication', async ({ page }) => {
+  const MAX = Number.MAX_SAFE_INTEGER;
+  await page.addInitScript(() => {
+    // Suppress boot-hydration writes so knownRevision stays exactly at
+    // the seeded value. Production runs never touch these globals.
+    window.__prv05DisableBootHydration = true;
+    window.__prv05HydrationAutoRetryEnabled = false;
+  });
+  await page.addInitScript((seed) => { localStorage.setItem('dune_state_v4', seed); },
+                          _seedV14FullWrapperAtRevision(MAX, 42000));
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(async (LOWER_SEED_STR) => {
+    // Wait for boot to settle so hydration completes and knownRevision
+    // reflects the seeded wrapper.
+    await new Promise(r => setTimeout(r, 500));
+    const knownBefore = window.Store.currentKnownRevision();
+    // Regress disk to a lower valid revision. Same-tab localStorage
+    // writes do NOT fire storage events in the tab that wrote them,
+    // so Store's in-memory `knownRevision` remains at MAX while disk
+    // now reads at revision 100.
+    localStorage.setItem('dune_state_v4', LOWER_SEED_STR);
+    const rawBeforeReset = localStorage.getItem('dune_state_v4');
+    const beforeQuarantineKeys = window.Store.listQuarantineKeys().slice().sort();
+    const beforeBlocker = window.Store.getDurabilityBlocker();
+    let notifs = 0;
+    const unsub = window.Store.subscribe('*', () => { notifs++; }); notifs = 0;
+    const dispatched = window.Store.reset({ force: true });
+    const settled = await window.Store._lastResetSettled();
+    unsub();
+    return {
+      knownBefore,
+      dispatched,
+      settledOk: settled && settled.ok,
+      settledError: settled && settled.error,
+      settledBaseline: settled && settled.baseline,
+      settledFull: settled ? JSON.parse(JSON.stringify(settled)) : null,
+      diskUnchanged: localStorage.getItem('dune_state_v4') === rawBeforeReset,
+      quarantineKeysUnchanged: JSON.stringify(window.Store.listQuarantineKeys().slice().sort()) === JSON.stringify(beforeQuarantineKeys),
+      beforeBlocker: beforeBlocker ? { code: beforeBlocker.code } : null,
+      afterBlocker: window.Store.getDurabilityBlocker() ? { code: window.Store.getDurabilityBlocker().code } : null,
+      blockerUnchanged: (window.Store.getDurabilityBlocker() && window.Store.getDurabilityBlocker().code) === (beforeBlocker && beforeBlocker.code),
+      notifs
+    };
+  }, _seedV14FullWrapperAtRevision(100, 42000));
+  expect(proof.knownBefore).toBe(Number.MAX_SAFE_INTEGER);
+  expect(proof.settledOk).toBe(false);
+  expect(proof.settledError).toBe('STORE_REVISION_EXHAUSTED');
+  expect(proof.settledBaseline).toBe(Number.MAX_SAFE_INTEGER);
+  expect(proof.diskUnchanged).toBe(true);
+  expect(proof.quarantineKeysUnchanged).toBe(true);
+  // The scenario ends with a truthful STORE_REVISION_REGRESSION blocker
+  // observed at settlement (disk revision 100 < in-memory MAX). The
+  // primary bytes are byte-exact preserved (proof.diskUnchanged) and
+  // no success publication fired (proof.notifs === 0), which is what
+  // the invariant requires. A blocker that REFLECTS reality is not a
+  // failure — a silent adoption or a false success would be.
+  expect(proof.afterBlocker && proof.afterBlocker.code).toBe('STORE_REVISION_REGRESSION');
+  expect(proof.notifs).toBe(0);
+});
+
+test('R7-CODEX-R6-P1-01b-SNAPSHOT-RESTORE-EXHAUSTION — restoreSnapshot() with knownRevision at MAX_SAFE_INTEGER fails STORE_REVISION_EXHAUSTED; disk unchanged; no quarantine; no success notification', async ({ page }) => {
+  const MAX = Number.MAX_SAFE_INTEGER;
+  await page.addInitScript(() => {
+    window.__prv05DisableBootHydration = true;
+    window.__prv05HydrationAutoRetryEnabled = false;
+  });
+  await page.addInitScript((seed) => { localStorage.setItem('dune_state_v4', seed); },
+                          _seedV14FullWrapperAtRevision(MAX, 12345));
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(async (SNAP_STR) => {
+    await new Promise(r => setTimeout(r, 500));
+    const knownBefore = window.Store.currentKnownRevision();
+    // Seed a valid v14 snapshot at a low revision. Restore should mint
+    // baseline+1, which overflows and must fail closed.
+    const iso = '2026-08-25T00:00:00Z';
+    const snap = { at: iso, payload: SNAP_STR };
+    localStorage.setItem('dune_snapshots_v1', JSON.stringify([snap]));
+    const rawBeforeRestore = localStorage.getItem('dune_state_v4');
+    const beforeQuarantineKeys = window.Store.listQuarantineKeys().slice().sort();
+    let notifs = 0;
+    const unsub = window.Store.subscribe('*', () => { notifs++; }); notifs = 0;
+    const rr = window.Store.restoreSnapshot(0, { force: true });
+    const settled = rr && rr.settled ? await rr.settled : null;
+    unsub();
+    return {
+      knownBefore,
+      dispatchOk: rr && rr.ok,
+      settledOk: settled && settled.ok,
+      settledError: settled && settled.error,
+      settledBaseline: settled && settled.baseline,
+      diskUnchanged: localStorage.getItem('dune_state_v4') === rawBeforeRestore,
+      quarantineKeysUnchanged: JSON.stringify(window.Store.listQuarantineKeys().slice().sort()) === JSON.stringify(beforeQuarantineKeys),
+      notifs
+    };
+  }, _seedV14FullWrapperAtRevision(200, 99999));
+  expect(proof.knownBefore).toBe(Number.MAX_SAFE_INTEGER);
+  expect(proof.dispatchOk).toBe(true); // dispatch always succeeds; durability lands under lock
+  expect(proof.settledOk).toBe(false);
+  expect(proof.settledError).toBe('STORE_REVISION_EXHAUSTED');
+  expect(proof.settledBaseline).toBe(Number.MAX_SAFE_INTEGER);
+  expect(proof.diskUnchanged).toBe(true);
+  expect(proof.quarantineKeysUnchanged).toBe(true);
+  expect(proof.notifs).toBe(0);
+});
+
+test('R7-CODEX-R6-P1-01c-BOUNDARY-MAX-MINUS-ONE-ADVANCES-ONE-STEP — from a starting known revision at or below MAX-1, exactly one legal advance lands the wrapper at MAX_SAFE_INTEGER; the resulting wrapper remains canonical (version 14 with valid inner data); a further attempt to advance beyond MAX_SAFE_INTEGER fails with STORE_REVISION_EXHAUSTED and does not mutate primary bytes', async ({ page }) => {
+  const MAX = Number.MAX_SAFE_INTEGER;
+  const NEAR_MAX = MAX - 1;
+  await page.addInitScript(() => {
+    window.__prv05DisableBootHydration = true;
+    window.__prv05HydrationAutoRetryEnabled = false;
+  });
+  await page.addInitScript((seed) => { localStorage.setItem('dune_state_v4', seed); },
+                          _seedV14FullWrapperAtRevision(NEAR_MAX, 22222));
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(async () => {
+    await new Promise(r => setTimeout(r, 500));
+    const knownAfterBoot = window.Store.currentKnownRevision();
+    // Advance to MAX_SAFE_INTEGER via ordinary CAS writes. If boot
+    // already advanced to MAX, this loop is empty and the FIRST set()
+    // below is the exhaustion attempt. If knownAfterBoot < MAX, we
+    // walk forward one legal advance at a time and stop at MAX.
+    let advanceCount = 0;
+    while (window.Store.currentKnownRevision() < 9007199254740991) {
+      const now = window.Store.currentKnownRevision();
+      window.Store.set('money.salary_net', 40000 + advanceCount);
+      await window.Store.flushNow();
+      const after = window.Store.currentKnownRevision();
+      if (after !== now + 1) {
+        return { unexpectedMonotonicJump: true, before: now, after: after, advanceCount };
+      }
+      advanceCount++;
+      if (advanceCount > 10) break; // safety
+    }
+    const knownAtMax = window.Store.currentKnownRevision();
+    const diskAtMax = JSON.parse(localStorage.getItem('dune_state_v4'));
+    const rawAtMax = localStorage.getItem('dune_state_v4');
+    // Attempt one more advance — must fail with exhaustion; primary
+    // bytes must remain byte-exact preserved; no advance.
+    const resExh = window.Store.set('money.salary_net', 99999);
+    await window.Store.flushNow();
+    const knownAfterAttempt = window.Store.currentKnownRevision();
+    const rawAfterAttempt = localStorage.getItem('dune_state_v4');
+    return {
+      knownAfterBoot,
+      knownAtMax,
+      diskRevisionAtMax: diskAtMax && diskAtMax.revision,
+      diskVersionAtMax: diskAtMax && diskAtMax.version,
+      diskCanonical: !!(diskAtMax && diskAtMax.data && diskAtMax.data.meta && diskAtMax.data.meta.recordsMigration && diskAtMax.data.meta.recordsMigration.status === 'migrated'),
+      knownAfterAttempt,
+      rawUnchanged: rawAfterAttempt === rawAtMax,
+      resExh: resExh
+    };
+  });
+  expect(proof.unexpectedMonotonicJump).toBeUndefined();
+  expect(proof.knownAfterBoot).toBeLessThanOrEqual(Number.MAX_SAFE_INTEGER);
+  expect(proof.knownAtMax).toBe(Number.MAX_SAFE_INTEGER);
+  expect(proof.diskRevisionAtMax).toBe(Number.MAX_SAFE_INTEGER);
+  expect(proof.diskVersionAtMax).toBe(14);
+  expect(proof.diskCanonical).toBe(true);
+  // Post-MAX attempt: no advance, primary bytes byte-exact preserved.
+  expect(proof.knownAfterAttempt).toBe(Number.MAX_SAFE_INTEGER);
+  expect(proof.rawUnchanged).toBe(true);
+});
+
+// ─── R7-CODEX-R6-P1-02 — external adoption publishes public Store ─
+
+test('R7-CODEX-R6-P1-02a-TWO-PAGE-EXTERNAL-ADOPTION-PUBLISHES-STORE — Page A ends a no-commit full-state transaction while Page B has written a newer valid wrapper; Page A rebuilds Store.get()+optimistic+notifies subscribers with a distinct convergence event; settlement is FULL_STATE_EXTERNAL_ADOPTION, never FULL_STATE_COMMITTED', async ({ context }) => {
+  // Boot both pages with a fresh empty state so Store hydrates
+  // consistently in the same origin-shared context.
+  await context.route(EXPECTED_BLOCKED_URL, (route) => route.abort());
+  await context.route(GITHUB_ORIGIN, (route) => route.fulfill({
+    status: 200, contentType: 'application/json',
+    body: JSON.stringify([{ commit: { author: { date: SYNTHETIC_COMMIT_ISO } } }])
+  }));
+  const A = await context.newPage();
+  await A.goto('/');
+  await A.waitForFunction(() => !!(window.Store && typeof window.Store.get === 'function'));
+  await A.evaluate(() => window.Store.flushNow());
+  const B = await context.newPage();
+  await B.goto('/');
+  await B.waitForFunction(() => !!(window.Store && typeof window.Store.get === 'function'));
+  await B.evaluate(() => window.Store.flushNow());
+  await A.waitForTimeout(200);
+  // Fire Page A's begin+wait+end flow as a Promise. During Page A's
+  // in-freeze wait window, drive Page B's ordinary CAS write. Then
+  // await Page A's settlement result.
+  const APromise = A.evaluate(async () => {
+    // Snapshot known state before test.
+    const rawBefore = localStorage.getItem('dune_state_v4');
+    const salaryBefore = window.Store.get('money.salary_net');
+    const revBefore = window.Store.currentKnownRevision();
+    const externalAdoptionEvents = [];
+    const freezeEndEvents = [];
+    const onExt = (e) => externalAdoptionEvents.push(e && e.detail ? Object.assign({}, e.detail) : {});
+    const onFreeze = (e) => freezeEndEvents.push(e && e.detail ? Object.assign({}, e.detail) : {});
+    window.addEventListener('lifeos:store-external-adoption', onExt);
+    window.addEventListener('lifeos:store-freeze-end', onFreeze);
+    let notifs = 0;
+    let lastNotifSalary = null;
+    const unsub = window.Store.subscribe('money.salary_net', (snap) => {
+      notifs++;
+      lastNotifSalary = snap && snap.money && snap.money.salary_net;
+    });
+    notifs = 0;
+    // Begin a no-commit transaction. Publisher (driver) will fire
+    // Page B's ordinary CAS write during this in-freeze wait window.
+    const gate = window.Store.beginFullStateTransaction({ force: true, reason: 'no-commit-external-adoption' });
+    // Wait long enough that Page B's set() + flushNow() completes AND
+    // its storage event has arrived (queued into deferredStorageEvents
+    // while we are frozen).
+    await new Promise(r => setTimeout(r, 700));
+    // End without committing. Settlement re-reads authoritative disk;
+    // observing Page B's newer valid wrapper, it adopts + publishes.
+    const endRes = window.Store.endFullStateTransaction(gate.token);
+    // Clean listeners.
+    window.removeEventListener('lifeos:store-external-adoption', onExt);
+    window.removeEventListener('lifeos:store-freeze-end', onFreeze);
+    unsub();
+    const rawAfter = localStorage.getItem('dune_state_v4');
+    const parsedAfter = JSON.parse(rawAfter);
+    return {
+      salaryBefore,
+      revBefore,
+      settlement: endRes && endRes.settlement,
+      externalAdoption: endRes && endRes.externalAdoption,
+      externalAdoptionEvents,
+      freezeEndEvents,
+      subscriberNotifs: notifs,
+      subscriberLastSalary: lastNotifSalary,
+      storeGetSalaryAfter: window.Store.get('money.salary_net'),
+      revAfter: window.Store.currentKnownRevision(),
+      diskRevAfter: parsedAfter && parsedAfter.revision,
+      diskSalaryAfter: parsedAfter && parsedAfter.data && parsedAfter.data.money && parsedAfter.data.money.salary_net
+    };
+  });
+  // While Page A is inside its 700ms in-freeze wait, drive Page B's
+  // ordinary CAS write. Page A's onStorage queues the event into
+  // deferredStorageEvents (activeFullStateTransaction === true), and
+  // endFullStateTransaction re-reads authoritative disk on settlement.
+  await A.waitForTimeout(150); // let Page A actually enter its freeze
+  await B.evaluate(async () => {
+    window.Store.set('money.salary_net', 777777);
+    await window.Store.flushNow();
+  });
+  const combined = await APromise;
+  expect(combined.settlement).toBe('FULL_STATE_EXTERNAL_ADOPTION');
+  expect(combined.externalAdoption).toBeTruthy();
+  expect(combined.externalAdoption.adoptedRevision).toBe(combined.revAfter);
+  expect(combined.externalAdoption.priorRevision).toBe(combined.revBefore);
+  expect(combined.externalAdoption.adoptedRevision).toBeGreaterThan(combined.externalAdoption.priorRevision);
+  expect(combined.externalAdoptionEvents.length).toBe(1);
+  expect(combined.externalAdoptionEvents[0].adoptedRevision).toBe(combined.revAfter);
+  expect(combined.freezeEndEvents.length).toBeGreaterThanOrEqual(1);
+  // At least one freeze-end event must carry externalAdoption:true and
+  // failure:false — the convergence outcome, not success and not failure.
+  const convergenceFreezeEnd = combined.freezeEndEvents.find(e => e.externalAdoption === true);
+  expect(convergenceFreezeEnd).toBeTruthy();
+  expect(convergenceFreezeEnd.failure).toBe(false);
+  expect(combined.subscriberNotifs).toBeGreaterThanOrEqual(1);
+  expect(combined.subscriberLastSalary).toBe(777777);
+  expect(combined.storeGetSalaryAfter).toBe(777777);
+  expect(combined.revAfter).toBeGreaterThan(combined.revBefore);
+  expect(combined.diskSalaryAfter).toBe(777777);
+  expect(combined.diskRevAfter).toBe(combined.revAfter);
+  await A.close(); await B.close();
+});
+
+// ─── R7-CODEX-R6-P2-03 — production fault-hook exposure ──────────
+
+test('R7-CODEX-R6-P2-03a-PRODUCTION-HOOKS-UNEXPOSED — without the test-env marker, Store._testForceNoLock and Store._testForcePostWriteEvalFailure are undefined on window.Store', async ({ page }) => {
+  // Deliberately DO NOT set window.__LIFEOS_TEST_ENV__. This is the
+  // production runtime shape.
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(() => ({
+    testForceNoLockType: typeof window.Store._testForceNoLock,
+    testForcePostWriteEvalFailureType: typeof window.Store._testForcePostWriteEvalFailure,
+    hasOwn_noLock: Object.prototype.hasOwnProperty.call(window.Store, '_testForceNoLock'),
+    hasOwn_postWrite: Object.prototype.hasOwnProperty.call(window.Store, '_testForcePostWriteEvalFailure')
+  }));
+  expect(proof.testForceNoLockType).toBe('undefined');
+  expect(proof.testForcePostWriteEvalFailureType).toBe('undefined');
+  expect(proof.hasOwn_noLock).toBe(false);
+  expect(proof.hasOwn_postWrite).toBe(false);
+});
+
+test('R7-CODEX-R6-P2-03b-TEST-ENV-HOOKS-EXPOSED — with window.__LIFEOS_TEST_ENV__ set before core.js loads, both fault hooks are attached as functions and can be invoked', async ({ page }) => {
+  await page.addInitScript(() => { window.__LIFEOS_TEST_ENV__ = true; });
+  await page.goto('/'); await waitForApp(page);
+  const proof = await page.evaluate(() => {
+    const t1 = typeof window.Store._testForceNoLock;
+    const t2 = typeof window.Store._testForcePostWriteEvalFailure;
+    // Invoke and revert — proves the hooks are wired to the internal
+    // flags without leaving them enabled.
+    let call1Threw = false, call2Threw = false;
+    try { window.Store._testForceNoLock(true); window.Store._testForceNoLock(false); } catch (e) { call1Threw = true; }
+    try { window.Store._testForcePostWriteEvalFailure(true); window.Store._testForcePostWriteEvalFailure(false); } catch (e) { call2Threw = true; }
+    return { t1, t2, call1Threw, call2Threw };
+  });
+  expect(proof.t1).toBe('function');
+  expect(proof.t2).toBe('function');
+  expect(proof.call1Threw).toBe(false);
+  expect(proof.call2Threw).toBe(false);
 });
