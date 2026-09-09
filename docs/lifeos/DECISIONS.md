@@ -2437,3 +2437,79 @@ unchanged). Local only, unpushed.
 **Provenance.** Round-8 ancestry: `<Round-8 head> → 351236dc4ae65168089db8f4169b5a2a193eab69`. `ef6e4019…` is NOT an ancestor. Worktree `/Users/mahmoudmarwan/LIFE/.claude/worktrees/prv-0-5-round8-external-authority`. Branch `claude/prv-0-5-round8-external-authority-recovery` (local only, unpushed).
 
 **Date:** 2026-09-09 (Round-8 remediation on top of Codex Round-7 review of `351236dc…`; local only, unpushed pending ChatGPT pre-push review then Codex final independent HIGH-risk re-review).
+
+### ADR-015 addendum #17 (2026-09-09) — Round-9 remediation for Codex Round-8 exact-SHA review
+
+**Trigger.** Codex Round-8 exact-SHA re-review of `9280382a63defd0b86c560acbd1399a87bda3088` returned **FAIL — NOT SAFE — MERGE BLOCKED** with three findings the Round-8 tightening did not close:
+
+- **P1-01** — boot and persisted-authority paths bypassed strict source admission. Codex reproduced: unsupported v7 raw cold-boots into public Store state; partial v13 cold-boots into public/default-filled state; missing BHT/other domains synthesized by migrateUp BEFORE source rejection; legacy transition authorization issued; `evaluatePersistedAuthority` returns transition/backup eligibility for bytes the strict evaluator rejects.
+- **P1-02** — outer historical wrapper (v8..v13) carrying a pre-existing v14-shape `meta.recordsMigration.status='migrated'` marker was preserved by `migrateUp` and then classified by `evaluateCandidateData` as `AUTHORITATIVE_MIGRATED`; settlement cleared corrupt-source blockers as if canonical recovery had completed; `evaluatePersistedAuthority` classified the same bytes as `VERIFIED_LEGACY_TRANSITION`. Inconsistency + false authority upgrade.
+- **P2-01** — a local commit at revision N followed by a durable INVALID divergent v14 wrapper at the same revision N produced no `STORE_REVISION_COLLISION` (collision hidden behind admission failure); settlement returned plain `FULL_STATE_COMMITTED`; memory diverged from durable disk without truthful labelling.
+
+Round-9 lands as new local commits on top of `9280382…`: `d7b1516…` (core.js implementation + seed corrections in the two pre-existing tests whose seeds relied on R8's soft-floor) and `a3995d6…` (27 new R9-* permanent regression rows + L19/L32 blocker-code widening). Round-8 SHA is unmodified.
+
+**P1-01 — Boot admission uses the strict source gate (single validation policy across every surface).**
+
+- Extract `_strictSourceAdmit(parsed)` — the pure source-shape gate (`null`/corrupt/version-missing/future-version/unsupported-legacy-vN/legacy-source-<field>/current-source-<field> refusals) — from `_admitExternalWrapper` into a shared helper. Extract `_admitFromParsed(parsed)` — the full pipeline of source-gate → migrateUp → normalize → validate → classify. `_admitExternalWrapper(raw)` is `parseWrapperRaw + _admitFromParsed`. `_admitBootWrapper` is the alias of `_admitExternalWrapper`. Single source of truth; the "single validation policy" invariant is impossible to violate by drift.
+- `migrateAndValidate(rawParsed)` is now a thin wrapper around `_admitFromParsed`. The old permissive historical soft-floor path (v14 validated, v8..v13 fell straight into `migrateUp` without a source-shape check) is deleted. Boot, storage event, settlement, and CAS pre-write external reread all apply identical source-shape validation BEFORE `migrateUp` default-fill.
+- Unsupported v0-v7, versionless, partial v8-v13 (missing required BHT/telemetry/logbook-envelope/etc.), future versions, and malformed JSON all fail closed at admission. `initialLoad`'s pre-existing refusal branch installs `STORE_CORRUPT_AUTHORITATIVE_STATE` with the exact `_strictSourceAdmit` reason (`legacy-source-version-unsupported-v7`, `legacy-source-missing-meta`, etc.) as `detail.reason`, and `where:'initialLoad-strict-admit'`. The rejected raw is preserved as `baseWrapperRaw` evidence. Public state comes from `migrateFromLegacy()` (Gen-1 keys) — never from the rejected wrapper.
+- `evaluatePersistedAuthority` is tightened along the same axis: for `parsed.version < SCHEMA_VERSION`, it now runs `validateLegacySourceRequiredFields(parsed.data, parsed.version)` BEFORE returning `VERIFIED_LEGACY_TRANSITION`. On refusal it returns a new `LEGACY_SOURCE_INVALID` classification (`canonical:false, authoritative:false, seedLegacy:false, acceptForBackup:false, recoveryRequired:true`) so the persisted-authority evaluator agrees with the boot admission on every raw. `MALFORMED_CURRENT_SCHEMA` remains reserved for current-schema violations.
+
+**P1-02 — Outer source version controls provenance (belt + suspenders + blocker-clear rule).**
+
+- **Belt (`migrateUp`).** For `fromVersion < SCHEMA_VERSION`, `meta.recordsMigration` is unconditionally overwritten with a fresh `{status:'unmigrated', schemaVersion:SCHEMA_VERSION, priorSchemaVersion:fromVersion, reason:'migrateUp-from-vN'}` marker. A forged inner `status:'migrated'` marker on a v8..v13 wrapper — even one that carries every plausible v14 marker field — is stripped, not preserved.
+- **Suspenders (`_admitFromParsed`).** When `parsed.version < SCHEMA_VERSION`, admission classification is forced to `VERIFIED_LEGACY_TRANSITION` regardless of what `evaluateCandidateData` reports about the inner marker. A historical outer wrapper cannot become `AUTHORITATIVE_MIGRATED` by any admission path.
+- **Blocker-clear rule (§C amendment).** The source-bound blocker-clear site in `endFullStateTransaction` settlement is now triple-gated: `parsed.version === SCHEMA_VERSION` AND admit.ok (strict admission passed) AND admit.classification === `AUTHORITATIVE_MIGRATED`. The `onStorage`/`adoptExternal` clearing site already carried an equivalent rule (`parsed.version === SCHEMA_VERSION` + inner classification); combined with the P1-02 suspenders, the outer-version guard everywhere is defense in depth (a historical raw simply cannot reach `AUTHORITATIVE_MIGRATED` any more). Explicit user-driven `commitFullStateWrapper` recovery mode and `clearDurabilityBlocker()` remain the only paths that clear without this triple gate — both are intentional user-authorized clears.
+
+**P2-01 — Collision truth before inner admission; trustworthy revision required; composed labels.**
+
+- **Collision-before-admission**. `endFullStateTransaction`, `onStorage` (entry + equal-revision reread), and `commitLocked` external reread paths now detect same-revision divergent bytes BEFORE strict admission. Predicate: `parseWrapperRaw` succeeds AND `parsed.version` is a finite number AND `isValidRevision(parsed.revision)` AND `parsed.revision === knownRevision`. On satisfaction, `STORE_REVISION_COLLISION` fires with `{code, revision, where}` and the flow records the collision fact independently of admission validity.
+- **Trustworthy revision (§D amendment).** Malformed JSON, missing version, non-numeric or absent revision fall through to strict admission and are treated as corruption. A fabricated collision cannot be manufactured from an untrustworthy wrapper. Double-emit guards ensure the pre-admit collision fires exactly once per event (existing adoption-branch collision emits are gated on `!preEmitCollision`).
+- **Composed settlement labels.** New settlement label state `externalCollisionThisTx` composes with `committedThisTx`:
+  - `FULL_STATE_COMMITTED_THEN_EXTERNAL_COLLISION` — local commit landed; settlement observed same-revision divergent invalid bytes and refused to adopt them.
+  - `FULL_STATE_EXTERNAL_COLLISION` — no local commit; same observation.
+  Ordering: adoption precedes collision-only in the label composition, preserving Round-8 P2-01's "valid divergent adopted with `collision:true` flag" behavior (Round-8's R8-CODEX-R7-P2-01 test asserts adoption + collision flag on VALID divergent bytes; that path is untouched). The `externalCollision` field on the settlement return payload carries `{revision, adopted, afterLocalCommit, where}` for callers.
+
+**Test preservation and updates.**
+
+- Every R8 test row passes unchanged. The R8 `_seedV13FullWrapper` helper had been crafted for R8's soft-floor boot and omitted the historically-required `meta` subtree; the helper is updated to include `meta` (making the seed a genuine v13 wrapper), preserving the tests' semantic (a valid v13 grants legacy transition auth) under R9's strict admission. The FINAL-A4 inline v13 `w2` seed receives the same correction.
+- `R4-P1-02-BOOT-MALFORMED-LOGBOOK-REAL-CONVERSION` and `L19` expect `STORE_LEGACY_CONVERSION_PENDING` (R8's atomic-conversion second-line refusal) OR `STORE_CORRUPT_AUTHORITATIVE_STATE` (R9's boot-admission first-line refusal). Same invariant — disk untouched, ordinary writes refused — with a stricter enforcement point. Widened via `toContain` matchers.
+- `L32` is rewritten to test R9's correct behavior: rejected wrapper sentinel values (`money.salary_net=999888`, `qatarVisit.foo='bar'`) MUST NOT leak into public Store state — the invariant Codex's Round-8 P1-01 explicitly codifies. Under R8's soft-floor default-fill they did; that was the defect.
+- **27 new R9-\* permanent rows** appended to `tests/prv-preservation.spec.js`:
+  - `R9-P1-01A-V7-COLD-BOOT-REJECTED` (v7 rejected; raw survives readiness AND ordinary Store.set attempt — §G amendment);
+  - `R9-P1-01B-PARTIAL-V13-COLD-BOOT-REJECTED` (partial v13 rejected; boot admission + persisted evaluator + candidate evaluator agree);
+  - `R9-P1-01C-V{8,9,10,11,12,13}-VALID-BOOT-TRANSITIONS` (every supported historical version — §F amendment table-driven full v8-v13 matrix);
+  - `R9-P1-02-V13-FORGED-INNER-MIGRATED-MARKER` (forged marker cannot upgrade provenance; migrateUp belt strips it);
+  - `R9-P1-02B-V13-FORGED-FULL-V14-MARKER` (same, with the full plausible v14 marker shape — §B amendment);
+  - `R9-P1-02C-FORGED-MARKER-CANNOT-CLEAR-BLOCKER` (triple-gated clear rule);
+  - `R9-P2-01-INVALID-DIVERGENT-SAME-REVISION-SETTLEMENT` (collision emitted; `FULL_STATE_COMMITTED_THEN_EXTERNAL_COLLISION`; corrupt blocker installed);
+  - `R9-P2-01B-NO-COMMIT-INVALID-DIVERGENT-SAME-REVISION` (`FULL_STATE_EXTERNAL_COLLISION`);
+  - `R9-P2-01C-MALFORMED-JSON-NO-FALSE-COLLISION` (§D — no fabricated collision from malformed JSON);
+  - `R9-P2-01D-NON-NUMERIC-REVISION-NO-FALSE-COLLISION` (§D — no fabricated collision from non-numeric revision);
+  - `R9-CROSSPATH-V{8..13}-VALID` and `R9-CROSSPATH-V{8..13}-PARTIAL-INVALID` (cross-path consistency matrix — every v8..v13 row).
+
+**Cold test evidence.**
+
+- Full Playwright suite `--retries=0 --workers=1`, port 4173 cleared before run: **397 / 397 pass in 3 min 51 sec**, exit 0.
+- `tests/prv-preservation.spec.js`: **234 / 234 pass in 2 min 48 sec** (207 original + 27 new R9-*).
+- `tests/store-durability.spec.js` + `tests/prv-value-preservation-oracle.spec.js`: **54 / 54 pass in 20 sec**.
+- `tests/logbook-canonicalization.spec.js` targeted L19/L32: 2/2 pass.
+- New R9-* subset: 27/27 pass on first run.
+- `node --check` on `core.js` and every edited spec file: clean.
+- `git diff --check`: clean.
+- Working tree: clean after two commits (`d7b1516` core+seed corrections, `a3995d6` R9 tests + logbook L19/L32 semantic tightening).
+
+**Preservation matrix (nothing regressed).** All Round-8 invariants preserved: R8 P1-01 storage-event/settlement/reread strict admission for external raws; R8 P1-02 source-bound blocker clearing on `AUTHORITATIVE_MIGRATED` external adoption; R8 P2-01 equal-revision divergent settlement with `externalAdoption.collision:true` for VALID divergent bytes (still adopts + emits collision — the ordering `adoption > collision-only` in label composition preserves this); R8 P2-02 `FULL_STATE_COMMITTED_THEN_EXTERNAL_ADOPTION` composition; R8 P3 apiKey stripping in `migrateUp`. BINDING-1/2/3-A/3-B all preserved. Revision exhaustion, atomic legacy conversion, no-lock fail closed, no authorization rebinding, durable reread/exact-byte/authority verification, post-write uncertainty zero-success effects, quarantine retention, current v14 complete validation before normalization, Logbook omitted/null/malformed rejection, true-ABSENT-only defaults, strict v8-v13 direct/import/snapshot boundaries, recovery confirmation/cancellation/keyboard, fault-hook production absence, apiKey sentinel sanitization, valid local-commit + external N+1 adoption composition — every closure listed in Codex Round-9 brief §4 remains proven by its original test rows.
+
+**Provenance.** Round-9 ancestry: `<Round-9 head> → 9280382a63defd0b86c560acbd1399a87bda3088 (Round-8) → 351236dc4ae65168089db8f4169b5a2a193eab69 (Round-7) → …`. `ef6e4019…` is NOT an ancestor. Fresh worktree `/Users/mahmoudmarwan/LIFE/.claude/worktrees/prv-0-5-round9-boot-provenance-collision-remediation`. Branch `claude/prv-0-5-round9-boot-provenance-collision-remediation` (local only, unpushed). Round-8 worktree returned to `9280382…`, its remote branch `origin/claude/prv-0-5-final-closure` remains at `9280382…`, unmodified.
+
+**Blocker-clear-site audit (Codex §C requirement).** Every `durabilityBlocker = null` site in `core.js` after Round-9:
+
+- `core.js:2447` inside `clearDurabilityBlocker()` — explicit user-authorized API, not a source-based clear. Unchanged.
+- `core.js:~3057` inside `endFullStateTransaction` settlement adoption — triple-gated on `parsed.version === SCHEMA_VERSION` AND `admit.ok` AND `admit.classification === 'AUTHORITATIVE_MIGRATED'`. Round-9 addition.
+- `core.js:~3608` inside `commitFullStateWrapper` success — the coordinated full-state commit's own clear. This is the atomic-conversion / import / snapshot-restore / reset boundary; it is by definition a user-authorized clear (`commitFullStateWrapper` is only reachable through `beginFullStateTransaction` + the caller's explicit intent). Unchanged.
+- `core.js:~3836` inside `onStorage` `adoptExternal` — already triple-gated on `parsed.version === SCHEMA_VERSION` AND inner classification === `AUTHORITATIVE_MIGRATED` from R8 (identical rule). Unchanged.
+
+The full audit shows the invariant holds at every site.
+
+**Date:** 2026-09-09 (Round-9 remediation on top of Codex Round-8 review of `9280382a63defd0b86c560acbd1399a87bda3088`; local only, unpushed pending ChatGPT pre-push review then Codex final independent HIGH-risk re-review).
