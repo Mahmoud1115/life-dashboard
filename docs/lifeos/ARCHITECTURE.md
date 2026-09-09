@@ -61,14 +61,65 @@ subscribed render functions repaint only the affected DOM
 
 No server, no queue, no scheduled job. Every state change fires synchronously from a browser event.
 
-## Sync (Gist)
+## Sync (Gist) — base-aware concurrency (schema 1)
 
-- User-initiated only, never automatic.
-- **Save to Gist**: `getAllBackupData()` collects the `BACKUP_KEYS` set (`app.js:1378`) → POST/PATCH `api.github.com/gists` with the PAT as a Bearer header → private Gist "Dune Life OS — Auto Backup" (file `dune-backup.json`).
-- **Load from Gist**: reverse. GET the Gist by cached ID (`dune_gist_id_v1`), overwrite matching `localStorage` keys, reload.
-- The PAT is deliberately excluded from `BACKUP_KEYS`. `state.bht.ai` no longer carries an `apiKey` field: `bht.js:sanitizeAI` strips it on load and rejects it on write (ADR-005). BHT AI provider config is fallback/ollama only; nothing that touches a network key is persisted.
-- **Known UX bug**: the "load from a different Gist ID" input only appears when auto-discovery fails, which makes recovering from a bad cached `dune_gist_id_v1` hard. Slated for fix under Priority 1.
-- **Import** (B0, ADR-010): `app.js:processImport` is now an `async` full-state transaction. Preflight → `beginFullStateTransaction({force:true, reason:'import'})` (freezes ordinary Store writes; UI banner via `lifeos:store-freeze-begin`) → snapshot byte-exact `BACKUP_KEYS` → write recovery capsule (`dune_pre_import_backup_v1`, preserved after both success and failure) → apply non-`dune_state_v4` `BACKUP_KEYS` in order (staged writes / removeItem for omitted keys) → derive candidate: `Store.migrateData` for a wrapped `dune_state_v4` payload, or `Store.deriveStateFromLegacy(stagedReader)` for legacy-only backups → `validateData` → `commitFullStateWrapper(token, candidate, 'import')` writes `dune_state_v4` LAST as a schema-13 wrapper under `navigator.locks.request('lifeos-state-write-v1', {mode:'exclusive'})`, revision = latest validated disk revision + 1, `committedAt` from `nowISO()`. Byte-exact rollback of touched auxiliaries on any apply failure. Guaranteed `endFullStateTransaction(token)` in a `finally` — even if `rawBefore` capture, capsule write, or any step throws. All callers (`handleImportFile`, `importFromClipboard`, Gist restore) `await`.
+Manual backup synchronization to a private GitHub Gist. User-initiated only, never automatic. Not multi-device continuous sync.
+
+**Architecture.** All Gist-Save/Load orchestration lives in `gist-sync.js` (`window.GistSync`). `app.js` retains only `getAllBackupData` and `processImport` (the safe full-state import path); Save/Load window functions are overwritten to route through the module.
+
+**Sync base (authoritative concurrency record).** `dune_gist_sync_base_v1` (schema 1) is a single JSON object outside `BACKUP_KEYS`:
+
+```json
+{ "schema": 1, "gistId": "...", "remoteVersion": "<gist-history[0].version>",
+  "baseDataHash": "<sha-256 hex>", "acceptedAt": "<ISO>" }
+```
+
+- `baseDataHash` is a SHA-256 of a **canonical JSON** rendering of the `backup.data` object (key-sorted objects, preserved arrays, no `exported_at`, no `version` wrapper field, no `dune_change_count_v1`).
+- `remoteVersion` is the Gist `history[0].version` revision SHA (or a `node_id@updated_at` fallback if history is unavailable).
+- The base is written only after a successful Save/Load and **read back and byte-verified** in the same call. If read-back fails, the operation reports "sync status could not be confirmed" and does NOT report the device as synced.
+- Ownership check: `syncBase.gistId` must equal `dune_gist_id_v1`. Mismatch → treated as absent (bootstrap).
+- If SHA-256 (`crypto.subtle.digest`) is unavailable, Save/Load refuse with a truthful "sync unavailable" message and perform no destructive operation. There is no fallback hash; sync identity has one algorithm.
+
+**Four-state classifier.** Given `localHash`, `remoteHash`, `remoteVersion`, and `base`:
+
+| local vs base | remote-hash vs base | remote-version vs base | Kind |
+|---|---|---|---|
+| = | = | = | `synced` |
+| = | = | ≠ | `synced-revision-drift` (Gist revision advanced without backup content change — e.g., unrelated file added) |
+| = | ≠ | — | `remote-only` |
+| ≠ | = | — | `local-only` |
+| ≠ | ≠ (localHash = remoteHash) | — | `converged` (both drifted to identical content) |
+| ≠ | ≠ (localHash ≠ remoteHash) | — | `conflict` |
+| base absent / non-owned | — | — | `no-base` |
+
+**Save.** Preflight → fetch the exact connected Gist (no discovery retargeting) → hash local + remote → classify → dispatch by kind. `local-only` / `converged` → PATCH the connected Gist → refetch → **verify `remoteHash === localHash`** → write and read-back-verify sync base → only then report synced. `remote-only` refuses. `conflict` refuses. `no-base` refuses (bootstrap). `synced` is a no-op. `synced-revision-drift` refreshes only the base's `remoteVersion` (no PATCH).
+
+**Load.** Same classifier. Destructive path (`remote-only`) runs in this exact order:
+1. Explicit confirmation (`processImport` runs the `confirm()`).
+2. Rotate the recovery capsule: copy `dune_pre_import_backup_v1` (if any) to `dune_pre_import_backup_prev_v1` and read-back-verify byte-for-byte. **Rotation is a hard gate — on any failure, destructive Load is refused before `processImport` is ever invoked.**
+3. Invoke `processImport(remoteContentText)`.
+4. Recompute `canonicalHash(getAllBackupData())` and assert it equals `remote.remoteHash`; on mismatch, clear sync base and refuse to claim synced.
+5. Write and read-back-verify sync base.
+
+`local-only` refuses (Save-first prompt). `conflict` refuses. `no-base` refuses (bootstrap). `synced`/`converged` are no-ops.
+
+**Pre-Load recovery.** `processImport` already writes `dune_pre_import_backup_v1` before applying. `gist-sync.js` rotates that capsule into `dune_pre_import_backup_prev_v1` (one generation) before allowing the next destructive Load, so a second Load cannot silently destroy the only remaining pre-Load recovery point. A confirmation-gated Restore action ("Restore pre-Gist-load backup") in the Sync section hands each capsule back through `processImport` — bytes never enter Store directly.
+
+**Discovery vs. connected identity.** Discovery of matching backup Gists happens only in `bootstrapOrReconnect` (explicit user action). Ordinary Save/Load targets exactly `dune_gist_id_v1`; multiple matching Gists in the account never silently retarget.
+
+**Import** (unchanged): `app.js:processImport` is an `async` full-state transaction. Preflight → `beginFullStateTransaction({force:true, reason:'import'})` (freezes ordinary Store writes; UI banner via `lifeos:store-freeze-begin`) → snapshot byte-exact `BACKUP_KEYS` → write recovery capsule (`dune_pre_import_backup_v1`, preserved after both success and failure) → apply non-`dune_state_v4` `BACKUP_KEYS` in order (staged writes / removeItem for omitted keys) → derive candidate → `validateData` → `commitFullStateWrapper` writes `dune_state_v4` LAST as a schema-13 wrapper.
+
+**Security note.** The PAT is deliberately excluded from `BACKUP_KEYS`. `state.bht.ai` no longer carries an `apiKey` field (ADR-005). BHT AI provider config is fallback/ollama only; nothing that touches a network key is persisted.
+
+**Legacy metadata (kept for continuity, no longer authoritative).**
+
+| Key | Role after this task |
+|---|---|
+| `dune_gist_remote_updated_v1` | Display only — never read for classification. |
+| `dune_last_gist_sync_v1` / `dune_last_backup_v1` | Display only — pill / "Last synced". |
+| `dune_change_count_v1` | Display only — hash is authoritative dirty state. |
+
+**UI copy — device attribution.** The previous "Another device saved newer data" copy has been removed. Device identity is not modeled: the classifier reports what actually changed on each side without unsupported attribution.
 
 ## The BHT subsystem
 

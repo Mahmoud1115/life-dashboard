@@ -2072,6 +2072,32 @@ function updateGistUI(){
   }
   // Mirror the same status into the inline Finance save panel.
   if(typeof window._refreshFinGistStatus==='function') try{window._refreshFinGistStatus();}catch(e){}
+  // Reveal Restore / Reconnect controls based on capsule presence + sync-base
+  // ownership. Purely reactive to localStorage — no network reads.
+  try{
+    const row=document.getElementById('sync-recovery-row');
+    const cur=document.getElementById('sync-restore-current-btn');
+    const prv=document.getElementById('sync-restore-prev-btn');
+    const rec=document.getElementById('sync-reconnect-btn');
+    if(row){
+      const hasCur=!!localStorage.getItem('dune_pre_import_backup_v1');
+      const hasPrv=!!localStorage.getItem('dune_pre_import_backup_prev_v1');
+      const connectedId=LS.get('dune_gist_id_v1','');
+      let baseOk=false;
+      try{
+        const raw=localStorage.getItem('dune_gist_sync_base_v1');
+        if(raw){
+          const parsed=JSON.parse(raw);
+          baseOk=parsed && parsed.schema===1 && parsed.gistId===connectedId;
+        }
+      }catch(_){/*ignore*/}
+      const showRec=!!token && connectedId && !baseOk;
+      if(cur) cur.style.display=hasCur?'':'none';
+      if(prv) prv.style.display=hasPrv?'':'none';
+      if(rec) rec.style.display=showRec?'':'none';
+      row.style.display=(hasCur||hasPrv||showRec)?'flex':'none';
+    }
+  }catch(_){/*non-fatal UI wiring*/}
 }
 
 window.saveGistToken=function(){

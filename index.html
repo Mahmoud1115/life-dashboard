@@ -516,6 +516,13 @@
   </div>
   <div id="sync-gist-operation-status" class="gist-status" aria-live="polite"></div>
 
+  <!-- Base-aware sync recovery + reconnect (P1). Visible only when relevant. -->
+  <div id="sync-recovery-row" style="margin-top:12px;display:none;flex-wrap:wrap;gap:8px">
+    <button class="fin-save-btn fin-save-gist-quiet" id="sync-restore-current-btn" type="button" onclick="restorePreLoadRecovery('current')" style="display:none">↩ Restore pre-Gist-load backup</button>
+    <button class="fin-save-btn fin-save-gist-quiet" id="sync-restore-prev-btn" type="button" onclick="restorePreLoadRecovery('prev')" style="display:none">↩ Restore previous pre-Load generation</button>
+    <button class="fin-save-btn fin-save-gist-quiet" id="sync-reconnect-btn" type="button" onclick="gistBootstrap()" style="display:none">🔗 Reconnect / bootstrap sync</button>
+  </div>
+
   <!-- In-app "check for updates" — bypasses iOS PWA cache without going through Settings -->
   <div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--bdr)">
     <button class="fin-save-btn fin-save-gist-quiet" id="sync-check-updates-btn" type="button" onclick="checkForUpdates()" style="width:auto">↻ Check for updates</button>
@@ -745,6 +752,7 @@
 <script src="core.js?v=phase5d"></script>
 <script src="bht.js?v=phase4a"></script>
 <script src="app.js?v=gistsync1"></script>
+<script src="gist-sync.js?v=p1baseaware1"></script>
 <script src="bht-ui.js?v=polish1"></script>
 <script src="bht-components.js?v=phase4c"></script>
 <script src="bht-analytics.js?v=phase5a"></script>

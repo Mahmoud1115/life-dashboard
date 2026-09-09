@@ -753,3 +753,71 @@ persistence layer as a whole.
 declares the tier in the PR body. A reviewer may disagree with
 the declaration and request escalation to HIGH; escalation is
 never negotiable when the change touches a listed invariant.
+
+---
+
+## ADR-020 — Gist Sync base-aware concurrency (schema 1)
+
+**Status.** Proposed (this branch). Effective when the P1 remediation lands
+on `main`.
+
+**Context.** The pre-remediation Gist Save/Load guard classified concurrency
+using timestamp equality (`latest.updated_at !== dune_gist_remote_updated_v1`)
+and let Load auto-retarget to whichever matching Gist had the newest
+`updated_at` in the account. Both behaviors are unsafe: `updated_at` moves on
+any Gist mutation (star, description edit, unrelated file, second-file add,
+even the caller's own PATCH), and discovery-based retargeting can silently
+replace the connected backup with a different one. The regressing commit is
+`ca6bc556`. Codex reproduced a false-positive same-browser flow.
+
+**Decision.**
+
+1. Concurrency identity is a **canonical semantic hash** of the backup data
+   plus the Gist's **`history[0].version`** revision SHA, persisted as
+   `dune_gist_sync_base_v1` (schema 1: `{ schema, gistId, remoteVersion,
+   baseDataHash, acceptedAt }`). Timestamps become display-only.
+2. The canonical hash is **SHA-256** over a deterministic key-sorted JSON
+   rendering of `getAllBackupData()`. Wrapper metadata (`exported_at`,
+   `version`) is excluded. There is no fallback hash algorithm: if
+   `crypto.subtle.digest` is unavailable, Sync refuses with a truthful
+   "unavailable" status and performs no destructive operation.
+3. Save/Load classify against a **four-state model** (synced / local-only /
+   remote-only / conflict), plus non-authoritative `synced-revision-drift`
+   (data equal, revision moved) and `converged` (both drifted to identical
+   content). No mutation happens before the classifier finishes.
+4. Save PATCHes the connected Gist **only** on `local-only` / `converged`,
+   then **refetches** and **verifies `remoteHash === localHash`** before
+   writing the sync base. The sync base is **read back and byte-verified**;
+   if that verification fails, the operation reports "sync status could not
+   be confirmed" and does NOT claim synced.
+5. Load's destructive path (`remote-only`) runs in a fixed order:
+   confirmation → **verified rotation** of `dune_pre_import_backup_v1` into
+   `dune_pre_import_backup_prev_v1` (one-generation retention; rotation is
+   a hard gate — any failure refuses the destructive Load before
+   `processImport` is invoked) → `processImport` (safe full-state
+   transaction) → **post-import hash verification** → sync-base write with
+   read-back verify. `processImport` is unchanged; recovery preservation
+   lives entirely in the Gist Load orchestrator.
+6. Ordinary Save/Load target **exactly** `dune_gist_id_v1`. Discovery of
+   matching backup Gists happens only in `bootstrapOrReconnect` (explicit
+   user action).
+7. "Another device saved newer data" attribution is removed. Device
+   identity is not modeled in this task.
+
+**Consequences.** Gist P1 defect closes. `dune_gist_remote_updated_v1`,
+`dune_last_gist_sync_v1`, `dune_last_backup_v1`, `dune_change_count_v1`
+remain in localStorage for continuity but are reclassified as display-only
+and are never read for concurrency. `dune_pre_import_backup_v1` gains a
+paired one-generation predecessor at `dune_pre_import_backup_prev_v1`.
+`processImport` invariants are untouched.
+
+**Test evidence.** `tests/gist-sync.spec.js` — 36 cases covering canonical
+hash determinism, SHA-256 unavailable fail-safe, all four classifier
+transitions, sync-base ownership + read-back verification, rotation
+success/write-failure/readback-mismatch/repeated-Load ordering, Save
+happy/no-op/remote-only/conflict/no-base/reread-mismatch/404/revision-drift/
+stale-legacy/multi-Gist-no-retarget, and Load happy/cancel/rotation-gates/
+conflict-refuse. Run with `--retries=0`.
+
+**Not decided by this ADR.** Device identity. Multi-device continuous sync.
+Automatic sync scheduling. Supabase persistence bridge.

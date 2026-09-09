@@ -30,8 +30,11 @@ For each domain, exactly **one** is the write-authoritative source. Any migratio
 | Deadlines — user extensions | `dune_deadlines_ext_v1` (Gen-1) | No | Static deadlines in `data.js:D.deadlines` |
 | Claims register | `dune_claims_v1` (Gen-1) | No | Static seeds in `data.js:D.claims` |
 | Sync — GitHub PAT | `dune_github_token_v1` (Gen-1) | No | **Plaintext** — excluded from `BACKUP_KEYS` deliberately |
-| Sync — Gist ID | `dune_gist_id_v1` (Gen-1) | No | Cached; see known UX bug in `ARCHITECTURE.md` |
-| Sync — misc bookkeeping | `dune_last_gist_sync_v1`, `dune_last_backup_v1`, `dune_backup_dismissed_v1`, `dune_pre_import_backup_v1`, `dune_change_count_v1` | No | UI/reminder state |
+| Sync — Gist ID | `dune_gist_id_v1` (Gen-1) | No | Connected Gist for `saveConnected`/`loadConnected`; retargeted only via explicit `bootstrapOrReconnect`. |
+| Sync — accepted base | `dune_gist_sync_base_v1` (Gen-1) | No | Schema-1 JSON: `{ schema, gistId, remoteVersion, baseDataHash (SHA-256 of canonical data), acceptedAt }`. Authoritative concurrency record used by the four-state classifier. Written only after a successful Save/Load and read-back-verified. |
+| Sync — pre-Load recovery capsule | `dune_pre_import_backup_v1` (Gen-1) | No | Written by `processImport` before any destructive import. Restorable via the Sync section's Restore action. |
+| Sync — previous recovery generation | `dune_pre_import_backup_prev_v1` (Gen-1) | No | One-generation retention. `gist-sync.js` copies the current capsule here (verified) before every destructive Load so a second Load cannot destroy the only pre-Load recovery point. |
+| Sync — legacy display metadata | `dune_last_gist_sync_v1`, `dune_last_backup_v1`, `dune_gist_remote_updated_v1`, `dune_backup_dismissed_v1`, `dune_change_count_v1` | No | Display/UI only after the Gist P1 remediation. `dune_gist_remote_updated_v1` was the pre-remediation timestamp-equality concurrency authority; it is retained for continuity but no code reads it for classification. `dune_change_count_v1` is likewise a hint only — the canonical hash is the authoritative dirty state. |
 | Nav — last section | `dune_activesec`, `dune_activegroup` (Gen-1) | No | UI state |
 
 ## What this means for Life OS 2.0 migration
