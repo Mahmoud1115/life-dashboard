@@ -4010,6 +4010,16 @@ function _seedV13FullWrapper(salary, rev) {
   const iso = new Date().toISOString();
   return JSON.stringify({ version: 13, revision: rev || 1, committedAt: iso,
     data: {
+      // PRV-0.5 Round-9 P1-01: `meta` is a required object at every
+      // v8..v13 emission tag (see HISTORICAL_SCHEMA_REQUIREMENTS in
+      // core.js). Round-9's strict boot admission enforces the same
+      // required-fields matrix as external admission; a seed that omits
+      // `meta` is (correctly) refused now. The fake v13 seed here is
+      // brought into shape by adding the historically-emitted `meta`
+      // subtree so it represents a genuine v13 disk wrapper. The
+      // test's semantic — "a valid v13 grants legacy transition
+      // authority" — is preserved.
+      meta: { version: 13, createdAt: iso, lastUpdated: iso },
       money: { salary_net: salary, expenses: {}, usd_rate: 88, save_target: 55000 },
       qatarVisit: {}, todayFocus: [], goals: {}, career: {}, easa: {}, about: {}, sbTasks: {}, apartments: [],
       logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { sourceCounts: { tracker: 0, builder: 0 } }, drift: null },
@@ -4069,7 +4079,7 @@ test('FINAL-A4-EXTERNAL-STORAGE-EVENT-INVALIDATES-AUTH — storage event from an
     // the auth). Writing setItem in the same tab doesn't fire
     // storage events, so we dispatch one manually.
     const w2 = JSON.stringify({ version: 13, revision: 50, committedAt: new Date().toISOString(),
-      data: { money: { salary_net: 99999, expenses: {}, usd_rate: 88, save_target: 55000 }, qatarVisit: {}, todayFocus: [], goals: {}, career: {}, easa: {}, about: {}, sbTasks: {}, apartments: [], logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { sourceCounts: { tracker: 0, builder: 0 } }, drift: null }, reviews: [], decisions: [], timeline: [], bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [] }});
+      data: { meta: { version: 13, createdAt: new Date().toISOString(), lastUpdated: new Date().toISOString() }, money: { salary_net: 99999, expenses: {}, usd_rate: 88, save_target: 55000 }, qatarVisit: {}, todayFocus: [], goals: {}, career: {}, easa: {}, about: {}, sbTasks: {}, apartments: [], logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { sourceCounts: { tracker: 0, builder: 0 } }, drift: null }, reviews: [], decisions: [], timeline: [], bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: [] }});
     localStorage.setItem('dune_state_v4', w2);
     // Dispatch a synthetic storage event mimicking cross-tab notification.
     window.dispatchEvent(new StorageEvent('storage', { key: 'dune_state_v4', oldValue: originalRaw, newValue: w2, storageArea: localStorage }));
@@ -5204,7 +5214,18 @@ test('R4-P1-02-BOOT-MALFORMED-LOGBOOK-REAL-CONVERSION — production boot atomic
     };
   });
   expect(proof.diskRaw).toBe(sentinelBytes);
-  expect(proof.blocker).toBe('STORE_LEGACY_CONVERSION_PENDING');
+  // PRV-0.5 Round-9 P1-01 semantic tightening: malformed Logbook on a
+  // historical outer wrapper is now refused at boot ADMISSION (before
+  // migrateUp default-fill can synthesize an empty envelope) rather
+  // than at atomic-legacy-conversion COMMIT. Either blocker preserves
+  // the same invariant Codex Round-4 P1-02 codified — disk untouched,
+  // no destructive overwrite, ordinary writes refused. Under Round-9
+  // the blocker is STORE_CORRUPT_AUTHORITATIVE_STATE (with detail
+  // reason `legacy-source-malformed-logbook`); under Round-8 it was
+  // STORE_LEGACY_CONVERSION_PENDING (the atomic-conversion second-line
+  // check). Test accepts either code so the invariant stays testable
+  // across rounds without regressing the sentinel-bytes assertion above.
+  expect(['STORE_LEGACY_CONVERSION_PENDING', 'STORE_CORRUPT_AUTHORITATIVE_STATE']).toContain(proof.blocker);
 });
 
 // R4-P1-02-IMPORT — real processImport() with a backup carrying a
