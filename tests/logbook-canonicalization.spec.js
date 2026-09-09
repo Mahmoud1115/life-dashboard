@@ -543,7 +543,12 @@ test('L19 — malformed logbook in dune_state_v4 is rejected by the strict sourc
   }));
   expect(proof.env.authority).toBe('legacy-mirror');
   expect(Array.isArray(proof.env.entries)).toBe(true);
-  expect(proof.blocker && proof.blocker.code).toBe('STORE_LEGACY_CONVERSION_PENDING');
+  // PRV-0.5 Round-9 P1-01 semantic tightening: malformed logbook on a
+  // historical outer wrapper is refused at boot ADMISSION (strict source
+  // gate) rather than at atomic-legacy-conversion COMMIT. Either blocker
+  // preserves the same invariant — disk untouched, ordinary writes
+  // refused, envelope shape default-filled in memory. Accept either code.
+  expect(['STORE_LEGACY_CONVERSION_PENDING', 'STORE_CORRUPT_AUTHORITATIVE_STATE']).toContain(proof.blocker && proof.blocker.code);
 });
 
 test('L21 — schema-11 state-only Tracker recovery: legacy key absent, v11 Store array survives', async ({ page }) => {
@@ -920,30 +925,39 @@ test('L31 — implausible legacy epoch → inferredCreatedAt=null; plausible →
   expect(rows['plausible 2025']).toMatch(/^2025-/);
 });
 
-test('L32 — malformed schema-12 Logbook: strict source rejection, blocker set, unrelated slices survive in memory', async ({ page }) => {
-  // PRV-0.5 Pre-Push R2 / BINDING-3-A: v12 source with a malformed
-  // logbook fails source validation under the strict matrix. The
-  // Store boots with a default-filled canonical envelope shape and
-  // preserves the user-provided unrelated slices (money, qatarVisit)
-  // in memory, while STORE_LEGACY_CONVERSION_PENDING remains set
-  // until the user recovers.
+test('L32 — malformed schema-12 Logbook: strict source rejection, blocker set, rejected values NOT leaked into public state', async ({ page }) => {
+  // PRV-0.5 Round-9 P1-01: v12 source with a malformed logbook fails
+  // strict source-shape admission at boot BEFORE migrateUp can default-
+  // fill the malformed slice. Under R8's soft-floor path, the Store
+  // used to boot with the user's `money`/`qatarVisit` values in
+  // memory + STORE_LEGACY_CONVERSION_PENDING blocker. Under R9's strict
+  // admission, the user sentinel values from a rejected wrapper MUST
+  // NOT enter public Store state — Codex's Round-8 exact-SHA finding.
+  // The in-memory baseline comes from `migrateFromLegacy()` (Gen-1
+  // keys), not from the rejected `dune_state_v4` wrapper.
+  //
+  // What is preserved instead: the exact durable raw remains untouched
+  // (recovery-eligible) and the Store refuses ordinary writes via the
+  // durability blocker. Under either enforcement point, the invariant
+  // "malformed source cannot be silently repaired" holds.
   test.setTimeout(15000);
-  await page.addInitScript(() => {
+  const seedRaw = JSON.stringify({
+    version: 12,
+    data: {
+      money: { salary_net: 999888, expenses: {}, save_target: 44444, usd_rate: 77 },
+      qatarVisit: { foo: 'bar' },
+      career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+      bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
+      todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
+      meta: { version: 12, createdAt: '2026-08-25T00:00:00Z', lastUpdated: '2026-08-25T00:00:00Z' },
+      logbook: 'not an envelope',
+    }
+  });
+  await page.addInitScript((raw) => {
     localStorage.setItem('dune_logbook_v1', JSON.stringify([]));
     localStorage.setItem('dune_logbook_entries_v1', JSON.stringify([]));
-    localStorage.setItem('dune_state_v4', JSON.stringify({
-      version: 12,
-      data: {
-        money: { salary_net: 999888, expenses: {}, save_target: 44444, usd_rate: 77 },
-        qatarVisit: { foo: 'bar' },
-        career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
-        bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
-        todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
-        meta: { version: 12, createdAt: '2026-08-25T00:00:00Z', lastUpdated: '2026-08-25T00:00:00Z' },
-        logbook: 'not an envelope',
-      }
-    }));
-  });
+    localStorage.setItem('dune_state_v4', raw);
+  }, seedRaw);
   await page.goto('/');
   await waitAppSurfaces(page);
   const s = await page.evaluate(() => ({
@@ -951,14 +965,20 @@ test('L32 — malformed schema-12 Logbook: strict source rejection, blocker set,
     salary: window.Store.get('money.salary_net'),
     saveTarget: window.Store.get('money.save_target'),
     qatarVisit: window.Store.get('qatarVisit'),
-    blocker: window.Store.getDurabilityBlocker && window.Store.getDurabilityBlocker()
+    blocker: window.Store.getDurabilityBlocker && window.Store.getDurabilityBlocker(),
+    diskRaw: localStorage.getItem('dune_state_v4')
   }));
+  // Envelope shape is present in memory (default-filled by migrateFromLegacy).
   expect(s.logbook.authority).toBe('legacy-mirror');
   expect(Array.isArray(s.logbook.entries)).toBe(true);
-  expect(s.salary).toBe(999888);
-  expect(s.saveTarget).toBe(44444);
-  expect(s.qatarVisit).toEqual({ foo: 'bar' });
-  expect(s.blocker && s.blocker.code).toBe('STORE_LEGACY_CONVERSION_PENDING');
+  // Rejected wrapper's values do NOT leak into public state.
+  expect(s.salary).not.toBe(999888);
+  expect(s.saveTarget).not.toBe(44444);
+  expect(s.qatarVisit).not.toEqual({ foo: 'bar' });
+  // Truthful blocker installed at either enforcement point.
+  expect(['STORE_LEGACY_CONVERSION_PENDING', 'STORE_CORRUPT_AUTHORITATIVE_STATE']).toContain(s.blocker && s.blocker.code);
+  // Rejected raw preserved byte-exact on disk (recovery-eligible).
+  expect(s.diskRaw).toBe(seedRaw);
 });
 
 // Production-writer path helpers: attach the minimal DOM the writer

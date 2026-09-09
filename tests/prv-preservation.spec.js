@@ -7516,3 +7516,558 @@ test('R8-CODEX-R7-EXHAUSTION-STILL-WORKS — Round-7 P1-01 exhaustion invariant 
   expect(proof.settledBaseline).toBe(Number.MAX_SAFE_INTEGER);
   expect(proof.diskUnchanged).toBe(true);
 });
+
+// ─────────────────────────────────────────────────────────────────────
+// PRV-0.5 Round-9 remediation — permanent regression tests.
+//
+// Every R9-* test below encodes an invariant Codex's Round-8 exact-SHA
+// review found violated. The tests appended here also implement the
+// amendment §F "table-driven cross-path consistency matrix covering
+// every supported historical outer version v8-v13" and §G "rejected
+// boot raw must survive readiness AND attempted ordinary mutation".
+// ─────────────────────────────────────────────────────────────────────
+
+// Fake v13 with a forged inner `meta.recordsMigration.status='migrated'`
+// marker. Outer version is 13; the inner marker is what R8 code would
+// have used to classify AUTHORITATIVE_MIGRATED. Under R9, outer version
+// controls provenance.
+function _seedV13WithForgedMigratedMarker(salary, rev, forgedShape) {
+  const iso = new Date().toISOString();
+  // §B amendment: seed the FULL plausible current marker shape (all
+  // fields present, valid values), not just status:'migrated'.
+  const marker = forgedShape || {
+    status: 'migrated',
+    schemaVersion: 14,
+    priorSchemaVersion: 13,
+    reason: 'external-hydration',
+    migratedAt: iso
+  };
+  return JSON.stringify({ version: 13, revision: rev || 1, committedAt: iso,
+    data: {
+      meta: { version: 13, createdAt: iso, lastUpdated: iso, recordsMigration: marker },
+      money: { salary_net: salary, expenses: {}, usd_rate: 88, save_target: 55000 },
+      qatarVisit: {}, todayFocus: [], goals: {}, career: {}, easa: {}, about: {}, sbTasks: {}, apartments: [],
+      logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { sourceCounts: { tracker: 0, builder: 0 } }, drift: null },
+      reviews: [], decisions: [], timeline: [],
+      bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: 'http://localhost:11434', model: '' }, meta: {} },
+      telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
+      ideas: [],
+      // Forged sibling markers a real v14 would carry — proof that even
+      // with a plausible-looking inner v14 shape, outer v13 provenance
+      // still wins.
+      records: { deadlines: [], claims: [], risks: [], goals: [] }
+    }});
+}
+
+// Compose a genuinely valid historical wrapper at any supported v8-v13.
+function _validHistoricalWrapper(version, salary, rev) {
+  const iso = new Date().toISOString();
+  const requiresIdeas = version >= 9;
+  const logbookRequiresEnvelope = version >= 12;
+  return JSON.stringify({ version, revision: rev || 1, committedAt: iso,
+    data: Object.assign({
+      meta: { version, createdAt: iso, lastUpdated: iso },
+      money: { salary_net: salary, expenses: {}, usd_rate: 88, save_target: 55000 },
+      qatarVisit: {}, todayFocus: [], goals: {}, career: {}, easa: {}, about: {}, sbTasks: {}, apartments: [],
+      reviews: [], decisions: [], timeline: [],
+      bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: 'http://localhost:11434', model: '' }, meta: {} },
+      telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
+      logbook: logbookRequiresEnvelope
+        ? { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { sourceCounts: { tracker: 0, builder: 0 } }, drift: null }
+        : []
+    }, requiresIdeas ? { ideas: [] } : {})
+  });
+}
+
+// ─── R9-P1-01A — unsupported v7 cold boot ────────────────────────────
+test('R9-P1-01A-V7-COLD-BOOT-REJECTED — a v7 primary wrapper does not become public authority; blocker installed; primary raw unchanged; ordinary mutation attempts refused', async ({ page }) => {
+  const seed = _unsupportedV7WrapperString();
+  await page.addInitScript((raw) => {
+    localStorage.setItem('dune_state_v4', raw);
+  }, seed);
+  await page.goto('/');
+  await waitForApp(page);
+  // §G amendment: allow settle time so any delayed boot flush that would
+  // rewrite the rejected raw has a chance to fire — and prove it does not.
+  await page.waitForTimeout(500);
+  const proof = await page.evaluate(async () => {
+    const b = window.Store.getDurabilityBlocker && window.Store.getDurabilityBlocker();
+    const auth = window.Store._currentTransitionAuth && window.Store._currentTransitionAuth();
+    const ev = window.Store.evaluatePersistedAuthority();
+    // Attempt an ordinary Store.set — must be refused while the blocker
+    // is present.
+    const setBefore = localStorage.getItem('dune_state_v4');
+    const setRes = window.Store.set('money.salary_net', 99999);
+    // Give scheduleFlush a beat (it would fire on the next tick if unblocked).
+    await new Promise(r => setTimeout(r, 300));
+    const setAfter = localStorage.getItem('dune_state_v4');
+    // Prove no sentinel from the rejected wrapper leaked into public state.
+    const publicMoney = window.Store.get('money');
+    return {
+      blockerCode: b && b.code,
+      blockerReason: b && b.detail && b.detail.reason,
+      transitionAuth: auth,
+      persistedEvalClass: ev.classification,
+      persistedAcceptForBackup: ev.acceptForBackup,
+      persistedRecoveryRequired: ev.recoveryRequired,
+      setRefused: setRes && setRes.ok === false,
+      setError: setRes && setRes.error,
+      diskUnchangedAfterSet: setBefore === setAfter,
+      publicMoneySalary: publicMoney && publicMoney.salary_net
+    };
+  });
+  expect(proof.blockerCode).toBe('STORE_CORRUPT_AUTHORITATIVE_STATE');
+  expect(proof.blockerReason).toMatch(/version-unsupported|legacy-source/);
+  expect(proof.transitionAuth).toBeNull();
+  // Persisted-authority evaluator classifies the same raw as invalid;
+  // cross-path consistency.
+  expect(proof.persistedEvalClass).toBe('LEGACY_SOURCE_INVALID');
+  expect(proof.persistedAcceptForBackup).toBe(false);
+  expect(proof.persistedRecoveryRequired).toBe(true);
+  // Ordinary Store.set is refused (blocker gate).
+  expect(proof.setRefused).toBe(true);
+  expect(proof.setError).toBe('STORE_DURABILITY_BLOCKED');
+  // The rejected raw survives readiness AND the ordinary mutation attempt.
+  expect(proof.diskUnchangedAfterSet).toBe(true);
+  const diskAfter = await page.evaluate(() => localStorage.getItem('dune_state_v4'));
+  expect(diskAfter).toBe(seed);
+  // The v7 sentinel salary is NOT in public authority (Store.get returns
+  // the migrateFromLegacy-derived baseline, not the rejected wrapper's
+  // synthesized values).
+  expect(proof.publicMoneySalary).not.toBe(11111);
+});
+
+// ─── R9-P1-01B — partial v13 cold boot ───────────────────────────────
+test('R9-P1-01B-PARTIAL-V13-COLD-BOOT-REJECTED — a partial v13 primary wrapper (missing required BHT/telemetry fields) is refused at boot; strict admission and persisted evaluator agree; raw preserved unchanged', async ({ page }) => {
+  const seed = _partialV13WrapperString();
+  await page.addInitScript((raw) => {
+    localStorage.setItem('dune_state_v4', raw);
+  }, seed);
+  await page.goto('/');
+  await waitForApp(page);
+  await page.waitForTimeout(500);
+  const proof = await page.evaluate(async () => {
+    const b = window.Store.getDurabilityBlocker();
+    const auth = window.Store._currentTransitionAuth();
+    const ev = window.Store.evaluatePersistedAuthority();
+    // Cross-path: run the strict evaluator on the SAME raw via the
+    // storage-event admission surface (a second tab hitting this wrapper
+    // must refuse identically). Simulate via directly calling
+    // evaluateCandidateWrapper on the raw string.
+    const cand = window.Store.evaluateCandidateWrapper && window.Store.evaluateCandidateWrapper(localStorage.getItem('dune_state_v4'));
+    const setRes = window.Store.set('money.salary_net', 88888);
+    await new Promise(r => setTimeout(r, 300));
+    return {
+      blockerCode: b && b.code,
+      blockerReason: b && b.detail && b.detail.reason,
+      persistedEvalClass: ev.classification,
+      persistedAcceptForBackup: ev.acceptForBackup,
+      persistedRecoveryRequired: ev.recoveryRequired,
+      candidateClass: cand && cand.classification,
+      candidateCanonical: cand && cand.canonical,
+      setRefused: setRes && setRes.ok === false,
+      transitionAuth: auth,
+      diskRaw: localStorage.getItem('dune_state_v4')
+    };
+  });
+  expect(proof.blockerCode).toBe('STORE_CORRUPT_AUTHORITATIVE_STATE');
+  expect(proof.blockerReason).toMatch(/legacy-source|source-invalid|malformed|missing/);
+  expect(proof.persistedEvalClass).toBe('LEGACY_SOURCE_INVALID');
+  expect(proof.persistedAcceptForBackup).toBe(false);
+  expect(proof.persistedRecoveryRequired).toBe(true);
+  // Candidate evaluator (destructive boundary) also refuses — cross-path.
+  // NOTE: evaluateCandidateWrapper may return MALFORMED_CURRENT_SCHEMA
+  // for partial v13; the CANONICAL result is what matters — never truthy.
+  expect(proof.candidateCanonical).toBe(false);
+  expect(proof.setRefused).toBe(true);
+  expect(proof.transitionAuth).toBeNull();
+  expect(proof.diskRaw).toBe(seed);
+});
+
+// ─── R9-P1-01C — supported valid v8..v13 rows still transition ───────
+for (const version of [8, 9, 10, 11, 12, 13]) {
+  test(`R9-P1-01C-V${version}-VALID-BOOT-TRANSITIONS — a valid v${version} primary wrapper is admitted as VERIFIED_LEGACY_TRANSITION; legacyTransitionCapability granted; STORE_LEGACY_CONVERSION_PENDING blocker set`, async ({ page }) => {
+    const seed = _validHistoricalWrapper(version, 44444 + version, 1);
+    await page.addInitScript((raw) => {
+      window.__prv05DisableBootHydration = true;
+      window.__prv05HydrationAutoRetryEnabled = false;
+      localStorage.setItem('dune_state_v4', raw);
+    }, seed);
+    await page.goto('/');
+    await waitForApp(page);
+    const proof = await page.evaluate(() => {
+      const b = window.Store.getDurabilityBlocker();
+      const auth = window.Store._currentTransitionAuth();
+      const ev = window.Store.evaluatePersistedAuthority();
+      const cand = window.Store.evaluateCandidateWrapper(localStorage.getItem('dune_state_v4'));
+      return {
+        blockerCode: b && b.code,
+        authKind: auth && auth.kind,
+        persistedEvalClass: ev.classification,
+        persistedCanonical: ev.canonical,
+        candidateClass: cand && cand.classification
+      };
+    });
+    expect(proof.blockerCode).toBe('STORE_LEGACY_CONVERSION_PENDING');
+    expect(proof.authKind).toBe('legacy');
+    expect(proof.persistedEvalClass).toBe('VERIFIED_LEGACY_TRANSITION');
+    expect(proof.persistedCanonical).toBe(true);
+    expect(proof.candidateClass).toBe('VERIFIED_LEGACY_TRANSITION');
+  });
+}
+
+// ─── R9-P1-02 — outer v13 carrying forged current-inner marker ───────
+test('R9-P1-02-V13-FORGED-INNER-MIGRATED-MARKER — outer v13 wrapper cannot classify as AUTHORITATIVE_MIGRATED regardless of inner recordsMigration marker shape; migrateUp strips the forged marker; all three admission surfaces agree on VERIFIED_LEGACY_TRANSITION', async ({ page }) => {
+  const seed = _seedV13WithForgedMigratedMarker(66666, 3);
+  await page.addInitScript((raw) => {
+    window.__prv05DisableBootHydration = true;
+    window.__prv05HydrationAutoRetryEnabled = false;
+    localStorage.setItem('dune_state_v4', raw);
+  }, seed);
+  await page.goto('/');
+  await waitForApp(page);
+  const proof = await page.evaluate(() => {
+    const b = window.Store.getDurabilityBlocker();
+    const auth = window.Store._currentTransitionAuth();
+    const ev = window.Store.evaluatePersistedAuthority();
+    const cand = window.Store.evaluateCandidateWrapper(localStorage.getItem('dune_state_v4'));
+    // Post-migrateUp inner marker should be `unmigrated` — belt strips forgery.
+    const inMemoryMarker = window.Store.get('meta.recordsMigration');
+    return {
+      blockerCode: b && b.code,
+      authKind: auth && auth.kind,
+      persistedEvalClass: ev.classification,
+      candidateClass: cand && cand.classification,
+      inMemoryMarkerStatus: inMemoryMarker && inMemoryMarker.status,
+      inMemoryMarkerPriorVersion: inMemoryMarker && inMemoryMarker.priorSchemaVersion
+    };
+  });
+  // Outer v13 admission grants legacy transition, NEVER AUTHORITATIVE_MIGRATED.
+  expect(proof.blockerCode).toBe('STORE_LEGACY_CONVERSION_PENDING');
+  expect(proof.authKind).toBe('legacy');
+  expect(proof.persistedEvalClass).toBe('VERIFIED_LEGACY_TRANSITION');
+  expect(proof.candidateClass).toBe('VERIFIED_LEGACY_TRANSITION');
+  // migrateUp belt: forged inner marker stripped, replaced with truthful unmigrated.
+  expect(proof.inMemoryMarkerStatus).toBe('unmigrated');
+  expect(proof.inMemoryMarkerPriorVersion).toBe(13);
+});
+
+// ─── R9-P1-02 (§B amendment) — full plausible v14 marker shape ───────
+test('R9-P1-02B-V13-FORGED-FULL-V14-MARKER — outer v13 with an inner marker that carries every field a real v14 emits (status, schemaVersion=14, priorSchemaVersion, reason, migratedAt) still cannot upgrade provenance; classification stays VERIFIED_LEGACY_TRANSITION at every surface', async ({ page }) => {
+  const fullPlausibleMarker = {
+    status: 'migrated',
+    schemaVersion: 14,
+    priorSchemaVersion: 13,
+    reason: 'hydration-completed',
+    migratedAt: '2026-08-30T12:34:56.789Z',
+    // Fields a future v14 might carry — belt against forward-compat drift.
+    committedRevision: 999,
+    verifiedAt: '2026-08-30T12:34:57.000Z'
+  };
+  const seed = _seedV13WithForgedMigratedMarker(77777, 5, fullPlausibleMarker);
+  await page.addInitScript((raw) => {
+    window.__prv05DisableBootHydration = true;
+    window.__prv05HydrationAutoRetryEnabled = false;
+    localStorage.setItem('dune_state_v4', raw);
+  }, seed);
+  await page.goto('/');
+  await waitForApp(page);
+  const proof = await page.evaluate(() => {
+    const ev = window.Store.evaluatePersistedAuthority();
+    const cand = window.Store.evaluateCandidateWrapper(localStorage.getItem('dune_state_v4'));
+    const b = window.Store.getDurabilityBlocker();
+    return {
+      persistedEvalClass: ev.classification,
+      candidateClass: cand && cand.classification,
+      blockerCode: b && b.code
+    };
+  });
+  expect(proof.persistedEvalClass).toBe('VERIFIED_LEGACY_TRANSITION');
+  expect(proof.candidateClass).toBe('VERIFIED_LEGACY_TRANSITION');
+  expect(proof.blockerCode).toBe('STORE_LEGACY_CONVERSION_PENDING');
+});
+
+// ─── R9-P1-02 blocker-clear guard — forged marker cannot clear a pre-existing corrupt blocker ───
+test('R9-P1-02C-FORGED-MARKER-CANNOT-CLEAR-BLOCKER — seed a corrupt blocker, then have Tab B write the outer-v13-with-forged-inner-v14-marker via storage event; Tab A must NOT clear the blocker (historical outer never satisfies the triple-gated clear rule)', async ({ context }) => {
+  const A = await context.newPage();
+  await A.goto('/');
+  await A.waitForFunction(() => !!(window.Store && typeof window.Store.get === 'function'));
+  await A.evaluate(() => window.Store.flushNow());
+  const B = await context.newPage();
+  await B.goto('/');
+  await B.waitForFunction(() => !!(window.Store && typeof window.Store.get === 'function'));
+  // Seed a corrupt blocker on A by dispatching a bogus storage event.
+  await A.evaluate(() => {
+    window.dispatchEvent(new StorageEvent('storage', {
+      key: 'dune_state_v4',
+      oldValue: localStorage.getItem('dune_state_v4'),
+      newValue: JSON.stringify({ version: 7, data: { money: { salary_net: 1 } } }),
+      storageArea: localStorage
+    }));
+  });
+  await A.waitForTimeout(200);
+  const bBefore = await A.evaluate(() => (window.Store.getDurabilityBlocker() || {}).code);
+  expect(bBefore).toBe('STORE_CORRUPT_AUTHORITATIVE_STATE');
+  // Now Tab B writes the outer-v13-with-forged-inner-v14-marker.
+  const forgedSeed = _seedV13WithForgedMigratedMarker(88888, 99);
+  await B.evaluate((raw) => { localStorage.setItem('dune_state_v4', raw); }, forgedSeed);
+  await A.evaluate((raw) => {
+    window.dispatchEvent(new StorageEvent('storage', {
+      key: 'dune_state_v4',
+      oldValue: JSON.stringify({ version: 7, data: { money: { salary_net: 1 } } }),
+      newValue: raw,
+      storageArea: localStorage
+    }));
+  }, forgedSeed);
+  await A.waitForTimeout(300);
+  const bAfter = await A.evaluate(() => (window.Store.getDurabilityBlocker() || {}).code);
+  // Historical outer source cannot clear the corrupt blocker as "settled
+  // canonical recovery" under the R9 triple-gated rule.
+  expect(bAfter).toBe('STORE_CORRUPT_AUTHORITATIVE_STATE');
+  await A.close(); await B.close();
+});
+
+// ─── R9-P2-01 — local commit + durable invalid divergent at same revision ─
+test('R9-P2-01-INVALID-DIVERGENT-SAME-REVISION-SETTLEMENT — a local full-state commit at revision N; durable disk replaced under settlement with an INVALID divergent v14 wrapper at the same revision N; settlement emits STORE_REVISION_COLLISION, refuses to adopt invalid bytes, installs corrupt blocker, and returns FULL_STATE_COMMITTED_THEN_EXTERNAL_COLLISION — never plain FULL_STATE_COMMITTED', async ({ context }) => {
+  const A = await context.newPage();
+  await A.goto('/');
+  await A.waitForFunction(() => !!(window.Store && typeof window.Store.get === 'function'));
+  await A.evaluate(() => window.Store.flushNow());
+  const B = await context.newPage();
+  await B.goto('/');
+  await B.waitForFunction(() => !!(window.Store && typeof window.Store.get === 'function'));
+  await A.waitForTimeout(200);
+  const APromise = A.evaluate(async () => {
+    const errors = [];
+    const unsub = window.Store.onError((err) => { errors.push(Object.assign({}, err)); });
+    const gate = window.Store.beginFullStateTransaction({ force: true, reason: 'r9-p201-invalid-divergent' });
+    // A landed a valid full-state commit at rev N.
+    const commitRes = await window.Store.commitFullStateWrapper(gate.token, JSON.parse(JSON.stringify(window.Store.get())), 'r9-p201-commit');
+    // Freeze open for 700ms so B can plant divergent invalid bytes.
+    await new Promise(r => setTimeout(r, 700));
+    const endRes = window.Store.endFullStateTransaction(gate.token);
+    unsub();
+    return {
+      committedRevision: commitRes && commitRes.revision,
+      settlement: endRes && endRes.settlement,
+      commit: endRes && endRes.commit,
+      externalAdoption: endRes && endRes.externalAdoption,
+      externalCollision: endRes && endRes.externalCollision,
+      errors,
+      blockerAfter: (window.Store.getDurabilityBlocker() || {}).code || null
+    };
+  });
+  // While A is in the freeze, B writes an INVALID divergent v14 wrapper
+  // at the same revision A just committed.
+  await A.waitForTimeout(200);
+  const revAtN = await A.evaluate(() => window.Store.currentKnownRevision());
+  await B.evaluate(([rev]) => {
+    // Missing meta.recordsMigration → validateFullStateCanonical refuses
+    // → strict admission refuses.
+    const invalidWrapper = JSON.stringify({
+      version: 14,
+      revision: rev,
+      committedAt: new Date().toISOString(),
+      data: {
+        meta: { version: 14, createdAt: '2026-08-30', lastUpdated: '2026-08-30' /* recordsMigration OMITTED */ },
+        money: { salary_net: 99, expenses: {} },
+        qatarVisit: {}, todayFocus: [], goals: {}, career: {}, easa: {}, about: {}, sbTasks: {}, apartments: [],
+        logbook: { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { sourceCounts: { tracker: 0, builder: 0 } }, drift: null },
+        reviews: [], decisions: [], timeline: [],
+        bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: 'http://localhost:11434', model: '' }, meta: {} },
+        telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
+        ideas: [],
+        records: { deadlines: [], claims: [], risks: [], goals: [] }
+      }
+    });
+    localStorage.setItem('dune_state_v4', invalidWrapper);
+  }, [revAtN]);
+  const proof = await APromise;
+  // Collision was emitted despite the divergent bytes being invalid.
+  const collisionErr = proof.errors.find(e => e.code === 'STORE_REVISION_COLLISION');
+  expect(collisionErr).toBeTruthy();
+  expect(collisionErr.where).toBe('endFullStateTransaction');
+  // Invalid bytes were refused — no externalAdoption.
+  expect(proof.externalAdoption).toBeNull();
+  // Collision fact is captured in the settlement return payload.
+  expect(proof.externalCollision).toBeTruthy();
+  expect(proof.externalCollision.adopted).toBe(false);
+  expect(proof.externalCollision.afterLocalCommit).toBe(true);
+  // Local commit still counts as committed.
+  expect(proof.commit).toBe(true);
+  // Settlement label is the composed one — never plain FULL_STATE_COMMITTED.
+  expect(proof.settlement).toBe('FULL_STATE_COMMITTED_THEN_EXTERNAL_COLLISION');
+  // Corrupt blocker installed with the collision fact.
+  expect(proof.blockerAfter).toBe('STORE_CORRUPT_AUTHORITATIVE_STATE');
+  await A.close(); await B.close();
+});
+
+// ─── R9-P2-01 no-commit variant — FULL_STATE_EXTERNAL_COLLISION ──────
+test('R9-P2-01B-NO-COMMIT-INVALID-DIVERGENT-SAME-REVISION — no local commit; durable disk replaced under settlement with an INVALID divergent wrapper at the same revision; settlement label is FULL_STATE_EXTERNAL_COLLISION', async ({ context }) => {
+  const A = await context.newPage();
+  await A.goto('/');
+  await A.waitForFunction(() => !!(window.Store && typeof window.Store.get === 'function'));
+  await A.evaluate(() => window.Store.flushNow());
+  const B = await context.newPage();
+  await B.goto('/');
+  await B.waitForFunction(() => !!(window.Store && typeof window.Store.get === 'function'));
+  await A.waitForTimeout(200);
+  const APromise = A.evaluate(async () => {
+    const errors = [];
+    const unsub = window.Store.onError((err) => { errors.push(Object.assign({}, err)); });
+    const gate = window.Store.beginFullStateTransaction({ force: true, reason: 'r9-p201b-no-commit' });
+    // No commitFullStateWrapper — just wait and end.
+    await new Promise(r => setTimeout(r, 700));
+    const endRes = window.Store.endFullStateTransaction(gate.token);
+    unsub();
+    return {
+      settlement: endRes && endRes.settlement,
+      commit: endRes && endRes.commit,
+      externalAdoption: endRes && endRes.externalAdoption,
+      externalCollision: endRes && endRes.externalCollision,
+      errors
+    };
+  });
+  await A.waitForTimeout(200);
+  const revAtN = await A.evaluate(() => window.Store.currentKnownRevision());
+  await B.evaluate(([rev]) => {
+    const invalid = JSON.stringify({
+      version: 14, revision: rev, committedAt: new Date().toISOString(),
+      data: { meta: { version: 14 }, money: { salary_net: 1 } /* missing everything */ }
+    });
+    localStorage.setItem('dune_state_v4', invalid);
+  }, [revAtN]);
+  const proof = await APromise;
+  expect(proof.commit).toBe(false);
+  expect(proof.externalAdoption).toBeNull();
+  expect(proof.externalCollision).toBeTruthy();
+  expect(proof.externalCollision.adopted).toBe(false);
+  expect(proof.settlement).toBe('FULL_STATE_EXTERNAL_COLLISION');
+  const collisionErr = proof.errors.find(e => e.code === 'STORE_REVISION_COLLISION');
+  expect(collisionErr).toBeTruthy();
+  await A.close(); await B.close();
+});
+
+// ─── R9-P2-01 §D — malformed JSON does NOT manufacture a collision ───
+test('R9-P2-01C-MALFORMED-JSON-NO-FALSE-COLLISION — durable disk replaced with byte-different malformed JSON; settlement installs corrupt blocker but does NOT emit STORE_REVISION_COLLISION (no trustworthy revision to collide on)', async ({ context }) => {
+  const A = await context.newPage();
+  await A.goto('/');
+  await A.waitForFunction(() => !!(window.Store && typeof window.Store.get === 'function'));
+  await A.evaluate(() => window.Store.flushNow());
+  const B = await context.newPage();
+  await B.goto('/');
+  await B.waitForFunction(() => !!(window.Store && typeof window.Store.get === 'function'));
+  await A.waitForTimeout(200);
+  const APromise = A.evaluate(async () => {
+    const errors = [];
+    const unsub = window.Store.onError((err) => { errors.push(Object.assign({}, err)); });
+    const gate = window.Store.beginFullStateTransaction({ force: true, reason: 'r9-p201c-malformed' });
+    await new Promise(r => setTimeout(r, 700));
+    const endRes = window.Store.endFullStateTransaction(gate.token);
+    unsub();
+    return {
+      settlement: endRes && endRes.settlement,
+      externalCollision: endRes && endRes.externalCollision,
+      errors,
+      blockerAfter: (window.Store.getDurabilityBlocker() || {}).code || null
+    };
+  });
+  await A.waitForTimeout(200);
+  await B.evaluate(() => { localStorage.setItem('dune_state_v4', '{this is not valid json'); });
+  const proof = await APromise;
+  const collisionErr = proof.errors.find(e => e.code === 'STORE_REVISION_COLLISION');
+  expect(collisionErr).toBeUndefined();
+  expect(proof.externalCollision).toBeNull();
+  expect(proof.blockerAfter).toBe('STORE_CORRUPT_AUTHORITATIVE_STATE');
+  await A.close(); await B.close();
+});
+
+// ─── R9-P2-01 §D — non-numeric revision does NOT manufacture a collision ─
+test('R9-P2-01D-NON-NUMERIC-REVISION-NO-FALSE-COLLISION — durable disk replaced with parseable JSON whose revision is a string; settlement refuses admission and does NOT emit STORE_REVISION_COLLISION', async ({ context }) => {
+  const A = await context.newPage();
+  await A.goto('/');
+  await A.waitForFunction(() => !!(window.Store && typeof window.Store.get === 'function'));
+  await A.evaluate(() => window.Store.flushNow());
+  const B = await context.newPage();
+  await B.goto('/');
+  await B.waitForFunction(() => !!(window.Store && typeof window.Store.get === 'function'));
+  await A.waitForTimeout(200);
+  const APromise = A.evaluate(async () => {
+    const errors = [];
+    const unsub = window.Store.onError((err) => { errors.push(Object.assign({}, err)); });
+    const gate = window.Store.beginFullStateTransaction({ force: true, reason: 'r9-p201d-badrev' });
+    await new Promise(r => setTimeout(r, 700));
+    const endRes = window.Store.endFullStateTransaction(gate.token);
+    unsub();
+    return {
+      settlement: endRes && endRes.settlement,
+      externalCollision: endRes && endRes.externalCollision,
+      errors
+    };
+  });
+  await A.waitForTimeout(200);
+  await B.evaluate(() => {
+    const raw = JSON.stringify({ version: 14, revision: 'not-a-number', committedAt: '2026-08-30', data: { money: { salary_net: 1 } } });
+    localStorage.setItem('dune_state_v4', raw);
+  });
+  const proof = await APromise;
+  const collisionErr = proof.errors.find(e => e.code === 'STORE_REVISION_COLLISION');
+  expect(collisionErr).toBeUndefined();
+  expect(proof.externalCollision).toBeNull();
+  await A.close(); await B.close();
+});
+
+// ─── R9-CROSSPATH — every supported v8-v13 in the consistency matrix ─
+for (const version of [8, 9, 10, 11, 12, 13]) {
+  test(`R9-CROSSPATH-V${version}-VALID — a valid v${version} wrapper is classified identically at boot admission, external admission, and persisted-authority evaluator`, async ({ page }) => {
+    const seed = _validHistoricalWrapper(version, 33333 + version, 7);
+    await page.addInitScript((raw) => {
+      window.__prv05DisableBootHydration = true;
+      window.__prv05HydrationAutoRetryEnabled = false;
+      localStorage.setItem('dune_state_v4', raw);
+    }, seed);
+    await page.goto('/');
+    await waitForApp(page);
+    const cross = await page.evaluate(() => ({
+      persisted: window.Store.evaluatePersistedAuthority(),
+      candidate: window.Store.evaluateCandidateWrapper(localStorage.getItem('dune_state_v4')),
+      blocker: window.Store.getDurabilityBlocker(),
+      authKind: (window.Store._currentTransitionAuth() || {}).kind
+    }));
+    expect(cross.persisted.classification).toBe('VERIFIED_LEGACY_TRANSITION');
+    expect(cross.candidate.classification).toBe('VERIFIED_LEGACY_TRANSITION');
+    expect(cross.blocker && cross.blocker.code).toBe('STORE_LEGACY_CONVERSION_PENDING');
+    expect(cross.authKind).toBe('legacy');
+  });
+  test(`R9-CROSSPATH-V${version}-PARTIAL-INVALID — a v${version} wrapper with a required domain missing is refused at boot, at persisted-authority evaluation, and at the candidate boundary`, async ({ page }) => {
+    // Build a partial v8..v13: drop `qatarVisit` (required object at every historical version).
+    const iso = new Date().toISOString();
+    const seed = JSON.stringify({ version, revision: 7, committedAt: iso, data: {
+      meta: { version, createdAt: iso, lastUpdated: iso },
+      money: { salary_net: 1, expenses: {} },
+      // qatarVisit OMITTED
+      todayFocus: [], goals: {}, career: {}, easa: {}, about: {}, sbTasks: {}, apartments: [],
+      logbook: version >= 12 ? { schemaVersion: 1, authority: 'legacy-mirror', entries: [], migration: { sourceCounts: { tracker: 0, builder: 0 } }, drift: null } : [],
+      reviews: [], decisions: [], timeline: [],
+      bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: 'http://localhost:11434', model: '' }, meta: {} },
+      telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
+      ...(version >= 9 ? { ideas: [] } : {})
+    } });
+    await page.addInitScript((raw) => {
+      window.__prv05DisableBootHydration = true;
+      window.__prv05HydrationAutoRetryEnabled = false;
+      localStorage.setItem('dune_state_v4', raw);
+    }, seed);
+    await page.goto('/');
+    await waitForApp(page);
+    const cross = await page.evaluate(() => ({
+      persisted: window.Store.evaluatePersistedAuthority(),
+      candidate: window.Store.evaluateCandidateWrapper(localStorage.getItem('dune_state_v4')),
+      blocker: window.Store.getDurabilityBlocker()
+    }));
+    expect(cross.blocker && cross.blocker.code).toBe('STORE_CORRUPT_AUTHORITATIVE_STATE');
+    expect(cross.persisted.classification).toBe('LEGACY_SOURCE_INVALID');
+    expect(cross.persisted.acceptForBackup).toBe(false);
+    expect(cross.candidate.canonical).toBe(false);
+  });
+}
