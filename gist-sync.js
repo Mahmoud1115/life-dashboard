@@ -32,6 +32,8 @@
   const LAST_BACKUP_KEY    = 'dune_last_backup_v1';
   const CHANGE_COUNT_KEY   = 'dune_change_count_v1';
   const LEGACY_REMOTE_KEY  = 'dune_gist_remote_updated_v1'; // display-only
+  const PRIOR_REMOTE_KEY   = 'dune_gist_prior_remote_revision_v1'; // audit evidence for Keep-Local resolution
+  const CONFLICT_EXPORT_KEY = 'dune_gist_conflict_export_v1';       // local snapshot before destructive Load Remote resolution
 
   const GIST_BACKUP_DESCRIPTION = 'Dune Life OS — Auto Backup';
   const BACKUP_FILE = 'dune-backup.json';
@@ -419,6 +421,7 @@
       case 'conflict':
         setStatus('⚠ ' + labelFor(state) + ' Save blocked. Choose Keep Local, Load Remote, or Export Local first.', 'warn');
         toast('⚠ Genuine conflict — choose an action');
+        try { window.dispatchEvent(new CustomEvent('lifeos:gist-conflict', { detail:{ from:'save', localHash, remoteHash:remote.remoteHash, remoteVersion:remote.revision } })); } catch(_){}
         return { ok:false, reason:'conflict', state, remote, localHash };
 
       case 'no-base':
@@ -528,6 +531,7 @@
       case 'conflict':
         setStatus('⚠ ' + labelFor(state) + ' Load blocked. Choose Keep Local, Load Remote (Discard Local), or Export Local first.', 'warn');
         toast('⚠ Genuine conflict — choose an action');
+        try { window.dispatchEvent(new CustomEvent('lifeos:gist-conflict', { detail:{ from:'load', localHash, remoteHash:remote.remoteHash, remoteVersion:remote.revision } })); } catch(_){}
         return { ok:false, reason:'conflict', state, remote, localHash };
 
       case 'no-base':
@@ -600,6 +604,196 @@
     refreshUI();
     setStatus('✓ Loaded from the connected backup.', 'ok');
     return { ok:true, kind:'loaded', base:w.base };
+  }
+
+  // ── conflict resolvers (genuine-conflict Save/Load; §A1/A2 of the P1 amendment) ─
+  //
+  // Both resolvers refetch the connected remote and re-classify BEFORE
+  // acting: a conflict that has silently resolved (converged or been
+  // resolved on the other side) must not become an accidental overwrite.
+  // Explicit second confirmation is required after the classifier still
+  // reports 'conflict' — tests inject `{ confirmed: true }` to skip the
+  // browser dialog while still exercising the same code path.
+
+  async function resolveConflictKeepLocal(options){
+    options = options || {};
+    const pre = await preflightSyncEnvironment();
+    if (!pre.ok) return { ok:false, reason: pre.reason };
+    const token = pre.token;
+    const gistId = safeGet(GIST_ID_KEY, '');
+    if (!gistId){
+      setStatus('No connected backup — cannot resolve.', 'warn');
+      return { ok:false, reason:'no-connected-gist' };
+    }
+    // Refetch and re-classify. Never PATCH based on a stale classification.
+    let remote;
+    try { remote = await fetchConnectedGist(token, gistId); }
+    catch(e){
+      setStatus('⚠ Cannot re-read remote before resolution: ' + (e.message || 'error'), 'error');
+      return { ok:false, reason:'remote-fetch-failed', error: e.message };
+    }
+    let localData, localHash;
+    try {
+      localData = window.getAllBackupData();
+      localHash = await canonicalHash(localData);
+    } catch(e){
+      setStatus('⚠ Cannot hash local backup: ' + (e.message || e), 'error');
+      return { ok:false, reason:'local-hash-failed' };
+    }
+    const base = effectiveBaseFor(gistId);
+    const state = classifyState({ localHash, remoteHash: remote.remoteHash, remoteVersion: remote.revision, base });
+    if (state.kind !== 'conflict'){
+      setStatus('Conflict no longer present (' + state.kind + ') — no action taken.', 'warn');
+      return { ok:false, reason:'no-longer-conflict', state };
+    }
+
+    // Explicit second confirmation.
+    const proceed = (options.confirmed === true)
+      || (typeof window.confirm === 'function' && window.confirm(
+        'Keep Local?\n\nThis overwrites the remote backup with this device\'s data. The current remote revision will be preserved as audit evidence.'
+      ));
+    if (!proceed){
+      setStatus('Conflict resolution cancelled — no data changed.', 'warn');
+      return { ok:false, reason:'cancelled-by-user' };
+    }
+
+    // Preserve prior remote revision for audit BEFORE we PATCH. Best-effort
+    // audit record; a write failure here does not block resolution (the audit
+    // event only fails to store, not to occur — user is not blocked from
+    // resolving their conflict by an audit write).
+    try {
+      localStorage.setItem(PRIOR_REMOTE_KEY, JSON.stringify({
+        gistId,
+        remoteVersion: remote.revision,
+        remoteHashBefore: remote.remoteHash,
+        capturedAt: _now(),
+      }));
+    } catch(_){ /* best-effort */ }
+
+    // PATCH with local. Then verify reread hash equals localHash — identical
+    // acknowledgement contract as ordinary Save.
+    const backup = { version: BACKUP_WRAPPER_VERSION, exported_at: _now(), data: localData };
+    try { await patchConnectedGist(token, gistId, backup); }
+    catch(e){
+      const msg = e.status === 401 || e.status === 403 || e.status === 404
+        ? 'Token can\'t access this Gist — check the "gist" scope.'
+        : (e.message || 'PATCH failed');
+      setStatus('⚠ ' + msg, 'error');
+      return { ok:false, reason:'patch-failed', error: e.message };
+    }
+    let reread;
+    try { reread = await fetchConnectedGist(token, gistId); }
+    catch(e){
+      setStatus('Keep Local uploaded, but sync status could not be confirmed (reread failed).', 'warn');
+      return { ok:false, reason:'reread-failed', error: e.message };
+    }
+    if (reread.remoteHash !== localHash){
+      clearSyncBase();
+      setStatus('⚠ Keep Local uploaded but remote content does not match — sync trust cleared, reconnect required.', 'error');
+      return { ok:false, reason:'reread-hash-mismatch', reread };
+    }
+    const w = writeSyncBase({ gistId, remoteVersion: reread.revision, baseDataHash: localHash });
+    if (!w.ok){
+      setStatus('Keep Local completed, but sync status could not be confirmed (' + w.reason + ').', 'warn');
+      return { ok:false, reason:'unacknowledged', detail:w };
+    }
+    safeSet(LAST_SYNC_KEY, new Date().toISOString());
+    safeSet(LAST_BACKUP_KEY, new Date().toISOString());
+    refreshUI();
+    setStatus('✓ Keep Local resolved conflict — remote overwritten. Prior remote revision preserved for audit.', 'ok');
+    return { ok:true, kind:'keep-local-resolved', priorRemoteVersion: remote.revision, base: w.base };
+  }
+
+  async function resolveConflictLoadRemote(options){
+    options = options || {};
+    const pre = await preflightSyncEnvironment();
+    if (!pre.ok) return { ok:false, reason: pre.reason };
+    const token = pre.token;
+    const gistId = safeGet(GIST_ID_KEY, '');
+    if (!gistId){
+      setStatus('No connected backup — cannot resolve.', 'warn');
+      return { ok:false, reason:'no-connected-gist' };
+    }
+    let remote;
+    try { remote = await fetchConnectedGist(token, gistId); }
+    catch(e){
+      setStatus('⚠ Cannot re-read remote before resolution: ' + (e.message || 'error'), 'error');
+      return { ok:false, reason:'remote-fetch-failed', error: e.message };
+    }
+    let localData, localHash;
+    try {
+      localData = window.getAllBackupData();
+      localHash = await canonicalHash(localData);
+    } catch(e){
+      setStatus('⚠ Cannot hash local backup: ' + (e.message || e), 'error');
+      return { ok:false, reason:'local-hash-failed' };
+    }
+    const base = effectiveBaseFor(gistId);
+    const state = classifyState({ localHash, remoteHash: remote.remoteHash, remoteVersion: remote.revision, base });
+    if (state.kind !== 'conflict'){
+      setStatus('Conflict no longer present (' + state.kind + ') — no action taken.', 'warn');
+      return { ok:false, reason:'no-longer-conflict', state };
+    }
+
+    // Preservation/export gate BEFORE the destructive confirmation. Writes a
+    // byte-exact local backup wrapper to CONFLICT_EXPORT_KEY and read-back
+    // verifies. If preservation cannot be verified, the destructive path is
+    // refused — this is the §A2 mandatory ordering ("BEFORE destructive
+    // import"). Rotation of the ordinary capsule remains a separate hard gate
+    // inside performDestructiveLoad, so the recovery generation is protected
+    // independently of the conflict-export.
+    const exportWrapper = JSON.stringify({
+      version: BACKUP_WRAPPER_VERSION,
+      exported_at: _now(),
+      data: localData,
+      conflictContext: {
+        gistId,
+        priorRemoteVersion: remote.revision,
+        priorRemoteHash: remote.remoteHash,
+        priorLocalHash: localHash,
+      },
+    });
+    try { localStorage.setItem(CONFLICT_EXPORT_KEY, exportWrapper); }
+    catch(e){
+      setStatus('⚠ Cannot preserve local backup before Load — Load refused. No data changed.', 'error');
+      return { ok:false, reason:'preservation-write-failed', error: e.message };
+    }
+    let vfy;
+    try { vfy = localStorage.getItem(CONFLICT_EXPORT_KEY); }
+    catch(e){
+      setStatus('⚠ Cannot read back preserved local backup — Load refused. No data changed.', 'error');
+      return { ok:false, reason:'preservation-read-failed', error: e.message };
+    }
+    if (vfy !== exportWrapper){
+      setStatus('⚠ Preserved local backup readback mismatch — Load refused. No data changed.', 'error');
+      return { ok:false, reason:'preservation-readback-mismatch' };
+    }
+
+    // Explicit destructive confirmation AFTER preservation is verified.
+    const proceed = (options.confirmed === true)
+      || (typeof window.confirm === 'function' && window.confirm(
+        'Load Remote and discard this device\'s unsynced changes?\n\nYour local data has already been saved as a preserved backup (audit + recovery snapshot). Restore actions can bring it back.'
+      ));
+    if (!proceed){
+      setStatus('Conflict resolution cancelled — local preserved as audit snapshot; no destructive change.', 'warn');
+      return { ok:false, reason:'cancelled-by-user' };
+    }
+
+    // Delegate to the same destructive path Load uses; rotation + hash-verify
+    // + sync-base gates all apply.
+    return performDestructiveLoad({ token, gistId, remote, localData, base });
+  }
+
+  function readConflictExport(){
+    try { return localStorage.getItem(CONFLICT_EXPORT_KEY); }
+    catch(_){ return null; }
+  }
+  function readPriorRemoteRevision(){
+    try {
+      const raw = localStorage.getItem(PRIOR_REMOTE_KEY);
+      if (!raw) return null;
+      return JSON.parse(raw);
+    } catch(_){ return null; }
   }
 
   // Bootstrap / reconnect: intentional discovery. Only path that may retarget
@@ -679,11 +873,15 @@
     fetchConnectedGist, patchConnectedGist, findBackupGistsForBootstrap,
     // orchestrators
     saveConnected, loadConnected, bootstrapOrReconnect, restorePreLoadRecovery,
+    // conflict resolvers (§A1 / §A2)
+    resolveConflictKeepLocal, resolveConflictLoadRemote,
+    readConflictExport, readPriorRemoteRevision,
     // constants (tests)
     _constants: Object.freeze({
       SYNC_BASE_KEY, SYNC_BASE_SCHEMA,
       CAPSULE_KEY, CAPSULE_PREV_KEY,
       GIST_ID_KEY, TOKEN_KEY, LAST_SYNC_KEY, LAST_BACKUP_KEY, CHANGE_COUNT_KEY, LEGACY_REMOTE_KEY,
+      PRIOR_REMOTE_KEY, CONFLICT_EXPORT_KEY,
       GIST_BACKUP_DESCRIPTION, BACKUP_FILE, BACKUP_WRAPPER_VERSION,
     }),
     // injection points
@@ -704,4 +902,6 @@
   window.loadFromGist = function(){ return loadConnected(); };
   window.gistBootstrap = function(){ return bootstrapOrReconnect('reconnect'); };
   window.restorePreLoadRecovery = function(which){ return restorePreLoadRecovery(which); };
+  window.gistResolveKeepLocal = function(){ return resolveConflictKeepLocal(); };
+  window.gistResolveLoadRemote = function(){ return resolveConflictLoadRemote(); };
 })();

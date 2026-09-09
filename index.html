@@ -523,6 +523,13 @@
     <button class="fin-save-btn fin-save-gist-quiet" id="sync-reconnect-btn" type="button" onclick="gistBootstrap()" style="display:none">🔗 Reconnect / bootstrap sync</button>
   </div>
 
+  <!-- Genuine-conflict resolvers (P1 amendment §A1/§A2). Both refetch and re-classify before acting. -->
+  <div id="sync-conflict-row" style="margin-top:12px;display:none;flex-wrap:wrap;gap:8px">
+    <span style="font-family:var(--mono);font-size:11px;color:var(--tx3);width:100%;margin-bottom:4px">Genuine conflict — this device and remote both changed since the last sync. Choose one:</span>
+    <button class="fin-save-btn fin-save-gist" id="sync-conflict-keep-local-btn" type="button" onclick="gistResolveKeepLocal()">✎ Keep Local (overwrite remote)</button>
+    <button class="fin-save-btn fin-save-gist-quiet" id="sync-conflict-load-remote-btn" type="button" onclick="gistResolveLoadRemote()">↓ Load Remote (preserve local as export snapshot first)</button>
+  </div>
+
   <!-- In-app "check for updates" — bypasses iOS PWA cache without going through Settings -->
   <div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--bdr)">
     <button class="fin-save-btn fin-save-gist-quiet" id="sync-check-updates-btn" type="button" onclick="checkForUpdates()" style="width:auto">↻ Check for updates</button>

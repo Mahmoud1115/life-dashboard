@@ -2100,6 +2100,16 @@ function updateGistUI(){
   }catch(_){/*non-fatal UI wiring*/}
 }
 
+// Show/hide the conflict-resolver row based on classifier events.
+try{
+  window.addEventListener('lifeos:gist-conflict',()=>{
+    const r=document.getElementById('sync-conflict-row'); if(r) r.style.display='flex';
+  });
+  window.addEventListener('lifeos:gist-sync-base-updated',()=>{
+    const r=document.getElementById('sync-conflict-row'); if(r) r.style.display='none';
+  });
+}catch(_){/*non-fatal*/}
+
 window.saveGistToken=function(){
   const el=document.getElementById('gist-token-input');
   if(!el||!el.value.trim()){showBackupToast('⚠ Paste your token first');return;}
