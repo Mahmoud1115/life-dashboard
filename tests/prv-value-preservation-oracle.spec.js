@@ -127,7 +127,14 @@ function _buildSentinelSourceFactory() {
       ai: {
         provider:  sentinels.bht['bht.ai.provider'],
         ollamaUrl: sentinels.bht['bht.ai.ollamaUrl'],
-        model:     sentinels.bht['bht.ai.model']
+        model:     sentinels.bht['bht.ai.model'],
+        // PRV-0.5 Codex Round-7 P3 remediation: seed a sentinel apiKey
+        // value on the historical source. ADR-005 mandates that
+        // bht.ai.apiKey MUST NOT survive migration. The oracle proves
+        // active removal by planting a specific literal here and then
+        // asserting it is absent in the migrated candidate — not just
+        // asserting it "was never present."
+        apiKey: 'oracle-apiKey-sentinel-must-be-stripped-by-migration'
       },
       meta: d(sentinels.bht['bht.meta'])
     },
@@ -189,9 +196,15 @@ for (const version of [8, 9, 10, 11, 12, 13]) {
     expect(_getAt(proof.data, 'bht.ai.ollamaUrl')).toBe('http://oracle-sentinel.local:19999');
     expect(_getAt(proof.data, 'bht.ai.model')).toBe('oracle-model-sentinel');
     expect(_getAt(proof.data, 'bht.meta')).toMatchObject({ __oracle_marker__: 'bht-meta-sentinel', __oracle_note__: 'preserve-me' });
-    // ADR-005: bht.ai.apiKey MUST NOT reappear via migration.
+    // ADR-005 + PRV-0.5 Codex Round-7 P3: the historical source seeded
+    // a literal sentinel `bht.ai.apiKey`. Migration MUST actively strip
+    // it. Assert BOTH: (a) the key is not an own property of the
+    // migrated `bht.ai`; (b) the sentinel string is not present as any
+    // value anywhere under `bht.ai`.
     const ai = _getAt(proof.data, 'bht.ai') || {};
-    expect(Object.prototype.hasOwnProperty.call(ai, 'apiKey'), 'bht.ai.apiKey MUST NOT be reintroduced by migration (ADR-005)').toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(ai, 'apiKey'), 'bht.ai.apiKey MUST be stripped by migration (ADR-005 / Round-7 P3)').toBe(false);
+    const aiStr = JSON.stringify(ai);
+    expect(aiStr.indexOf('oracle-apiKey-sentinel-must-be-stripped-by-migration'), 'sentinel apiKey value MUST NOT survive under bht.ai').toBe(-1);
     // Telemetry sentinels
     expect(_getAt(proof.data, 'telemetry.accumulatedFatigue')).toBe(7777);
     expect(_getAt(proof.data, 'telemetry.weeklyShiftHours')).toBe(88.5);

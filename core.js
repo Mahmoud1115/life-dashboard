@@ -692,6 +692,20 @@
 
     s.meta.version = SCHEMA_VERSION;
     s.meta.lastUpdated = nowISO();
+    // PRV-0.5 Codex Round-7 P3: historical `bht.ai.apiKey` sanitization
+    // (ADR-005). Every migrated candidate — regardless of source version
+    // — MUST NOT carry a `bht.ai.apiKey` field. The runtime BHT layer
+    // (bht.js:sanitizeAI) strips it at load, but the Store-level
+    // migration must strip it too so external candidates that reach
+    // authority via evaluateCandidateWrapper (import, snapshot, boot
+    // hydration, external adoption) never persist the key. Old
+    // backups written before ADR-005 lands with `bht.ai.apiKey` are
+    // sanitized by this step.
+    if (s && s.bht && s.bht.ai && typeof s.bht.ai === 'object' && !Array.isArray(s.bht.ai)) {
+      if (Object.prototype.hasOwnProperty.call(s.bht.ai, 'apiKey')) {
+        delete s.bht.ai.apiKey;
+      }
+    }
     return s;
   }
 
@@ -1426,8 +1440,15 @@
   // Legacy transition source versions. migrateUp only understands
   // wrappers whose version is strictly less than SCHEMA_VERSION; higher
   // versions are UNSUPPORTED_FUTURE_SCHEMA.
+  // PRV-0.5 Codex Round-7 P1-01 remediation: the whole-system SUPPORTED
+  // destructive/adoption legacy range is the frozen v8..v13 evidence
+  // matrix (BINDING-3-A). v0..v7 predate the earliest attested emission
+  // of the current-generation domain set and must fail closed. Prior
+  // range `v >= 0` allowed an unsupported version's `unmigrated` marker
+  // to pass classifyMarker and be classified as VERIFIED_LEGACY_TRANSITION
+  // at persisted-authority level.
   function isSupportedLegacySourceVersion(v) {
-    return typeof v === 'number' && Number.isInteger(v) && v >= 0 && v < SCHEMA_VERSION;
+    return typeof v === 'number' && Number.isInteger(v) && v >= 8 && v < SCHEMA_VERSION;
   }
   // Canonical marker predicate. A schema-14 marker MUST carry:
   //   - status ∈ { 'migrated', 'unmigrated' }
@@ -2543,27 +2564,25 @@
       return { committed: false, reason: 'STORE_STATE_CLEARED_EXTERNAL' };
     }
     if (rawNow !== null && rawNow !== baseWrapperRaw) {
-      const parsed = parseWrapperRaw(rawNow);
-      if (!parsed || parsed.corrupt) {
-        setDurabilityBlocker('STORE_CORRUPT_AUTHORITATIVE_STATE');
-        return { committed: false, reason: 'STORE_CORRUPT_AUTHORITATIVE_STATE' };
+      // PRV-0.5 Codex Round-7 P1-01: ordinary CAS pre-write external
+      // reread goes through the SAME strict admission helper. A partial
+      // v13 or v7 disk wrapper cannot be default-filled by
+      // migrateAndValidate and adopted as the new baseState.
+      const admitPre = _admitExternalWrapper(rawNow);
+      if (!admitPre.ok) {
+        setDurabilityBlocker(admitPre.blockerCode, { where: 'commitLocked-external-reread', reason: admitPre.reason });
+        return { committed: false, reason: admitPre.blockerCode };
       }
-      const m = migrateAndValidate(parsed);
-      if (!m.ok) {
-        setDurabilityBlocker('STORE_CORRUPT_AUTHORITATIVE_STATE');
-        return { committed: false, reason: 'STORE_CORRUPT_AUTHORITATIVE_STATE' };
-      }
+      const parsed = admitPre.parsed;
       if (parsed.revision > knownRevision) {
         // Newer external state — adopt as new base before replay.
         // PRV-0.5 Final Closure (INV-A, R7-P1-01): adoption of external
         // bytes invalidates any transition auth bound to the previous
-        // source generation. A hydration attempt whose auth was
-        // issued for W1 must not silently succeed against W2 just
-        // because Store adopted W2.
+        // source generation.
         if (_transitionAuth && _transitionAuth.sourceRawBytes !== rawNow) {
           _consumeTransitionAuth();
         }
-        baseState      = m.data;
+        baseState      = admitPre.data;
         knownRevision  = parsed.revision;
         committedAt    = parsed.committedAt;
         baseWrapperRaw = rawNow;
@@ -2574,11 +2593,10 @@
       } else { // parsed.revision === knownRevision, raw differs
         // Equal revision, different raw wrapper — collision. Adopt disk
         // defensively; surface warning.
-        // Same INV-A auth invalidation applies here.
         if (_transitionAuth && _transitionAuth.sourceRawBytes !== rawNow) {
           _consumeTransitionAuth();
         }
-        baseState      = m.data;
+        baseState      = admitPre.data;
         committedAt    = parsed.committedAt;
         baseWrapperRaw = rawNow;
         emitError({ code: 'STORE_REVISION_COLLISION', revision: parsed.revision });
@@ -2890,38 +2908,83 @@
       // body never wrote it). If we previously accepted a wrapper, this is a
       // durability invariant break.
       if (baseWrapperRaw !== null) setDurabilityBlocker('STORE_STATE_CLEARED_EXTERNAL');
+    } else if (rawNow === baseWrapperRaw) {
+      // Disk raw is byte-equal to the Store's accepted baseline — no
+      // external adoption is being considered. Do NOT run the strict
+      // admission helper here: an already-accepted legacy-source raw
+      // (STORE_LEGACY_CONVERSION_PENDING) or the same-generation
+      // canonical raw simply hasn't moved, and a failed same-tab
+      // full-state commit (LEGACY_CONVERSION_SOURCE_INVALID, etc.)
+      // must not have its truthful blocker overwritten with
+      // STORE_CORRUPT_AUTHORITATIVE_STATE by settlement.
     } else {
-      const parsed = parseWrapperRaw(rawNow);
-      if (!parsed || parsed.corrupt) {
-        setDurabilityBlocker('STORE_CORRUPT_AUTHORITATIVE_STATE');
+      // PRV-0.5 Codex Round-7 P1-01 + P2-01: settlement admission goes
+      // through the SAME strict `_admitExternalWrapper` helper as the
+      // storage-event path. A partial v13 or v7 wrapper CANNOT be
+      // default-filled by migrateAndValidate and adopted as authority.
+      // A rejected candidate installs a truthful blocker; internal
+      // state is not advanced.
+      const admit = _admitExternalWrapper(rawNow);
+      if (!admit.ok) {
+        setDurabilityBlocker(admit.blockerCode, { where: 'endFullStateTransaction', reason: admit.reason });
       } else {
-        const m = migrateAndValidate(parsed);
-        if (!m.ok) {
-          setDurabilityBlocker('STORE_CORRUPT_AUTHORITATIVE_STATE');
-        } else if (parsed.revision < knownRevision) {
+        const parsed = admit.parsed;
+        if (parsed.revision < knownRevision) {
           // Something regressed the disk under us — fail closed.
           setDurabilityBlocker('STORE_REVISION_REGRESSION', { diskRevision: parsed.revision, knownRevision });
         } else if (parsed.revision > knownRevision || rawNow !== baseWrapperRaw) {
           // Newer valid wrapper (or equal-revision but different raw) — adopt.
-          // PRV-0.5 Final Closure (INV-A, R7-P1-01): auth invalidation
-          // on external adoption of different bytes.
+          // PRV-0.5 Codex Round-7 P2-01: an equal-revision but divergent-
+          // raw settlement must emit STORE_REVISION_COLLISION, matching
+          // the storage-event path. Silent adoption of divergent bytes
+          // at settlement without collision reporting was a drift.
+          const isEqualRevisionCollision = (parsed.revision === knownRevision && rawNow !== baseWrapperRaw);
           if (_transitionAuth && _transitionAuth.sourceRawBytes !== rawNow) {
             _consumeTransitionAuth();
           }
-          // PRV-0.5 Codex Round-6 P1-02: capture the adoption evidence
-          // BEFORE mutating internal state so the settlement
-          // completion block can rebuild optimistic public state and
-          // emit a convergence event using the transition details.
+          // Capture adoption evidence BEFORE mutating internal state so
+          // the settlement completion block can rebuild optimistic public
+          // state and emit a convergence event using the transition details.
           const _priorRevisionForAdoption = knownRevision;
-          baseState      = m.data;
+          baseState      = admit.data;
           knownRevision  = parsed.revision;
           committedAt    = parsed.committedAt;
           baseWrapperRaw = rawNow;
           externalAdopted = {
             priorRevision: _priorRevisionForAdoption,
             adoptedRevision: parsed.revision,
-            adoptedCommittedAt: parsed.committedAt
+            adoptedCommittedAt: parsed.committedAt,
+            classification: admit.classification,
+            collision: isEqualRevisionCollision
           };
+          if (isEqualRevisionCollision) {
+            emitError({ code: 'STORE_REVISION_COLLISION', revision: parsed.revision, where: 'endFullStateTransaction' });
+          }
+          // PRV-0.5 Codex Round-7 P1-02: source-bound blocker truth.
+          // When the newly adopted authority is AUTHORITATIVE_MIGRATED
+          // and Store previously held a source-bound blocker
+          // (STORE_CORRUPT_AUTHORITATIVE_STATE, STORE_STATE_CLEARED_EXTERNAL,
+          // STORE_REVISION_REGRESSION) describing the pre-adoption
+          // generation, that blocker is resolved by this generation and
+          // MUST be cleared so ordinary writes can resume. Blockers
+          // NOT-source-bound (STORE_FULL_STATE_POST_WRITE_UNCERTAIN,
+          // STORE_LEGACY_CONVERSION_PENDING, STORE_REVISION_EXHAUSTED,
+          // STORE_ORDINARY_DURABLE_VERIFY_FAILED, STORE_READ_FAILED)
+          // remain — external adoption doesn't prove those away.
+          if (durabilityBlocker && admit.classification === 'AUTHORITATIVE_MIGRATED') {
+            const bc = durabilityBlocker.code;
+            if (bc === 'STORE_CORRUPT_AUTHORITATIVE_STATE'
+                || bc === 'STORE_STATE_CLEARED_EXTERNAL'
+                || bc === 'STORE_REVISION_REGRESSION'
+                || bc === 'STORE_LEGACY_CONVERSION_PENDING') {
+              durabilityBlocker = null;
+              try {
+                if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+                  window.dispatchEvent(new CustomEvent('lifeos:store-durability-cleared', { detail: { reason: 'external-adoption', priorBlocker: bc } }));
+                }
+              } catch (e) { /* ignore */ }
+            }
+          }
         }
       }
     }
@@ -2970,20 +3033,22 @@
     // the freeze-end event with `detail.failure=true` below).
     const committedThisTx = _fullStateCommitSucceeded;
     _fullStateCommitSucceeded = false;
-    // PRV-0.5 Codex Round-6 P1-02: an external-authority adoption
-    // (settlement observed a newer valid concurrent wrapper on disk
-    // while this transaction did NOT commit its own) advanced internal
-    // baseState / knownRevision / baseWrapperRaw / committedAt above.
-    // Rebuild the OPTIMISTIC public state so `Store.get()` reflects the
-    // adopted authority, then run `notifyAll()` so every subscriber
-    // observes the convergence. Emit a distinct
-    // `lifeos:store-external-adoption` event so listeners that need to
-    // distinguish "this tab committed" from "this tab converged onto
-    // another tab's commit" can do so without inspecting the wrapper.
-    // `settlement` becomes FULL_STATE_EXTERNAL_ADOPTION (never
-    // FULL_STATE_COMMITTED) so no listener can misread the abandoned
-    // transaction as committed.
-    const externalAdoptionThisTx = !committedThisTx && externalAdopted !== null;
+    // PRV-0.5 Codex Round-7 P2-02: track local commit and external
+    // adoption as INDEPENDENT facts. Do NOT gate external adoption on
+    // `!committedThisTx` — a full-state commit that landed at revision
+    // N followed by another tab writing revision N+1 before this tab
+    // reached settlement is a real composition. In that case:
+    //   * committedThisTx is true  (our payload landed durably)
+    //   * externalAdopted !== null (settlement adopted the newer bytes)
+    //   * the final authority is the EXTERNAL bytes — not our committed
+    //     candidate — so `settlement:'FULL_STATE_COMMITTED'` alone would
+    //     be a lie.
+    // The three legal outcomes here:
+    //   * FULL_STATE_COMMITTED                        — local commit only
+    //   * FULL_STATE_EXTERNAL_ADOPTION                — external only
+    //   * FULL_STATE_COMMITTED_THEN_EXTERNAL_ADOPTION — both
+    // rebuildOptimistic() + notifyAll() fire if EITHER happened.
+    const externalAdoptionThisTx = externalAdopted !== null;
     if (committedThisTx || externalAdoptionThisTx) {
       rebuildOptimistic();
       notifyAll();
@@ -2995,7 +3060,10 @@
             detail: {
               priorRevision: externalAdopted.priorRevision,
               adoptedRevision: externalAdopted.adoptedRevision,
-              adoptedCommittedAt: externalAdopted.adoptedCommittedAt
+              adoptedCommittedAt: externalAdopted.adoptedCommittedAt,
+              classification: externalAdopted.classification || null,
+              collision: !!externalAdopted.collision,
+              afterLocalCommit: committedThisTx
             }
           }));
         }
@@ -3016,6 +3084,7 @@
           detail: {
             failure: !committedThisTx && !externalAdoptionThisTx,
             externalAdoption: externalAdoptionThisTx,
+            committed: committedThisTx,
             durabilityBlocker: durabilityBlocker ? Object.assign({}, durabilityBlocker) : null
           }
         }));
@@ -3024,27 +3093,39 @@
     if (pendingOps.length > 0 && !conflict && !durabilityBlocker) scheduleFlush();
     // `ok` reflects whether endFullStateTransaction ran successfully
     // (valid token, transaction was active) — NOT whether the
-    // transaction committed a state change. The `settlement` field
-    // carries that outcome:
-    //   FULL_STATE_COMMITTED           → commitFullStateWrapper landed
-    //   FULL_STATE_EXTERNAL_ADOPTION   → PRV-0.5 Codex Round-6 P1-02:
-    //                                    this transaction did NOT commit;
-    //                                    settlement adopted a newer
-    //                                    valid external wrapper and
-    //                                    published it to subscribers.
-    //   FULL_STATE_NOT_COMMITTED       → no commit was called or it
-    //                                    failed pre-write and no external
-    //                                    authority was adopted.
-    //   FULL_STATE_POST_WRITE_UNCERTAIN → uncertainty branch (early return above)
+    // transaction committed a state change. `settlement` names the
+    // final authority-transition outcome:
+    //   FULL_STATE_COMMITTED                        → local commit only.
+    //   FULL_STATE_EXTERNAL_ADOPTION                → no local commit; settlement
+    //                                                 adopted a newer valid
+    //                                                 external wrapper.
+    //   FULL_STATE_COMMITTED_THEN_EXTERNAL_ADOPTION → both landed: local commit
+    //                                                 succeeded, then another tab's
+    //                                                 newer wrapper superseded it
+    //                                                 and settlement adopted that.
+    //                                                 Final authority is EXTERNAL.
+    //   FULL_STATE_NOT_COMMITTED                    → nothing committed and no
+    //                                                 external adoption.
+    //   FULL_STATE_POST_WRITE_UNCERTAIN             → uncertainty branch (early
+    //                                                 return above).
+    // Independent booleans (`commit` + `externalAdoption`) accompany the
+    // string so listeners can react to either fact without string parsing.
+    let settlementLabel;
+    if (committedThisTx && externalAdoptionThisTx) settlementLabel = 'FULL_STATE_COMMITTED_THEN_EXTERNAL_ADOPTION';
+    else if (committedThisTx) settlementLabel = 'FULL_STATE_COMMITTED';
+    else if (externalAdoptionThisTx) settlementLabel = 'FULL_STATE_EXTERNAL_ADOPTION';
+    else settlementLabel = 'FULL_STATE_NOT_COMMITTED';
     return {
       ok: true,
-      settlement: committedThisTx
-        ? 'FULL_STATE_COMMITTED'
-        : (externalAdoptionThisTx ? 'FULL_STATE_EXTERNAL_ADOPTION' : 'FULL_STATE_NOT_COMMITTED'),
+      settlement: settlementLabel,
+      commit: committedThisTx,
       externalAdoption: externalAdoptionThisTx ? {
         priorRevision: externalAdopted.priorRevision,
         adoptedRevision: externalAdopted.adoptedRevision,
-        adoptedCommittedAt: externalAdopted.adoptedCommittedAt
+        adoptedCommittedAt: externalAdopted.adoptedCommittedAt,
+        classification: externalAdopted.classification || null,
+        collision: !!externalAdopted.collision,
+        afterLocalCommit: committedThisTx
       } : null,
       durabilityBlocker: durabilityBlocker ? Object.assign({}, durabilityBlocker) : null
     };
@@ -3437,6 +3518,66 @@
   }
 
   // ── STORAGE EVENTS ───────────────────────────────
+  // PRV-0.5 Codex Round-7 P1-01 remediation: ONE strict admission rule
+  // for any externally observed persisted wrapper that may become
+  // public / internal / durable / backup-eligible authority. Storage-
+  // event adoption, `endFullStateTransaction` settlement, and the
+  // ordinary CAS pre-write external reread all route through this
+  // helper so no permissive migration path can default-fill an
+  // invalid original source and hand back what looks like verified
+  // authority. Mirrors the `evaluateCandidateWrapper` rule surface
+  // (parse → version classification → source-shape validation BEFORE
+  // migrateUp → migrateUp → canonical inner classification) and
+  // returns the durability-blocker code that the caller must install
+  // on rejection. Accepts BOTH AUTHORITATIVE_MIGRATED and
+  // VERIFIED_LEGACY_TRANSITION as admissible external authority; every
+  // other classification is refused with `STORE_CORRUPT_AUTHORITATIVE_STATE`.
+  function _admitExternalWrapper(rawWrapper) {
+    if (rawWrapper === null || rawWrapper === undefined) {
+      return { ok: false, blockerCode: 'STORE_CORRUPT_AUTHORITATIVE_STATE', reason: 'null-raw' };
+    }
+    const parsed = parseWrapperRaw(rawWrapper);
+    if (!parsed) {
+      return { ok: false, blockerCode: 'STORE_CORRUPT_AUTHORITATIVE_STATE', reason: 'null-parse' };
+    }
+    if (parsed.corrupt) {
+      return { ok: false, blockerCode: 'STORE_CORRUPT_AUTHORITATIVE_STATE', reason: 'wrapper-corrupt:' + (parsed.reason || 'unknown') };
+    }
+    if (parsed.version > SCHEMA_VERSION) {
+      return { ok: false, blockerCode: 'STORE_CORRUPT_AUTHORITATIVE_STATE', reason: 'unsupported-future-schema-v' + parsed.version };
+    }
+    // Source-shape validation BEFORE any migrateUp default-fill —
+    // this is what protects against Codex's "partial v13 gets defaults
+    // synthesized then adopted as authority" scenario.
+    if (parsed.version < SCHEMA_VERSION) {
+      const src = validateLegacySourceRequiredFields(parsed.data, parsed.version);
+      if (!src.ok) {
+        return { ok: false, blockerCode: 'STORE_CORRUPT_AUTHORITATIVE_STATE', reason: 'legacy-source-' + src.reason };
+      }
+    } else {
+      const src = validateFullStateCanonical(parsed.data);
+      if (!src.ok) {
+        return { ok: false, blockerCode: 'STORE_CORRUPT_AUTHORITATIVE_STATE', reason: 'current-source-' + src.reason };
+      }
+    }
+    let migrated;
+    try {
+      migrated = (parsed.version === SCHEMA_VERSION && parsed.data)
+        ? parsed.data
+        : migrateUp(parsed.data || {}, parsed.version || 0);
+      normalizeLogbookDomain(migrated);
+    } catch (e) {
+      return { ok: false, blockerCode: 'STORE_CORRUPT_AUTHORITATIVE_STATE', reason: 'migrateUp-threw:' + (e && e.message) };
+    }
+    if (!validate(migrated)) {
+      return { ok: false, blockerCode: 'STORE_CORRUPT_AUTHORITATIVE_STATE', reason: 'validate-failed' };
+    }
+    const evalData = evaluateCandidateData(migrated);
+    if (evalData.classification !== 'AUTHORITATIVE_MIGRATED' && evalData.classification !== 'VERIFIED_LEGACY_TRANSITION') {
+      return { ok: false, blockerCode: 'STORE_CORRUPT_AUTHORITATIVE_STATE', reason: 'inner-' + evalData.classification };
+    }
+    return { ok: true, parsed: parsed, data: migrated, classification: evalData.classification };
+  }
   function onStorage(e) {
     if (!e || e.key !== STATE_KEY) return;
     if (activeFullStateTransaction) {
@@ -3452,12 +3593,28 @@
       return;
     }
     if (rawNow === baseWrapperRaw) return;
-    const parsed = parseWrapperRaw(rawNow);
-    if (!parsed || parsed.corrupt) { setDurabilityBlocker('STORE_CORRUPT_AUTHORITATIVE_STATE'); return; }
-    const m = migrateAndValidate(parsed);
-    if (!m.ok) { setDurabilityBlocker('STORE_CORRUPT_AUTHORITATIVE_STATE'); return; }
+    // PRV-0.5 Final Closure (INV-A, R7-P1-01): any disk-change to bytes
+    // that do NOT match the current transition auth's sourceRawBytes
+    // invalidates that auth immediately — even if the new bytes are
+    // later rejected as inadmissible authority. The disk generation
+    // the auth was granted for no longer exists.
+    if (_transitionAuth && _transitionAuth.sourceRawBytes !== rawNow) {
+      _consumeTransitionAuth();
+    }
+    // PRV-0.5 Codex Round-7 P1-01: route storage-event admission through
+    // the strict `_admitExternalWrapper` helper. Rejected candidates
+    // (unsupported v0-v7, partial v13 missing required BHT/telemetry
+    // fields, malformed v14, future schema, versionless) install a
+    // truthful STORE_CORRUPT_AUTHORITATIVE_STATE blocker instead of
+    // being default-filled by migrateAndValidate and adopted.
+    const admit = _admitExternalWrapper(rawNow);
+    if (!admit.ok) {
+      setDurabilityBlocker(admit.blockerCode, { where: 'onStorage', reason: admit.reason });
+      return;
+    }
+    const parsed = admit.parsed;
     if (parsed.revision > knownRevision) {
-      adoptExternal(m.data, parsed, rawNow);
+      adoptExternal(admit.data, parsed, rawNow);
       return;
     }
     if (parsed.revision === knownRevision) {
@@ -3468,12 +3625,14 @@
       try { diskRaw = localStorage.getItem(STATE_KEY); } catch (err) { diskRaw = null; }
       if (diskRaw === baseWrapperRaw) return;
       if (diskRaw === null) { setDurabilityBlocker('STORE_STATE_CLEARED_EXTERNAL'); return; }
-      const dparsed = parseWrapperRaw(diskRaw);
-      if (!dparsed || dparsed.corrupt) { setDurabilityBlocker('STORE_CORRUPT_AUTHORITATIVE_STATE'); return; }
-      const dm = migrateAndValidate(dparsed);
-      if (!dm.ok) { setDurabilityBlocker('STORE_CORRUPT_AUTHORITATIVE_STATE'); return; }
+      const admit2 = _admitExternalWrapper(diskRaw);
+      if (!admit2.ok) {
+        setDurabilityBlocker(admit2.blockerCode, { where: 'onStorage-equal-rev-reread', reason: admit2.reason });
+        return;
+      }
+      const dparsed = admit2.parsed;
       if (dparsed.revision >= knownRevision) {
-        adoptExternal(dm.data, dparsed, diskRaw);
+        adoptExternal(admit2.data, dparsed, diskRaw);
         if (dparsed.revision === knownRevision) emitError({ code: 'STORE_REVISION_COLLISION', revision: dparsed.revision });
       } else {
         setDurabilityBlocker('STORE_REVISION_REGRESSION', { diskRevision: dparsed.revision, knownRevision });
@@ -3494,21 +3653,44 @@
     knownRevision  = parsed.revision;
     committedAt    = parsed.committedAt;
     baseWrapperRaw = rawWrapper;
-    // PRV-0.5 Pre-Push Amendment §2: if another tab's atomic legacy
-    // conversion committed a valid v14 AUTHORITATIVE_MIGRATED
-    // wrapper, this tab's STORE_LEGACY_CONVERSION_PENDING blocker
-    // is resolved by that adoption (the legacy source no longer
-    // exists on disk). Clear it so ordinary writes can resume.
-    if (durabilityBlocker && durabilityBlocker.code === 'STORE_LEGACY_CONVERSION_PENDING'
-        && parsed.version === SCHEMA_VERSION) {
+    // PRV-0.5 Codex Round-7 P1-02: source-bound blocker truth after
+    // cross-tab recovery. When another tab writes a valid AUTHORITATIVE_MIGRATED
+    // wrapper (typically via Reset or a completed legacy conversion)
+    // and this tab adopts it via the storage-event path, any
+    // source-bound blocker THIS tab was carrying is resolved by the
+    // adoption because the source generation the blocker was bound to
+    // no longer exists on disk. Clear only source-bound blockers:
+    //   * STORE_CORRUPT_AUTHORITATIVE_STATE   — old bytes gone.
+    //   * STORE_STATE_CLEARED_EXTERNAL        — a valid wrapper is back.
+    //   * STORE_REVISION_REGRESSION           — disk moved forward.
+    //   * STORE_LEGACY_CONVERSION_PENDING     — cross-tab conversion won.
+    // Do NOT clear:
+    //   * STORE_FULL_STATE_POST_WRITE_UNCERTAIN — describes THIS tab's
+    //     uncertain write, not the source generation.
+    //   * STORE_REVISION_EXHAUSTED              — bound to accepted
+    //     monotonic baseline, not a source generation.
+    //   * STORE_ORDINARY_DURABLE_VERIFY_FAILED   — describes THIS tab's
+    //     ordinary CAS attempt.
+    //   * STORE_READ_FAILED                     — describes a read
+    //     failure event, not a source generation.
+    // Only fires when the newly adopted authority actually classifies
+    // as AUTHORITATIVE_MIGRATED (not VERIFIED_LEGACY_TRANSITION — a
+    // legacy source is a transition, not a settled resolution).
+    if (durabilityBlocker && parsed.version === SCHEMA_VERSION) {
       const inner = evaluateCandidateData(data);
       if (inner.classification === 'AUTHORITATIVE_MIGRATED') {
-        durabilityBlocker = null;
-        try {
-          if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
-            window.dispatchEvent(new CustomEvent('lifeos:store-durability-cleared'));
-          }
-        } catch (e) { /* ignore */ }
+        const bc = durabilityBlocker.code;
+        if (bc === 'STORE_CORRUPT_AUTHORITATIVE_STATE'
+            || bc === 'STORE_STATE_CLEARED_EXTERNAL'
+            || bc === 'STORE_REVISION_REGRESSION'
+            || bc === 'STORE_LEGACY_CONVERSION_PENDING') {
+          durabilityBlocker = null;
+          try {
+            if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+              window.dispatchEvent(new CustomEvent('lifeos:store-durability-cleared', { detail: { reason: 'external-adoption', priorBlocker: bc } }));
+            }
+          } catch (e) { /* ignore */ }
+        }
       }
     }
     clearTimeout(saveTimer); saveTimer = null;
