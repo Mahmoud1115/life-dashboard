@@ -753,3 +753,171 @@ persistence layer as a whole.
 declares the tier in the PR body. A reviewer may disagree with
 the declaration and request escalation to HIGH; escalation is
 never negotiable when the change touches a listed invariant.
+
+---
+
+## ADR-020 — Gist Sync base-aware concurrency (schema 1)
+
+**Status.** Proposed (this branch). Effective when the P1 remediation lands
+on `main`.
+
+**Context.** The pre-remediation Gist Save/Load guard classified concurrency
+using timestamp equality (`latest.updated_at !== dune_gist_remote_updated_v1`)
+and let Load auto-retarget to whichever matching Gist had the newest
+`updated_at` in the account. Both behaviors are unsafe: `updated_at` moves on
+any Gist mutation (star, description edit, unrelated file, second-file add,
+even the caller's own PATCH), and discovery-based retargeting can silently
+replace the connected backup with a different one. The regressing commit is
+`ca6bc556`. Codex reproduced a false-positive same-browser flow.
+
+**Decision.**
+
+1. Concurrency identity is a **canonical semantic hash** of the backup data
+   plus the Gist's **`history[0].version`** revision SHA, persisted as
+   `dune_gist_sync_base_v1` (schema 1: `{ schema, gistId, remoteVersion,
+   baseDataHash, acceptedAt }`). Timestamps become display-only.
+2. The canonical hash is **SHA-256** over a deterministic key-sorted JSON
+   rendering of `getAllBackupData()`. Wrapper metadata (`exported_at`,
+   `version`) is excluded. There is no fallback hash algorithm: if
+   `crypto.subtle.digest` is unavailable, Sync refuses with a truthful
+   "unavailable" status and performs no destructive operation.
+3. Save/Load classify against a **four-state model** (synced / local-only /
+   remote-only / conflict), plus non-authoritative `synced-revision-drift`
+   (data equal, revision moved) and `converged` (both drifted to identical
+   content). No mutation happens before the classifier finishes.
+4. Save PATCHes the connected Gist **only** on `local-only` / `converged`,
+   then **refetches** and **verifies `remoteHash === localHash`** before
+   writing the sync base. The sync base is **read back and byte-verified**;
+   if that verification fails, the operation reports "sync status could not
+   be confirmed" and does NOT claim synced.
+5. Load's destructive path (`remote-only`) runs in a fixed order:
+   confirmation → **verified rotation** of `dune_pre_import_backup_v1` into
+   `dune_pre_import_backup_prev_v1` (one-generation retention; rotation is
+   a hard gate — any failure refuses the destructive Load before
+   `processImport` is invoked) → `processImport` (safe full-state
+   transaction) → **post-import hash verification** → sync-base write with
+   read-back verify. `processImport` is unchanged; recovery preservation
+   lives entirely in the Gist Load orchestrator.
+6. Ordinary Save/Load target **exactly** `dune_gist_id_v1`. Discovery of
+   matching backup Gists happens only in `bootstrapOrReconnect` (explicit
+   user action).
+7. "Another device saved newer data" attribution is removed. Device
+   identity is not modeled in this task.
+
+**Consequences.** Gist P1 defect closes. `dune_gist_remote_updated_v1`,
+`dune_last_gist_sync_v1`, `dune_last_backup_v1`, `dune_change_count_v1`
+remain in localStorage for continuity but are reclassified as display-only
+and are never read for concurrency. `dune_pre_import_backup_v1` gains a
+paired one-generation predecessor at `dune_pre_import_backup_prev_v1`.
+`processImport` invariants are untouched.
+
+**Test evidence.** `tests/gist-sync.spec.js` — 36 cases covering canonical
+hash determinism, SHA-256 unavailable fail-safe, all four classifier
+transitions, sync-base ownership + read-back verification, rotation
+success/write-failure/readback-mismatch/repeated-Load ordering, Save
+happy/no-op/remote-only/conflict/no-base/reread-mismatch/404/revision-drift/
+stale-legacy/multi-Gist-no-retarget, and Load happy/cancel/rotation-gates/
+conflict-refuse. Run with `--retries=0`.
+
+**Not decided by this ADR.** Device identity. Multi-device continuous sync.
+Automatic sync scheduling. Supabase persistence bridge.
+
+### ADR-020 addendum #1 (2026-09-10) — Round-2 concurrency authority and recovery hardening
+
+The Round-2 review found seven remaining HIGH-risk gaps: an ordinary-Save and
+Keep-Local lost-update window, weak accepted-base validation, incomplete
+base/identity acknowledgement, non-executable diverged bootstrap recovery,
+failure to advance a converged base, current-capsule restore consuming its
+fresh undo, and a best-effort prior-remote audit.
+
+**Decision.**
+
+1. `dune_gist_sync_base_v1` is accepted only after strict validation of all
+   schema-1 fields. Writes require exact serialized-byte readback followed by
+   strict reparse. Any failure clears authority and activates an in-memory
+   fail-closed latch, so stale bytes cannot be consumed if removal is swallowed.
+2. The semantic backup hash excludes Store transaction metadata regenerated by
+   the real import path: `dune_state_v4.revision`, `committedAt`, and
+   `data.meta.lastUpdated`. The generic canonical hash remains unnormalized.
+   Existing schema-1 bases may conservatively reclassify once; no incompatible
+   base is silently trusted.
+3. Ordinary `local-only` Save, conflict Keep Local, and bootstrap Use Local
+   perform an immediate exact-Gist re-fetch and require the observed Gist ID,
+   revision, and semantic hash to remain unchanged before PATCH. PATCH success
+   is acknowledged only after a reread proves the intended semantic hash and a
+   newly advanced revision. `converged` accepts the shared content/revision as
+   the new base without PATCH.
+4. GitHub documents conditional requests as primarily cache controls and does
+   not document `If-Match` or another atomic precondition for the Gist Update
+   `PATCH` endpoint. Therefore the implementation does not claim provider-side
+   compare-and-swap. A residual race remains between the final GET and PATCH;
+   the post-write acknowledgement prevents a trusted local base from being
+   recorded when the outcome cannot be proven.
+5. Bootstrap/reconnect persists the selected Gist ID with exact readback before
+   it can own a base. Diverged bootstrap exposes executable Use Local and Load
+   Remote paths. Both are explicit, verified, no-base resolvers; Load Remote
+   preserves local evidence and runs the real `processImport` transaction.
+   A 404 clears base authority and exposes reconnect without discovery retargeting.
+6. Prior-remote audit persistence is an exact readback-verified hard gate for
+   every Keep Local/Use Local overwrite. Destructive Load Remote continues to
+   require verified local preservation and recovery-capsule rotation.
+7. Restoring the current recovery capsule keeps the fresh capsule minted by
+   `processImport`, so an immediate second restore is a valid undo. Only an
+   explicitly restored previous generation is removed.
+8. `processImport(text, {confirmed:true})` is a narrow acknowledgement for a
+   resolver that already obtained the destructive confirmation. Default callers
+   retain the original confirmation and all transaction, validation, rollback,
+   and recovery behavior.
+
+**Sources.** GitHub REST API best practices and the Gist Update endpoint:
+<https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api>
+and <https://docs.github.com/en/rest/gists/gists#update-a-gist>.
+
+**Test evidence.** `tests/gist-sync.spec.js` contains 71 deterministic cases,
+including adversarial changes between classification and final revalidation,
+strict base and identity acknowledgement failures, both bootstrap choices,
+convergence acceptance, real-import recovery undo, audit hard gates, and all
+prior Ideas/BHT/reload/mobile/multiple-Gist/SHA-unavailable regressions. The
+repository suite contains 228 cases across nine files. Acceptance runs use one
+worker and zero retries.
+
+**Risk and review.** This addendum changes storage authority, remote overwrite,
+backup/import, and recovery behavior and is therefore HIGH under ADR-012. It
+must receive independent Claude Code or human review before merge.
+
+
+### ADR-020 addendum #2 (2026-09-10) — Round-3 pre-push review remediation
+
+Report 142 identified three retained defects in the Round-2 candidate:
+normal Load rotated the previous recovery slot before confirmation, initial
+conflict-resolver 404s retained authority, and Save captured localStorage
+before pending Store edits were persisted.
+
+**Decision (proposed on this branch; subject to HIGH-risk review).**
+
+1. Extract the existing import parse/preflight/confirmation into
+   `prepareBackupImport`. Normal Gist Load calls it before recovery rotation;
+   cancellation and preflight refusal leave both recovery generations intact.
+   `processImport` repeats that preflight with the confirmation acknowledgement.
+   The transaction body, deeper apply-time validation, state-key-last commit,
+   rollback, and finally-unfreeze behavior remain unchanged.
+2. Both conflict resolvers handle their initial exact-Gist 404 through the same
+   authority-clear/reconnect path as normal Save/Load. They never auto-retarget.
+3. Sync capture awaits `Store.flushNow()` and verifies the result and
+   `Store.hasUnsavedWork()` before reading backup data. Persistence refusal,
+   conflict, failure, or remaining pending work refuses sync. Synchronous
+   normalized snapshot and connected-ID checks reject changed local inputs
+   after asynchronous work, including before PATCH and after its reread.
+   Newer local edits remain intact and cannot be acknowledged as part of the
+   earlier upload. If an edit arrives after PATCH, the remote may already hold
+   the earlier snapshot; the operation reports unacknowledged local movement
+   and retains the old accepted base. A subsequent sync may require conflict
+   resolution. No cross-tab or provider atomicity is claimed.
+
+The provider final-GET-to-PATCH race documented in addendum #1 remains.
+No storage schema, domain authority, dependency, or backend changes are added.
+Fourteen permanent regressions cover recovery cancellation/preflight refusal,
+confirmed rotation, both resolver 404s, production Ideas/BHT immediate saves,
+flush failure/refusal, and edits during all three Save GETs. A corrected exact
+candidate still requires pre-push review and independent Claude Code or human
+review before merge; implementer test results are not independent approval.

@@ -1875,15 +1875,23 @@ function preflightBackup(backup){
 // (`dune_pre_import_backup_v1`) is written before any destructive change
 // and survives both success and failure (per b4083a8).
 const STATE_KEY_NAME='dune_state_v4';
-async function processImport(text){
+function prepareBackupImport(text,options){
+  options=options||{};
   let backup;
   try{backup=JSON.parse(text);}catch(e){showBackupToast('⚠ Invalid file — cannot parse JSON');return false;}
   const err=preflightBackup(backup);
   if(err){showBackupToast('⚠ '+err);return false;}
   const counts=summarizeBackup(backup.data);
   const preview=counts.map(c=>c[0]+': '+c[1]).join(' · ');
-  const confirmed=confirm('Restore backup from '+backup.exported_at+'?\n\n'+preview+'\n\n⚠ Overwrites current data. Current data saved as pre-restore backup.');
+  const confirmed=options.confirmed===true||confirm('Restore backup from '+backup.exported_at+'?\n\n'+preview+'\n\n⚠ Overwrites current data. Current data saved as pre-restore backup.');
   if(!confirmed) return false;
+  return {backup,preview};
+}
+
+async function processImport(text,options){
+  const prepared=prepareBackupImport(text,options);
+  if(!prepared) return false;
+  const {backup,preview}=prepared;
 
   if(!window.Store
      ||typeof window.Store.beginFullStateTransaction!=='function'
@@ -2051,8 +2059,12 @@ function updateGistUI(){
   const sec=document.getElementById('gist-token-section');
   const btns=document.getElementById('gist-action-btns');
   if(!sec) return;
-  const token=LS.get('dune_github_token_v1','');
-  const gistId=LS.get('dune_gist_id_v1','');
+  const token=(window.GistSync&&typeof window.GistSync.hasStoredToken==='function')
+    ? window.GistSync.hasStoredToken()
+    : !!LS.get('dune_github_token_v1','');
+  const gistId=(window.GistSync&&typeof window.GistSync.readConnectedGistId==='function')
+    ? window.GistSync.readConnectedGistId()
+    : LS.get('dune_gist_id_v1','');
   const lastSync=LS.get('dune_last_gist_sync_v1','');
 
   if(token){
@@ -2072,7 +2084,49 @@ function updateGistUI(){
   }
   // Mirror the same status into the inline Finance save panel.
   if(typeof window._refreshFinGistStatus==='function') try{window._refreshFinGistStatus();}catch(e){}
+  // Reveal Restore / Reconnect controls based on capsule presence + sync-base
+  // ownership. Purely reactive to localStorage — no network reads.
+  try{
+    const row=document.getElementById('sync-recovery-row');
+    const cur=document.getElementById('sync-restore-current-btn');
+    const prv=document.getElementById('sync-restore-prev-btn');
+    const rec=document.getElementById('sync-reconnect-btn');
+    const bootstrapChoices=document.getElementById('sync-bootstrap-choice-row');
+    if(row){
+      const hasCur=!!localStorage.getItem('dune_pre_import_backup_v1');
+      const hasPrv=!!localStorage.getItem('dune_pre_import_backup_prev_v1');
+      const connectedId=(window.GistSync&&typeof window.GistSync.readConnectedGistId==='function')
+        ? window.GistSync.readConnectedGistId()
+        : LS.get('dune_gist_id_v1','');
+      const baseOk=!!(window.GistSync
+        && typeof window.GistSync.effectiveBaseFor==='function'
+        && window.GistSync.effectiveBaseFor(connectedId));
+      const showRec=!!token && connectedId && !baseOk;
+      if(cur) cur.style.display=hasCur?'':'none';
+      if(prv) prv.style.display=hasPrv?'':'none';
+      if(rec) rec.style.display=showRec?'':'none';
+      if(bootstrapChoices) bootstrapChoices.style.display=showRec?'flex':'none';
+      row.style.display=(hasCur||hasPrv||showRec)?'flex':'none';
+    }
+  }catch(_){/*non-fatal UI wiring*/}
 }
+
+// Show/hide the conflict-resolver row based on classifier events.
+try{
+  window.addEventListener('lifeos:gist-conflict',()=>{
+    const r=document.getElementById('sync-conflict-row'); if(r) r.style.display='flex';
+  });
+  window.addEventListener('lifeos:gist-sync-base-updated',()=>{
+    const r=document.getElementById('sync-conflict-row'); if(r) r.style.display='none';
+    const b=document.getElementById('sync-bootstrap-choice-row'); if(b) b.style.display='none';
+  });
+  window.addEventListener('lifeos:gist-sync-base-cleared',()=>updateGistUI());
+  window.addEventListener('lifeos:gist-id-updated',()=>updateGistUI());
+  window.addEventListener('lifeos:gist-reconnect-required',()=>updateGistUI());
+  window.addEventListener('lifeos:gist-bootstrap-diverged',()=>{
+    const b=document.getElementById('sync-bootstrap-choice-row'); if(b) b.style.display='flex';
+  });
+}catch(_){/*non-fatal*/}
 
 window.saveGistToken=function(){
   const el=document.getElementById('gist-token-input');
