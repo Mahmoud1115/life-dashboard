@@ -42,6 +42,7 @@
   // ── injection points (tests use these) ───────────────────────────────────
   let _fetch = (typeof fetch === 'function') ? fetch.bind(globalThis) : null;
   let _now   = () => new Date().toISOString();
+  let _syncBaseInvalidated = false;
 
   // ── SHA-256 availability (single stable hash identity; no FNV fallback) ──
   function sha256Available(){
@@ -98,69 +99,163 @@
     return hex;
   }
 
+  // `dune_state_v4` is a durable transaction wrapper. Its revision,
+  // committedAt, and data.meta.lastUpdated fields necessarily change when
+  // processImport migrates and commits the same domain state, so they are
+  // transaction metadata rather than sync semantics.
+  // Keep canonicalHash generic; normalize only complete backup data here.
+  function semanticBackupData(dataObject){
+    if (!dataObject || typeof dataObject !== 'object' || Array.isArray(dataObject)) return dataObject;
+    const normalized = { ...dataObject };
+    const stateWrapper = normalized.dune_state_v4;
+    if (stateWrapper && typeof stateWrapper === 'object' && !Array.isArray(stateWrapper)){
+      const semanticState = { ...stateWrapper };
+      delete semanticState.revision;
+      delete semanticState.committedAt;
+      if (semanticState.data && typeof semanticState.data === 'object' && !Array.isArray(semanticState.data)){
+        const semanticData = { ...semanticState.data };
+        if (semanticData.meta && typeof semanticData.meta === 'object' && !Array.isArray(semanticData.meta)){
+          const semanticMeta = { ...semanticData.meta };
+          delete semanticMeta.lastUpdated;
+          semanticData.meta = semanticMeta;
+        }
+        semanticState.data = semanticData;
+      }
+      normalized.dune_state_v4 = semanticState;
+    }
+    return normalized;
+  }
+
+  function backupDataHash(dataObject){
+    return canonicalHash(semanticBackupData(dataObject));
+  }
+
   // ── sync-base persistence ────────────────────────────────────────────────
+  function isValidIdentifier(value, maxLength){
+    return typeof value === 'string'
+      && value.length > 0
+      && value.length <= (maxLength || 512)
+      && value.trim() === value
+      && !/[\u0000-\u001f\u007f\s]/.test(value);
+  }
+
+  function validateSyncBaseRecord(value){
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return { ok:false, reason:'not-object' };
+    const required = ['schema','gistId','remoteVersion','baseDataHash','acceptedAt'];
+    for (const field of required){
+      if (!Object.prototype.hasOwnProperty.call(value, field)) return { ok:false, reason:'missing-' + field };
+    }
+    if (value.schema !== SYNC_BASE_SCHEMA) return { ok:false, reason:'wrong-schema' };
+    if (!isValidIdentifier(value.gistId, 256)) return { ok:false, reason:'invalid-gistId' };
+    if (!isValidIdentifier(value.remoteVersion, 512)) return { ok:false, reason:'invalid-remoteVersion' };
+    if (typeof value.baseDataHash !== 'string' || !/^[0-9a-f]{64}$/i.test(value.baseDataHash)){
+      return { ok:false, reason:'invalid-baseDataHash' };
+    }
+    if (typeof value.acceptedAt !== 'string'
+        || value.acceptedAt.trim() !== value.acceptedAt
+        || !value.acceptedAt
+        || !Number.isFinite(Date.parse(value.acceptedAt))){
+      return { ok:false, reason:'invalid-acceptedAt' };
+    }
+    return {
+      ok:true,
+      base: {
+        schema: value.schema,
+        gistId: value.gistId,
+        remoteVersion: value.remoteVersion,
+        baseDataHash: value.baseDataHash,
+        acceptedAt: value.acceptedAt,
+      }
+    };
+  }
+
+  function parseSyncBase(raw){
+    if (typeof raw !== 'string' || !raw) return { ok:false, reason:'empty' };
+    let parsed;
+    try { parsed = JSON.parse(raw); }
+    catch(_) { return { ok:false, reason:'parse-failed' }; }
+    return validateSyncBaseRecord(parsed);
+  }
+
   function readSyncBase(){
+    if (_syncBaseInvalidated) return null;
     let raw;
     try { raw = localStorage.getItem(SYNC_BASE_KEY); }
     catch(_) { return null; }
-    if (!raw) return null;
-    let parsed;
-    try { parsed = JSON.parse(raw); } catch(_) { return null; }
-    if (!parsed || typeof parsed !== 'object') return null;
-    if (parsed.schema !== SYNC_BASE_SCHEMA) return null;
-    if (typeof parsed.gistId !== 'string' || !parsed.gistId) return null;
-    if (typeof parsed.remoteVersion !== 'string' || !parsed.remoteVersion) return null;
-    if (typeof parsed.baseDataHash !== 'string' || !parsed.baseDataHash) return null;
-    if (typeof parsed.acceptedAt !== 'string' || !parsed.acceptedAt) return null;
-    return parsed;
-  }
-
-  function writeSyncBase(base){
-    if (!base || typeof base !== 'object') return { ok:false, reason:'invalid-input' };
-    if (typeof base.gistId !== 'string' || !base.gistId) return { ok:false, reason:'missing-gistId' };
-    if (typeof base.remoteVersion !== 'string' || !base.remoteVersion) return { ok:false, reason:'missing-remoteVersion' };
-    if (typeof base.baseDataHash !== 'string' || !base.baseDataHash) return { ok:false, reason:'missing-baseDataHash' };
-    const payload = {
-      schema: SYNC_BASE_SCHEMA,
-      gistId: base.gistId,
-      remoteVersion: base.remoteVersion,
-      baseDataHash: base.baseDataHash,
-      acceptedAt: base.acceptedAt || _now(),
-    };
-    let serialized;
-    try { serialized = JSON.stringify(payload); }
-    catch(e){ return { ok:false, reason:'serialize-failed', error:String(e && e.message || e) }; }
-    try { localStorage.setItem(SYNC_BASE_KEY, serialized); }
-    catch(e){ return { ok:false, reason:'setItem-failed', error:String(e && e.message || e) }; }
-    // Read-back verification — do not report synced if we cannot prove persistence.
-    let readback;
-    try { readback = localStorage.getItem(SYNC_BASE_KEY); }
-    catch(e){ return { ok:false, reason:'readback-getItem-failed', error:String(e && e.message || e) }; }
-    if (!readback) return { ok:false, reason:'readback-empty' };
-    let parsed;
-    try { parsed = JSON.parse(readback); } catch(_){ return { ok:false, reason:'readback-parse-failed' }; }
-    if (!parsed
-        || parsed.gistId !== payload.gistId
-        || parsed.remoteVersion !== payload.remoteVersion
-        || parsed.baseDataHash !== payload.baseDataHash
-        || parsed.schema !== SYNC_BASE_SCHEMA){
-      return { ok:false, reason:'readback-mismatch' };
-    }
-    try { window.dispatchEvent(new CustomEvent('lifeos:gist-sync-base-updated', { detail: parsed })); } catch(_){}
-    return { ok:true, base: parsed };
+    const parsed = parseSyncBase(raw);
+    return parsed.ok ? parsed.base : null;
   }
 
   function clearSyncBase(){
+    _syncBaseInvalidated = true;
     try { localStorage.removeItem(SYNC_BASE_KEY); } catch(_){}
     try { window.dispatchEvent(new CustomEvent('lifeos:gist-sync-base-cleared')); } catch(_){}
   }
 
-  // Ownership: the base must belong to the currently connected Gist.
+  function failedSyncBaseWrite(reason, error){
+    clearSyncBase();
+    const result = { ok:false, reason };
+    if (error !== undefined) result.error = String(error && error.message || error);
+    return result;
+  }
+
+  function writeSyncBase(base){
+    _syncBaseInvalidated = true;
+    const payload = {
+      schema: SYNC_BASE_SCHEMA,
+      gistId: base && base.gistId,
+      remoteVersion: base && base.remoteVersion,
+      baseDataHash: base && base.baseDataHash,
+      acceptedAt: (base && base.acceptedAt) || _now(),
+    };
+    const valid = validateSyncBaseRecord(payload);
+    if (!valid.ok) return failedSyncBaseWrite('invalid-base-' + valid.reason);
+
+    let serialized;
+    try { serialized = JSON.stringify(valid.base); }
+    catch(e){ return failedSyncBaseWrite('serialize-failed', e); }
+    try { localStorage.setItem(SYNC_BASE_KEY, serialized); }
+    catch(e){ return failedSyncBaseWrite('setItem-failed', e); }
+
+    let readback;
+    try { readback = localStorage.getItem(SYNC_BASE_KEY); }
+    catch(e){ return failedSyncBaseWrite('readback-getItem-failed', e); }
+    if (readback !== serialized) return failedSyncBaseWrite(readback === null ? 'readback-empty' : 'readback-byte-mismatch');
+
+    const reparsed = parseSyncBase(readback);
+    if (!reparsed.ok) return failedSyncBaseWrite('readback-invalid-' + reparsed.reason);
+    _syncBaseInvalidated = false;
+    try { window.dispatchEvent(new CustomEvent('lifeos:gist-sync-base-updated', { detail: reparsed.base })); } catch(_){}
+    return { ok:true, base: reparsed.base };
+  }
+
+  // Ownership requires one strict record and the active stored Gist ID.
   function effectiveBaseFor(gistId){
+    if (!isValidIdentifier(gistId, 256)) return null;
+    const connectedId = safeGet(GIST_ID_KEY, '');
+    if (connectedId !== gistId) return null;
     const b = readSyncBase();
-    if (!b) return null;
-    if (b.gistId !== gistId) return null;
+    if (!b || b.gistId !== connectedId) return null;
     return b;
+  }
+
+  function writeConnectedGistId(gistId){
+    if (!isValidIdentifier(gistId, 256)){
+      clearSyncBase();
+      return { ok:false, reason:'invalid-gist-id' };
+    }
+    const serialized = JSON.stringify(gistId);
+    try { localStorage.setItem(GIST_ID_KEY, serialized); }
+    catch(e){ clearSyncBase(); return { ok:false, reason:'gist-id-write-failed', error:String(e && e.message || e) }; }
+    let readback;
+    try { readback = localStorage.getItem(GIST_ID_KEY); }
+    catch(e){ clearSyncBase(); return { ok:false, reason:'gist-id-readback-failed', error:String(e && e.message || e) }; }
+    if (readback !== serialized || safeGet(GIST_ID_KEY, '') !== gistId){
+      clearSyncBase();
+      return { ok:false, reason:'gist-id-readback-mismatch' };
+    }
+    try { window.dispatchEvent(new CustomEvent('lifeos:gist-id-updated', { detail:{ gistId } })); } catch(_){}
+    return { ok:true, gistId };
   }
 
   // ── four-state classifier ────────────────────────────────────────────────
@@ -245,6 +340,9 @@
       throw err;
     }
     const gist = await res.json();
+    if (!gist || !isValidIdentifier(gist.id, 256) || gist.id !== gistId){
+      const err = new Error('GIST_ID_MISMATCH'); err.status = 200; throw err;
+    }
     const file = gist.files && gist.files[BACKUP_FILE];
     if (!file || typeof file.content !== 'string'){
       const err = new Error('GIST_BACKUP_FILE_MISSING');
@@ -258,7 +356,7 @@
     if (data === null || typeof data !== 'object'){
       const err = new Error('GIST_BACKUP_NO_DATA'); err.status = 200; throw err;
     }
-    const remoteHash = await canonicalHash(data);
+    const remoteHash = await backupDataHash(data);
     // Revision identity: prefer history[0].version; fall back to gist.node_id + updated_at
     // when history is absent (tests using a minimal fixture).
     let revision = null;
@@ -270,6 +368,9 @@
       revision = 'ua@' + gist.updated_at;
     } else {
       const err = new Error('GIST_REVISION_UNKNOWN'); err.status = 200; throw err;
+    }
+    if (!isValidIdentifier(revision, 512)){
+      const err = new Error('GIST_REVISION_INVALID'); err.status = 200; throw err;
     }
     return {
       revision,
@@ -337,11 +438,134 @@
   }
 
   function safeGet(key, dflt){
-    try { const v = localStorage.getItem(key); return v === null ? dflt : v; }
+    try {
+      const v = localStorage.getItem(key);
+      if (v === null) return dflt;
+      try {
+        const parsed = JSON.parse(v);
+        if (typeof parsed === 'string') return parsed;
+      } catch(_){}
+      return v;
+    }
     catch(_){ return dflt; }
   }
   function safeSet(key, val){
     try { localStorage.setItem(key, val); return true; } catch(_){ return false; }
+  }
+
+  function readConnectedGistId(){ return safeGet(GIST_ID_KEY, ''); }
+  function hasStoredToken(){ return !!safeGet(TOKEN_KEY, ''); }
+
+  function sameRemoteGeneration(a, b){
+    return !!a && !!b
+      && a.gistId === b.gistId
+      && a.revision === b.revision
+      && a.remoteHash === b.remoteHash;
+  }
+
+  function markConnectedGistUnavailable(gistId){
+    clearSyncBase();
+    refreshUI();
+    try { window.dispatchEvent(new CustomEvent('lifeos:gist-reconnect-required', { detail:{ gistId } })); } catch(_){}
+  }
+
+  async function refetchBeforeOverwrite(token, gistId, observedRemote){
+    let current;
+    try { current = await fetchConnectedGist(token, gistId); }
+    catch(e){
+      if (e.status === 404) markConnectedGistUnavailable(gistId);
+      return { ok:false, reason:e.status === 404 ? 'connected-gist-not-found' : 'remote-revalidation-failed', error:e.message };
+    }
+    if (!sameRemoteGeneration(observedRemote, current)){
+      return { ok:false, reason:'remote-changed-before-write', remote:current };
+    }
+    return { ok:true, remote:current };
+  }
+
+  // GitHub does not document conditional PATCH for Gists. This helper uses
+  // the strongest truthful browser-side guard available: an immediate second
+  // exact-Gist GET must match the classified generation and semantic hash.
+  // A residual race remains between that final GET and PATCH.
+  async function overwriteConnectedGist({ token, gistId, observedRemote, localData, localHash }){
+    const guard = await refetchBeforeOverwrite(token, gistId, observedRemote);
+    if (!guard.ok) return guard;
+
+    const backup = { version: BACKUP_WRAPPER_VERSION, exported_at: _now(), data: localData };
+    try { await patchConnectedGist(token, gistId, backup); }
+    catch(e){
+      if (e.status === 404) markConnectedGistUnavailable(gistId);
+      return { ok:false, reason:e.status === 404 ? 'connected-gist-not-found' : 'patch-failed', error:e.message, status:e.status };
+    }
+
+    let reread;
+    try { reread = await fetchConnectedGist(token, gistId); }
+    catch(e){
+      if (e.status === 404) markConnectedGistUnavailable(gistId);
+      return { ok:false, reason:'reread-failed', error:e.message };
+    }
+    if (reread.remoteHash !== localHash){
+      clearSyncBase();
+      return { ok:false, reason:'reread-hash-mismatch', reread };
+    }
+    if (reread.revision === guard.remote.revision){
+      clearSyncBase();
+      return { ok:false, reason:'reread-revision-not-advanced', reread };
+    }
+    const w = writeSyncBase({ gistId, remoteVersion:reread.revision, baseDataHash:localHash });
+    if (!w.ok) return { ok:false, reason:'unacknowledged', detail:w };
+    return { ok:true, kind:'saved', base:w.base, remote:reread };
+  }
+
+  function writePriorRemoteAudit(gistId, remote){
+    const payload = {
+      gistId,
+      remoteVersion: remote && remote.revision,
+      remoteHashBefore: remote && remote.remoteHash,
+      capturedAt: _now(),
+    };
+    if (!isValidIdentifier(payload.gistId, 256)
+        || !isValidIdentifier(payload.remoteVersion, 512)
+        || typeof payload.remoteHashBefore !== 'string'
+        || !/^[0-9a-f]{64}$/i.test(payload.remoteHashBefore)
+        || typeof payload.capturedAt !== 'string'
+        || !Number.isFinite(Date.parse(payload.capturedAt))){
+      return { ok:false, reason:'audit-invalid' };
+    }
+    let serialized;
+    try { serialized = JSON.stringify(payload); }
+    catch(e){ return { ok:false, reason:'audit-serialize-failed', error:String(e && e.message || e) }; }
+    try { localStorage.setItem(PRIOR_REMOTE_KEY, serialized); }
+    catch(e){ return { ok:false, reason:'audit-write-failed', error:String(e && e.message || e) }; }
+    let readback;
+    try { readback = localStorage.getItem(PRIOR_REMOTE_KEY); }
+    catch(e){ return { ok:false, reason:'audit-readback-failed', error:String(e && e.message || e) }; }
+    if (readback !== serialized) return { ok:false, reason:'audit-readback-mismatch' };
+    return { ok:true, audit:payload };
+  }
+
+  function preserveLocalExport(gistId, remote, localData, localHash, context){
+    let serialized;
+    try {
+      serialized = JSON.stringify({
+        version: BACKUP_WRAPPER_VERSION,
+        exported_at: _now(),
+        data: localData,
+        conflictContext: {
+          kind: context || 'conflict',
+          gistId,
+          priorRemoteVersion: remote.revision,
+          priorRemoteHash: remote.remoteHash,
+          priorLocalHash: localHash,
+        },
+      });
+    } catch(e){ return { ok:false, reason:'preservation-serialize-failed', error:String(e && e.message || e) }; }
+    try { localStorage.setItem(CONFLICT_EXPORT_KEY, serialized); }
+    catch(e){ return { ok:false, reason:'preservation-write-failed', error:e.message }; }
+    let readback;
+    try { readback = localStorage.getItem(CONFLICT_EXPORT_KEY); }
+    catch(e){ return { ok:false, reason:'preservation-read-failed', error:e.message }; }
+    if (readback !== serialized) return { ok:false, reason:'preservation-readback-mismatch' };
+    return { ok:true, serialized };
   }
 
   // Small copy helper for status messages.
@@ -374,7 +598,7 @@
     let localData, localHash;
     try {
       localData = window.getAllBackupData();
-      localHash = await canonicalHash(localData);
+      localHash = await backupDataHash(localData);
     } catch(e){
       setStatus('⚠ Cannot hash local backup: ' + (e.message || e), 'error');
       return { ok:false, reason:'local-hash-failed' };
@@ -385,6 +609,7 @@
     try { remote = await fetchConnectedGist(token, gistId); }
     catch(e){
       if (e.status === 404){
+        markConnectedGistUnavailable(gistId);
         setStatus('⚠ Connected backup not found — reconnect required. No data changed.', 'error');
         toast('⚠ Connected backup not found');
         return { ok:false, reason:'connected-gist-not-found' };
@@ -429,34 +654,47 @@
         toast('⚠ Sync history missing — reconnect');
         return { ok:false, reason:'no-base', remote, localHash };
 
-      case 'local-only':
       case 'converged': {
-        setStatus('Saving to the connected backup…');
-        const backup = { version: BACKUP_WRAPPER_VERSION, exported_at: _now(), data: localData };
-        try { await patchConnectedGist(token, gistId, backup); }
-        catch(e){
-          const msg = e.status === 401 || e.status === 403 || e.status === 404
-            ? 'Token can\'t access this Gist — check the "gist" scope.'
-            : (e.message || 'PATCH failed');
-          setStatus('⚠ ' + msg, 'error');
-          return { ok:false, reason:'patch-failed', error: e.message };
-        }
-        // Reread for acknowledgement — semantic hash + revision.
-        let reread;
-        try { reread = await fetchConnectedGist(token, gistId); }
-        catch(e){
-          setStatus('Save uploaded, but sync status could not be confirmed (reread failed).', 'warn');
-          return { ok:false, reason:'reread-failed', error: e.message };
-        }
-        if (reread.remoteHash !== localHash){
-          clearSyncBase();
-          setStatus('⚠ Save uploaded but remote content does not match what was sent — sync trust cleared, reconnect required.', 'error');
-          return { ok:false, reason:'reread-hash-mismatch', reread };
-        }
-        const w = writeSyncBase({ gistId, remoteVersion: reread.revision, baseDataHash: localHash });
+        const w = writeSyncBase({ gistId, remoteVersion:remote.revision, baseDataHash:remote.remoteHash });
         if (!w.ok){
-          setStatus('Save completed, but sync status could not be confirmed (' + w.reason + '). Reconnect to refresh sync history.', 'warn');
+          setStatus('Converged content found, but sync status could not be confirmed (' + w.reason + ').', 'warn');
           return { ok:false, reason:'unacknowledged', detail:w };
+        }
+        setStatus('✓ Local and remote content converged — sync base accepted.', 'ok');
+        return { ok:true, kind:'converged', base:w.base };
+      }
+
+      case 'local-only': {
+        setStatus('Saving to the connected backup…');
+        const saved = await overwriteConnectedGist({ token, gistId, observedRemote:remote, localData, localHash });
+        if (!saved.ok){
+          if (saved.reason === 'remote-changed-before-write'){
+            const currentBase = effectiveBaseFor(gistId);
+            const currentState = classifyState({ localHash, remoteHash:saved.remote.remoteHash, remoteVersion:saved.remote.revision, base:currentBase });
+            setStatus('⚠ Connected backup changed during Save. Nothing was overwritten; review the new sync state and retry.', 'warn');
+            return { ok:false, reason:'remote-changed-before-write', state:currentState, remote:saved.remote };
+          }
+          if (saved.reason === 'reread-hash-mismatch'){
+            setStatus('⚠ Save uploaded but remote content does not match what was sent — sync trust cleared, reconnect required.', 'error');
+            return saved;
+          }
+          if (saved.reason === 'reread-revision-not-advanced'){
+            setStatus('⚠ Save response did not prove a new remote generation — sync trust cleared.', 'error');
+            return saved;
+          }
+          if (saved.reason === 'reread-failed'){
+            setStatus('Save uploaded, but sync status could not be confirmed (reread failed).', 'warn');
+            return saved;
+          }
+          if (saved.reason === 'unacknowledged'){
+            setStatus('Save completed, but sync status could not be confirmed (' + saved.detail.reason + '). Reconnect to refresh sync history.', 'warn');
+            return saved;
+          }
+          const msg = saved.status === 401 || saved.status === 403
+            ? 'Token can\'t access this Gist — check the "gist" scope.'
+            : (saved.error || 'Save could not be completed safely');
+          setStatus('⚠ ' + msg, 'error');
+          return saved;
         }
         // Display metadata (never authoritative)
         safeSet(LAST_SYNC_KEY, new Date().toISOString());
@@ -465,7 +703,7 @@
         refreshUI();
         setStatus('✓ Saved to the connected backup.', 'ok');
         toast('✓ Saved to GitHub Gist');
-        return { ok:true, kind:'saved', base:w.base };
+        return saved;
       }
 
       default:
@@ -489,7 +727,7 @@
     let localData, localHash;
     try {
       localData = window.getAllBackupData();
-      localHash = await canonicalHash(localData);
+      localHash = await backupDataHash(localData);
     } catch(e){
       setStatus('⚠ Cannot hash local backup: ' + (e.message || e), 'error');
       return { ok:false, reason:'local-hash-failed' };
@@ -499,6 +737,7 @@
     try { remote = await fetchConnectedGist(token, gistId); }
     catch(e){
       if (e.status === 404){
+        markConnectedGistUnavailable(gistId);
         setStatus('⚠ Connected backup not found — reconnect required. No data changed.', 'error');
         toast('⚠ Connected backup not found');
         return { ok:false, reason:'connected-gist-not-found' };
@@ -512,9 +751,18 @@
 
     switch (state.kind){
       case 'synced':
-      case 'converged':
         setStatus('✓ Already in sync — nothing to load.', 'ok');
         return { ok:true, kind:'noop' };
+
+      case 'converged': {
+        const w = writeSyncBase({ gistId, remoteVersion:remote.revision, baseDataHash:remote.remoteHash });
+        if (!w.ok){
+          setStatus('Converged content found, but sync status could not be confirmed (' + w.reason + ').', 'warn');
+          return { ok:false, reason:'unacknowledged', detail:w };
+        }
+        setStatus('✓ Local and remote content converged — sync base accepted.', 'ok');
+        return { ok:true, kind:'converged', base:w.base };
+      }
 
       case 'synced-revision-drift': {
         const w = writeSyncBase({ gistId, remoteVersion: remote.revision, baseDataHash: base.baseDataHash });
@@ -557,7 +805,7 @@
   //   → report success
   //
   // Failure BEFORE processImport → zero destructive mutation.
-  async function performDestructiveLoad({ token, gistId, remote, localData, base }){
+  async function performDestructiveLoad({ token, gistId, remote, localData, base, alreadyConfirmed }){
     // 1. Rotate recovery generation. Hard gate — refuse Load on any failure.
     const rot = rotatePreLoadCapsule();
     if (!rot.ok){
@@ -568,7 +816,7 @@
 
     // 2. Invoke processImport with the exact remote content text.
     let imported;
-    try { imported = await window.processImport(remote.remoteContentText); }
+    try { imported = await window.processImport(remote.remoteContentText, alreadyConfirmed ? { confirmed:true } : undefined); }
     catch(e){
       setStatus('⚠ Import failed — ' + (e.message || 'unknown'), 'error');
       return { ok:false, reason:'processImport-threw', error: e.message };
@@ -582,7 +830,7 @@
 
     // 3. Verify imported semantic hash matches what we thought we were loading.
     let importedHash;
-    try { importedHash = await canonicalHash(window.getAllBackupData()); }
+    try { importedHash = await backupDataHash(window.getAllBackupData()); }
     catch(e){
       setStatus('⚠ Import completed but post-load hash unavailable (' + (e.message || 'error') + ') — do not trust sync.', 'error');
       return { ok:false, reason:'post-load-hash-failed' };
@@ -635,7 +883,7 @@
     let localData, localHash;
     try {
       localData = window.getAllBackupData();
-      localHash = await canonicalHash(localData);
+      localHash = await backupDataHash(localData);
     } catch(e){
       setStatus('⚠ Cannot hash local backup: ' + (e.message || e), 'error');
       return { ok:false, reason:'local-hash-failed' };
@@ -657,51 +905,35 @@
       return { ok:false, reason:'cancelled-by-user' };
     }
 
-    // Preserve prior remote revision for audit BEFORE we PATCH. Best-effort
-    // audit record; a write failure here does not block resolution (the audit
-    // event only fails to store, not to occur — user is not blocked from
-    // resolving their conflict by an audit write).
-    try {
-      localStorage.setItem(PRIOR_REMOTE_KEY, JSON.stringify({
-        gistId,
-        remoteVersion: remote.revision,
-        remoteHashBefore: remote.remoteHash,
-        capturedAt: _now(),
-      }));
-    } catch(_){ /* best-effort */ }
+    // Prior-remote audit evidence is a verified hard gate for this destructive
+    // overwrite. If it cannot be proven durable, nothing is patched.
+    const audit = writePriorRemoteAudit(gistId, remote);
+    if (!audit.ok){
+      setStatus('⚠ Cannot preserve the prior remote revision (' + audit.reason + '). Keep Local refused; nothing overwritten.', 'error');
+      return { ok:false, reason:audit.reason, detail:audit };
+    }
 
-    // PATCH with local. Then verify reread hash equals localHash — identical
-    // acknowledgement contract as ordinary Save.
-    const backup = { version: BACKUP_WRAPPER_VERSION, exported_at: _now(), data: localData };
-    try { await patchConnectedGist(token, gistId, backup); }
-    catch(e){
-      const msg = e.status === 401 || e.status === 403 || e.status === 404
-        ? 'Token can\'t access this Gist — check the "gist" scope.'
-        : (e.message || 'PATCH failed');
-      setStatus('⚠ ' + msg, 'error');
-      return { ok:false, reason:'patch-failed', error: e.message };
-    }
-    let reread;
-    try { reread = await fetchConnectedGist(token, gistId); }
-    catch(e){
-      setStatus('Keep Local uploaded, but sync status could not be confirmed (reread failed).', 'warn');
-      return { ok:false, reason:'reread-failed', error: e.message };
-    }
-    if (reread.remoteHash !== localHash){
-      clearSyncBase();
-      setStatus('⚠ Keep Local uploaded but remote content does not match — sync trust cleared, reconnect required.', 'error');
-      return { ok:false, reason:'reread-hash-mismatch', reread };
-    }
-    const w = writeSyncBase({ gistId, remoteVersion: reread.revision, baseDataHash: localHash });
-    if (!w.ok){
-      setStatus('Keep Local completed, but sync status could not be confirmed (' + w.reason + ').', 'warn');
-      return { ok:false, reason:'unacknowledged', detail:w };
+    // GitHub does not expose atomic conditional PATCH for Gists. Re-fetch the
+    // exact Gist immediately before PATCH and require the generation/hash used
+    // for the decision to remain unchanged.
+    const saved = await overwriteConnectedGist({ token, gistId, observedRemote:remote, localData, localHash });
+    if (!saved.ok){
+      if (saved.reason === 'remote-changed-before-write'){
+        setStatus('⚠ Remote changed again before Keep Local could write. Nothing was overwritten; review and retry.', 'warn');
+      } else if (saved.reason === 'reread-hash-mismatch' || saved.reason === 'reread-revision-not-advanced'){
+        setStatus('⚠ Keep Local could not verify the remote result — sync trust cleared.', 'error');
+      } else if (saved.reason === 'unacknowledged'){
+        setStatus('Keep Local completed, but sync status could not be confirmed (' + saved.detail.reason + ').', 'warn');
+      } else {
+        setStatus('⚠ Keep Local failed safely: ' + (saved.error || saved.reason), 'error');
+      }
+      return saved;
     }
     safeSet(LAST_SYNC_KEY, new Date().toISOString());
     safeSet(LAST_BACKUP_KEY, new Date().toISOString());
     refreshUI();
     setStatus('✓ Keep Local resolved conflict — remote overwritten. Prior remote revision preserved for audit.', 'ok');
-    return { ok:true, kind:'keep-local-resolved', priorRemoteVersion: remote.revision, base: w.base };
+    return { ok:true, kind:'keep-local-resolved', priorRemoteVersion: remote.revision, base:saved.base };
   }
 
   async function resolveConflictLoadRemote(options){
@@ -723,7 +955,7 @@
     let localData, localHash;
     try {
       localData = window.getAllBackupData();
-      localHash = await canonicalHash(localData);
+      localHash = await backupDataHash(localData);
     } catch(e){
       setStatus('⚠ Cannot hash local backup: ' + (e.message || e), 'error');
       return { ok:false, reason:'local-hash-failed' };
@@ -742,31 +974,18 @@
     // import"). Rotation of the ordinary capsule remains a separate hard gate
     // inside performDestructiveLoad, so the recovery generation is protected
     // independently of the conflict-export.
-    const exportWrapper = JSON.stringify({
-      version: BACKUP_WRAPPER_VERSION,
-      exported_at: _now(),
-      data: localData,
-      conflictContext: {
-        gistId,
-        priorRemoteVersion: remote.revision,
-        priorRemoteHash: remote.remoteHash,
-        priorLocalHash: localHash,
-      },
-    });
-    try { localStorage.setItem(CONFLICT_EXPORT_KEY, exportWrapper); }
-    catch(e){
+    const preservation = preserveLocalExport(gistId, remote, localData, localHash, 'conflict');
+    if (!preservation.ok && preservation.reason === 'preservation-write-failed'){
       setStatus('⚠ Cannot preserve local backup before Load — Load refused. No data changed.', 'error');
-      return { ok:false, reason:'preservation-write-failed', error: e.message };
+      return preservation;
     }
-    let vfy;
-    try { vfy = localStorage.getItem(CONFLICT_EXPORT_KEY); }
-    catch(e){
+    if (!preservation.ok && preservation.reason === 'preservation-read-failed'){
       setStatus('⚠ Cannot read back preserved local backup — Load refused. No data changed.', 'error');
-      return { ok:false, reason:'preservation-read-failed', error: e.message };
+      return preservation;
     }
-    if (vfy !== exportWrapper){
+    if (!preservation.ok){
       setStatus('⚠ Preserved local backup readback mismatch — Load refused. No data changed.', 'error');
-      return { ok:false, reason:'preservation-readback-mismatch' };
+      return preservation;
     }
 
     // Explicit destructive confirmation AFTER preservation is verified.
@@ -781,7 +1000,7 @@
 
     // Delegate to the same destructive path Load uses; rotation + hash-verify
     // + sync-base gates all apply.
-    return performDestructiveLoad({ token, gistId, remote, localData, base });
+    return performDestructiveLoad({ token, gistId, remote, localData, base, alreadyConfirmed:true });
   }
 
   function readConflictExport(){
@@ -821,12 +1040,19 @@
       setStatus('⚠ Cannot read newest backup: ' + (e.message || 'error'), 'error');
       return { ok:false, reason:'bootstrap-fetch-failed', error: e.message };
     }
-    // Adopt remote's identity but do NOT overwrite local data — user still
-    // needs to explicitly Load if they want to replace local state.
-    safeSet(GIST_ID_KEY, picked.id);
+    // Persist and read back the chosen exact identity before it can own a base
+    // or be reported connected.
+    const idWrite = writeConnectedGistId(picked.id);
+    if (!idWrite.ok){
+      setStatus('⚠ Could not verify the connected backup ID (' + idWrite.reason + '). Nothing connected.', 'error');
+      return { ok:false, reason:idWrite.reason, detail:idWrite };
+    }
+    // A prior base belongs to the previous connection. Diverged bootstrap
+    // intentionally remains no-base until a dedicated resolver succeeds.
+    clearSyncBase();
     const localData = window.getAllBackupData();
     let localHash;
-    try { localHash = await canonicalHash(localData); }
+    try { localHash = await backupDataHash(localData); }
     catch(e){ return { ok:false, reason:'local-hash-failed', error: e.message }; }
     if (localHash === remote.remoteHash){
       // Local already matches remote; write base and we're done.
@@ -836,9 +1062,107 @@
       refreshUI();
       return { ok:true, kind:'connected-identical' };
     }
-    setStatus('Connected to backup ' + picked.id.slice(0,12) + '…. Local differs from remote — choose Load Remote or Save Local explicitly.', 'warn');
+    setStatus('Connected to backup ' + picked.id.slice(0,12) + '…. Local differs from remote — choose Load Remote or Use Local explicitly.', 'warn');
     refreshUI();
+    try { window.dispatchEvent(new CustomEvent('lifeos:gist-bootstrap-diverged', { detail:{ gistId:picked.id } })); } catch(_){}
     return { ok:true, kind:'connected-diverged', remote };
+  }
+
+  async function resolveBootstrapUseLocal(options){
+    options = options || {};
+    const pre = await preflightSyncEnvironment();
+    if (!pre.ok) return { ok:false, reason:pre.reason };
+    const token = pre.token;
+    const gistId = safeGet(GIST_ID_KEY, '');
+    if (!isValidIdentifier(gistId, 256)) return { ok:false, reason:'no-connected-gist' };
+    if (effectiveBaseFor(gistId)) return { ok:false, reason:'bootstrap-base-already-present' };
+
+    let remote;
+    try { remote = await fetchConnectedGist(token, gistId); }
+    catch(e){
+      if (e.status === 404) markConnectedGistUnavailable(gistId);
+      setStatus('⚠ Cannot read the selected backup before Use Local.', 'error');
+      return { ok:false, reason:e.status === 404 ? 'connected-gist-not-found' : 'remote-fetch-failed', error:e.message };
+    }
+    let localData, localHash;
+    try { localData = window.getAllBackupData(); localHash = await backupDataHash(localData); }
+    catch(e){ return { ok:false, reason:'local-hash-failed', error:e.message }; }
+
+    const proceed = options.confirmed === true
+      || (typeof window.confirm === 'function' && window.confirm(
+        'Use Local for this newly connected backup?\n\nThis overwrites its current remote backup data after one final generation check.'
+      ));
+    if (!proceed){
+      setStatus('Bootstrap Use Local cancelled — nothing overwritten.', 'warn');
+      return { ok:false, reason:'cancelled-by-user' };
+    }
+
+    const audit = writePriorRemoteAudit(gistId, remote);
+    if (!audit.ok){
+      setStatus('⚠ Cannot preserve the prior remote revision (' + audit.reason + '). Use Local refused.', 'error');
+      return { ok:false, reason:audit.reason, detail:audit };
+    }
+    const saved = await overwriteConnectedGist({ token, gistId, observedRemote:remote, localData, localHash });
+    if (!saved.ok){
+      setStatus(saved.reason === 'remote-changed-before-write'
+        ? '⚠ Remote changed before Use Local could write. Nothing was overwritten; review and retry.'
+        : '⚠ Bootstrap Use Local failed safely: ' + (saved.error || saved.reason),
+      saved.reason === 'remote-changed-before-write' ? 'warn' : 'error');
+      return saved;
+    }
+    safeSet(LAST_SYNC_KEY, new Date().toISOString());
+    safeSet(LAST_BACKUP_KEY, new Date().toISOString());
+    safeSet(CHANGE_COUNT_KEY, '0');
+    refreshUI();
+    setStatus('✓ Connected using local data; remote result verified.', 'ok');
+    return { ok:true, kind:'bootstrap-use-local', base:saved.base };
+  }
+
+  async function resolveBootstrapLoadRemote(options){
+    options = options || {};
+    const pre = await preflightSyncEnvironment();
+    if (!pre.ok) return { ok:false, reason:pre.reason };
+    const token = pre.token;
+    const gistId = safeGet(GIST_ID_KEY, '');
+    if (!isValidIdentifier(gistId, 256)) return { ok:false, reason:'no-connected-gist' };
+    if (effectiveBaseFor(gistId)) return { ok:false, reason:'bootstrap-base-already-present' };
+
+    let remote;
+    try { remote = await fetchConnectedGist(token, gistId); }
+    catch(e){
+      if (e.status === 404) markConnectedGistUnavailable(gistId);
+      setStatus('⚠ Cannot read the selected backup before Load Remote.', 'error');
+      return { ok:false, reason:e.status === 404 ? 'connected-gist-not-found' : 'remote-fetch-failed', error:e.message };
+    }
+    let localData, localHash;
+    try { localData = window.getAllBackupData(); localHash = await backupDataHash(localData); }
+    catch(e){ return { ok:false, reason:'local-hash-failed', error:e.message }; }
+
+    const preservation = preserveLocalExport(gistId, remote, localData, localHash, 'bootstrap-diverged');
+    if (!preservation.ok){
+      setStatus('⚠ Cannot preserve local recovery evidence (' + preservation.reason + '). Load Remote refused.', 'error');
+      return preservation;
+    }
+    const proceed = options.confirmed === true
+      || (typeof window.confirm === 'function' && window.confirm(
+        'Load Remote for this newly connected backup?\n\nYour current local data has been preserved and will be replaced.'
+      ));
+    if (!proceed){
+      setStatus('Bootstrap Load Remote cancelled — local data unchanged.', 'warn');
+      return { ok:false, reason:'cancelled-by-user' };
+    }
+
+    const guard = await refetchBeforeOverwrite(token, gistId, remote);
+    if (!guard.ok){
+      const reason = guard.reason === 'remote-changed-before-write' ? 'remote-changed-before-load' : guard.reason;
+      setStatus('⚠ Remote changed before Load Remote could begin. Local data was not imported; review and retry.', 'warn');
+      return { ...guard, reason };
+    }
+    const loaded = await performDestructiveLoad({
+      token, gistId, remote:guard.remote, localData, base:null, alreadyConfirmed:true
+    });
+    if (loaded.ok) setStatus('✓ Connected by loading the verified remote backup.', 'ok');
+    return loaded.ok ? { ...loaded, kind:'bootstrap-load-remote' } : loaded;
   }
 
   // Restore UX: hand a capsule (current or _prev) through the safe
@@ -850,13 +1174,15 @@
     catch(e){ toast('⚠ Cannot read recovery capsule'); return { ok:false, reason:'read-failed' }; }
     if (!raw){ toast('⚠ No recovery capsule available'); return { ok:false, reason:'absent' }; }
     // Ask processImport to run its own confirm dialog and full-state
-    // transaction. On success, we clear the just-used capsule but retain
-    // the other generation.
+    // transaction. It replaces the current capsule with the state that is
+    // about to be overwritten; that fresh capsule is the immediate undo.
     let ok;
     try { ok = await window.processImport(raw); }
     catch(e){ toast('⚠ Restore failed: ' + (e.message || 'error')); return { ok:false, reason:'processImport-threw', error:e.message }; }
     if (!ok){ return { ok:false, reason:'cancelled-or-invalid' }; }
-    try { localStorage.removeItem(key); } catch(_){}
+    if (which === 'prev'){
+      try { localStorage.removeItem(CAPSULE_PREV_KEY); } catch(_){}
+    }
     // After restore, sync base no longer reflects reality — clear it so the
     // next Sync operation goes through classification honestly.
     clearSyncBase();
@@ -866,13 +1192,16 @@
   // ── public surface ───────────────────────────────────────────────────────
   const publicAPI = {
     // pure helpers
-    canonicalStringify, canonicalHash, sha256Available,
-    readSyncBase, writeSyncBase, clearSyncBase, effectiveBaseFor,
+    canonicalStringify, canonicalHash, semanticBackupData, backupDataHash, sha256Available,
+    validateSyncBaseRecord, parseSyncBase,
+    readSyncBase, writeSyncBase, clearSyncBase, effectiveBaseFor, writeConnectedGistId,
+    readConnectedGistId, hasStoredToken,
     classifyState, rotatePreLoadCapsule,
     // network
     fetchConnectedGist, patchConnectedGist, findBackupGistsForBootstrap,
     // orchestrators
-    saveConnected, loadConnected, bootstrapOrReconnect, restorePreLoadRecovery,
+    saveConnected, loadConnected, bootstrapOrReconnect,
+    resolveBootstrapUseLocal, resolveBootstrapLoadRemote, restorePreLoadRecovery,
     // conflict resolvers (§A1 / §A2)
     resolveConflictKeepLocal, resolveConflictLoadRemote,
     readConflictExport, readPriorRemoteRevision,
@@ -901,6 +1230,8 @@
   window.saveToGist = function(){ return saveConnected(); };
   window.loadFromGist = function(){ return loadConnected(); };
   window.gistBootstrap = function(){ return bootstrapOrReconnect('reconnect'); };
+  window.gistBootstrapUseLocal = function(){ return resolveBootstrapUseLocal(); };
+  window.gistBootstrapLoadRemote = function(){ return resolveBootstrapLoadRemote(); };
   window.restorePreLoadRecovery = function(which){ return restorePreLoadRecovery(which); };
   window.gistResolveKeepLocal = function(){ return resolveConflictKeepLocal(); };
   window.gistResolveLoadRemote = function(){ return resolveConflictLoadRemote(); };

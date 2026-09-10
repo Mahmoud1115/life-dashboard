@@ -1875,14 +1875,15 @@ function preflightBackup(backup){
 // (`dune_pre_import_backup_v1`) is written before any destructive change
 // and survives both success and failure (per b4083a8).
 const STATE_KEY_NAME='dune_state_v4';
-async function processImport(text){
+async function processImport(text,options){
+  options=options||{};
   let backup;
   try{backup=JSON.parse(text);}catch(e){showBackupToast('⚠ Invalid file — cannot parse JSON');return false;}
   const err=preflightBackup(backup);
   if(err){showBackupToast('⚠ '+err);return false;}
   const counts=summarizeBackup(backup.data);
   const preview=counts.map(c=>c[0]+': '+c[1]).join(' · ');
-  const confirmed=confirm('Restore backup from '+backup.exported_at+'?\n\n'+preview+'\n\n⚠ Overwrites current data. Current data saved as pre-restore backup.');
+  const confirmed=options.confirmed===true||confirm('Restore backup from '+backup.exported_at+'?\n\n'+preview+'\n\n⚠ Overwrites current data. Current data saved as pre-restore backup.');
   if(!confirmed) return false;
 
   if(!window.Store
@@ -2051,8 +2052,12 @@ function updateGistUI(){
   const sec=document.getElementById('gist-token-section');
   const btns=document.getElementById('gist-action-btns');
   if(!sec) return;
-  const token=LS.get('dune_github_token_v1','');
-  const gistId=LS.get('dune_gist_id_v1','');
+  const token=(window.GistSync&&typeof window.GistSync.hasStoredToken==='function')
+    ? window.GistSync.hasStoredToken()
+    : !!LS.get('dune_github_token_v1','');
+  const gistId=(window.GistSync&&typeof window.GistSync.readConnectedGistId==='function')
+    ? window.GistSync.readConnectedGistId()
+    : LS.get('dune_gist_id_v1','');
   const lastSync=LS.get('dune_last_gist_sync_v1','');
 
   if(token){
@@ -2079,22 +2084,21 @@ function updateGistUI(){
     const cur=document.getElementById('sync-restore-current-btn');
     const prv=document.getElementById('sync-restore-prev-btn');
     const rec=document.getElementById('sync-reconnect-btn');
+    const bootstrapChoices=document.getElementById('sync-bootstrap-choice-row');
     if(row){
       const hasCur=!!localStorage.getItem('dune_pre_import_backup_v1');
       const hasPrv=!!localStorage.getItem('dune_pre_import_backup_prev_v1');
-      const connectedId=LS.get('dune_gist_id_v1','');
-      let baseOk=false;
-      try{
-        const raw=localStorage.getItem('dune_gist_sync_base_v1');
-        if(raw){
-          const parsed=JSON.parse(raw);
-          baseOk=parsed && parsed.schema===1 && parsed.gistId===connectedId;
-        }
-      }catch(_){/*ignore*/}
+      const connectedId=(window.GistSync&&typeof window.GistSync.readConnectedGistId==='function')
+        ? window.GistSync.readConnectedGistId()
+        : LS.get('dune_gist_id_v1','');
+      const baseOk=!!(window.GistSync
+        && typeof window.GistSync.effectiveBaseFor==='function'
+        && window.GistSync.effectiveBaseFor(connectedId));
       const showRec=!!token && connectedId && !baseOk;
       if(cur) cur.style.display=hasCur?'':'none';
       if(prv) prv.style.display=hasPrv?'':'none';
       if(rec) rec.style.display=showRec?'':'none';
+      if(bootstrapChoices) bootstrapChoices.style.display=showRec?'flex':'none';
       row.style.display=(hasCur||hasPrv||showRec)?'flex':'none';
     }
   }catch(_){/*non-fatal UI wiring*/}
@@ -2107,6 +2111,13 @@ try{
   });
   window.addEventListener('lifeos:gist-sync-base-updated',()=>{
     const r=document.getElementById('sync-conflict-row'); if(r) r.style.display='none';
+    const b=document.getElementById('sync-bootstrap-choice-row'); if(b) b.style.display='none';
+  });
+  window.addEventListener('lifeos:gist-sync-base-cleared',()=>updateGistUI());
+  window.addEventListener('lifeos:gist-id-updated',()=>updateGistUI());
+  window.addEventListener('lifeos:gist-reconnect-required',()=>updateGistUI());
+  window.addEventListener('lifeos:gist-bootstrap-diverged',()=>{
+    const b=document.getElementById('sync-bootstrap-choice-row'); if(b) b.style.display='flex';
   });
 }catch(_){/*non-fatal*/}
 

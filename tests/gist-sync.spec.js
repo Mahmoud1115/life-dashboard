@@ -3,8 +3,8 @@
 // Deterministic Playwright suite. Uses page.route to serve an in-memory
 // GitHub Gist mock; the real GitHub API is never contacted.
 //
-// Covers the 23 cases from the P1 remediation brief §12 plus the 4
-// amendment cases required by the approval note:
+// Covers the original P1 remediation cases, approval-note amendments, and
+// the permanent Round-2 authority/concurrency/recovery regressions:
 //   - SHA-256 unavailable → fail safely
 //   - recovery rotation write failure → destructive Load refused
 //   - recovery rotation reread mismatch → destructive Load refused
@@ -42,7 +42,10 @@ async function installGitHubMock(page, initialGists){
   const state = {
     gists: initialGists.map(g => JSON.parse(JSON.stringify(g))),
     patches: 0,
+    gets: 0,
     lastPatchBody: null,
+    beforeGet: null,
+    beforePatch: null,
   };
   await page.route(BLOCKED_FONTS, r => r.abort());
   await page.route(GITHUB_ORIGIN_ANY, async (route) => {
@@ -58,10 +61,13 @@ async function installGitHubMock(page, initialGists){
       const g = state.gists.find(x => x.id === id);
       if (method === 'GET'){
         if (!g) return route.fulfill({ status:404, contentType:'application/json', body:'{"message":"Not Found"}' });
+        state.gets++;
+        if (typeof state.beforeGet === 'function') await state.beforeGet({ id, gist:g, getNumber:state.gets });
         return route.fulfill({ status:200, contentType:'application/json', body: JSON.stringify(g) });
       }
       if (method === 'PATCH'){
         if (!g) return route.fulfill({ status:404, contentType:'application/json', body:'{"message":"Not Found"}' });
+        if (typeof state.beforePatch === 'function') await state.beforePatch({ id, gist:g, request:req });
         const body = JSON.parse(req.postData() || '{}');
         state.patches++;
         state.lastPatchBody = body;
@@ -91,7 +97,7 @@ async function waitReady(page){
 async function bootBaseline(page){
   return page.evaluate(async () => {
     const data = window.getAllBackupData();
-    const hash = await window.GistSync.canonicalHash(data);
+    const hash = await window.GistSync.backupDataHash(data);
     return { data, hash };
   });
 }
@@ -123,6 +129,27 @@ async function neuterReloadAndConfirm(page, confirmReturn=true){
     window.setTimeout = (fn, d) => (d && d >= 1000) ? 0 : _st(fn, d);
     window._origSetTimeout = _st;
   }, confirmReturn);
+}
+
+async function primeRound2Synced(page, gistId='g_round2'){
+  const mock = await installGitHubMock(page, [
+    makeGistFixture({ id:gistId, backupData:{ _placeholder:true }, revision:'rev_base' })
+  ]);
+  await page.goto('/');
+  await waitReady(page);
+  const { data:bootData, hash:bootHash } = await bootBaseline(page);
+  setRemoteFileToData(mock, gistId, bootData);
+  await seedConnected(page, { gistId, remoteVersion:'rev_base', baseDataHash:bootHash });
+  return { mock, gistId, bootData, bootHash };
+}
+
+async function primeRound2Conflict(page, gistId='g_round2_conflict'){
+  const seeded = await primeRound2Synced(page, gistId);
+  const remoteData = { ...seeded.bootData, dune_finance_v1:{ remote:'R' } };
+  setRemoteFileToData(seeded.mock, gistId, remoteData);
+  seeded.mock.gists[0].history.unshift({ version:'rev_remote_R' });
+  await page.evaluate(() => localStorage.setItem('dune_finance_v1', JSON.stringify({ local:'L' })));
+  return { ...seeded, remoteData };
 }
 
 // ── PURE-HELPER TESTS ────────────────────────────────────────────────────────
@@ -158,6 +185,21 @@ test.describe('canonicalHash + canonicalStringify (P1 §12 case 11)', () => {
       h2: await window.GistSync.canonicalHash({ x:1 }),
     }));
     expect(res.h1).toBe(res.h2);
+  });
+
+  test('G-R2-HASH: Store transaction metadata does not change backup semantic hash', async ({ page }) => {
+    const out = await page.evaluate(async () => {
+      const a = { dune_state_v4:{ version:13, revision:4, committedAt:'2026-09-01T00:00:00Z', data:{ meta:{ version:13, lastUpdated:'2026-09-01T00:00:00Z' }, ideas:[{ id:'i1' }] } } };
+      const b = { dune_state_v4:{ version:13, revision:99, committedAt:'2026-09-10T00:00:00Z', data:{ meta:{ version:13, lastUpdated:'2026-09-10T00:00:00Z' }, ideas:[{ id:'i1' }] } } };
+      return {
+        a:await window.GistSync.backupDataHash(a),
+        b:await window.GistSync.backupDataHash(b),
+        genericA:await window.GistSync.canonicalHash(a),
+        genericB:await window.GistSync.canonicalHash(b),
+      };
+    });
+    expect(out.a).toBe(out.b);
+    expect(out.genericA).not.toBe(out.genericB);
   });
 
   test('G-HASH-04: SHA-256 unavailable → canonicalHash throws SHA256_UNAVAILABLE', async ({ page }) => {
@@ -221,13 +263,13 @@ test.describe('sync-base persistence + ownership (§4-5)', () => {
         return orig.call(this, k, v);
       };
       try {
-        return window.GistSync.writeSyncBase({ gistId:'G', remoteVersion:'V1', baseDataHash:'HHH' });
+        return window.GistSync.writeSyncBase({ gistId:'G', remoteVersion:'V1', baseDataHash:'a'.repeat(64) });
       } finally {
         Storage.prototype.setItem = orig;
       }
     });
     expect(res.ok).toBe(false);
-    expect(['readback-empty','readback-parse-failed','readback-mismatch']).toContain(res.reason);
+    expect(['readback-empty','readback-byte-mismatch']).toContain(res.reason);
   });
 
   test('G-BASE-02: readSyncBase rejects wrong schema, and effectiveBaseFor rejects non-owned gistId', async ({ page }) => {
@@ -518,7 +560,7 @@ test.describe('loadConnected (destructive path guards)', () => {
     // Remote differs from boot by one extra key
     const remoteData = { ...bootData, dune_finance_v1: { remote:'v2' } };
     setRemoteFileToData(mock, gistId, remoteData);
-    const remoteHash = await page.evaluate(async d => window.GistSync.canonicalHash(d), remoteData);
+    const remoteHash = await page.evaluate(async d => window.GistSync.backupDataHash(d), remoteData);
     await seedConnected(page, { gistId, remoteVersion:'rev_old', baseDataHash: bootHash });
     return { mock, bootData, bootHash, remoteData, remoteHash };
   }
@@ -628,7 +670,7 @@ test.describe('loadConnected (destructive path guards)', () => {
     expect(r1.ok).toBe(true);
     // Reset the classifier to remote-only again: rewrite remote with a NEW
     // value; re-seed base to match the just-loaded local state.
-    const newLocalHash = await page.evaluate(async () => window.GistSync.canonicalHash(window.getAllBackupData()));
+    const newLocalHash = await page.evaluate(async () => window.GistSync.backupDataHash(window.getAllBackupData()));
     setRemoteFileToData(mock, gistId, { ...bootData, dune_finance_v1: { remote:'v3' } });
     mock.gists[0].history.unshift({ version:'rev_remote2' });
     await seedConnected(page, { gistId, remoteVersion:'rev_after_first_load', baseDataHash: newLocalHash });
@@ -696,8 +738,8 @@ test.describe('resolveConflictKeepLocal (§A1 amendment)', () => {
     // Diverge local (still matches base's hash until this write).
     await page.evaluate(() => localStorage.setItem('dune_finance_v1', JSON.stringify({ localConflict:'L' })));
     // Recompute the expected localHash after mutation — for later assertions.
-    const localHashNow = await page.evaluate(async () => window.GistSync.canonicalHash(window.getAllBackupData()));
-    const remoteHashNow = await page.evaluate(async d => window.GistSync.canonicalHash(d), remoteDivergent);
+    const localHashNow = await page.evaluate(async () => window.GistSync.backupDataHash(window.getAllBackupData()));
+    const remoteHashNow = await page.evaluate(async d => window.GistSync.backupDataHash(d), remoteDivergent);
     return { mock, bootHash, localHashNow, remoteHashNow };
   }
 
@@ -767,7 +809,7 @@ test.describe('resolveConflictLoadRemote (§A2 amendment)', () => {
     setRemoteFileToData(mock, gistId, remoteDivergent);
     mock.gists[0].history.unshift({ version:'rev_remote_conflict' });
     await page.evaluate(() => localStorage.setItem('dune_finance_v1', JSON.stringify({ localConflict:'L' })));
-    const remoteHashNow = await page.evaluate(async d => window.GistSync.canonicalHash(d), remoteDivergent);
+    const remoteHashNow = await page.evaluate(async d => window.GistSync.backupDataHash(d), remoteDivergent);
     return { mock, bootHash, remoteHashNow, remoteDivergent };
   }
 
@@ -892,7 +934,7 @@ test.describe('real Store mutations trigger correct Save (§B1/B2)', () => {
       await window.Store.set('ideas', [{ id:'idea-real-1', text:'test idea via real Store', ts: 1 }]);
       await window.Store.flushNow();
     });
-    const preHash = await page.evaluate(async () => window.GistSync.canonicalHash(window.getAllBackupData()));
+    const preHash = await page.evaluate(async () => window.GistSync.backupDataHash(window.getAllBackupData()));
     expect(preHash).not.toBe(bootHash); // Store write actually changed dune_state_v4
     const res = await page.evaluate(() => window.GistSync.saveConnected());
     expect(res.ok).toBe(true);
@@ -919,7 +961,7 @@ test.describe('real Store mutations trigger correct Save (§B1/B2)', () => {
       await window.Store.set('bht.entries', [{ id:'bht-real-1', mood:'ok', ts: 42 }]);
       await window.Store.flushNow();
     });
-    const preHash = await page.evaluate(async () => window.GistSync.canonicalHash(window.getAllBackupData()));
+    const preHash = await page.evaluate(async () => window.GistSync.backupDataHash(window.getAllBackupData()));
     expect(preHash).not.toBe(bootHash);
     const res = await page.evaluate(() => window.GistSync.saveConnected());
     expect(res.ok).toBe(true);
@@ -1025,7 +1067,7 @@ test.describe('initial bootstrap (§4 amendment)', () => {
     expect(boot.ok).toBe(true);
     expect(boot.kind).toBe('connected-identical');
     const state = await page.evaluate(() => ({
-      id: localStorage.getItem('dune_gist_id_v1'),
+      id: window.GistSync.readConnectedGistId(),
       base: JSON.parse(localStorage.getItem('dune_gist_sync_base_v1')),
     }));
     expect(state.id).toBe(gistId);
@@ -1036,7 +1078,7 @@ test.describe('initial bootstrap (§4 amendment)', () => {
     await waitReady(page);
     const post = await page.evaluate(() => {
       const base = JSON.parse(localStorage.getItem('dune_gist_sync_base_v1'));
-      return { base, owned: !!(base && base.gistId === localStorage.getItem('dune_gist_id_v1')) };
+      return { base, owned: !!(base && base.gistId === window.GistSync.readConnectedGistId()) };
     });
     expect(post.owned).toBe(true);
     expect(post.base.remoteVersion).toBe('rev_seed');
@@ -1064,6 +1106,416 @@ test.describe('initial bootstrap (§4 amendment)', () => {
     const base = await page.evaluate(() => localStorage.getItem('dune_gist_sync_base_v1'));
     expect(base).toBe(null);
     expect(mock.patches).toBe(0);
+  });
+});
+
+// ── ROUND-2 HIGH-RISK REGRESSIONS ────────────────────────────────────────────
+
+test.describe('Round-2 strict accepted-base authority', () => {
+  test.beforeEach(async ({ page }) => {
+    await installGitHubMock(page, []);
+    await page.goto('/');
+    await waitReady(page);
+  });
+
+  const valid = {
+    schema:1,
+    gistId:'G',
+    remoteVersion:'rev_valid',
+    baseDataHash:'a'.repeat(64),
+    acceptedAt:'2026-09-01T00:00:00.000Z',
+  };
+
+  for (const [name, mutate] of [
+    ['malformed SHA-256 hash', b => ({ ...b, baseDataHash:'not-sha256' })],
+    ['invalid acceptedAt', b => ({ ...b, acceptedAt:'not-a-date' })],
+    ['malformed remoteVersion', b => ({ ...b, remoteVersion:'   ' })],
+  ]){
+    test('G-R2-BASE rejects ' + name, async ({ page }) => {
+      const out = await page.evaluate(({ base, name }) => {
+        const b = { ...base };
+        if (name === 'malformed SHA-256 hash') b.baseDataHash = 'not-sha256';
+        if (name === 'invalid acceptedAt') b.acceptedAt = 'not-a-date';
+        if (name === 'malformed remoteVersion') b.remoteVersion = '   ';
+        localStorage.setItem('dune_github_token_v1', 'TOKEN');
+        localStorage.setItem('dune_gist_id_v1', 'G');
+        localStorage.setItem('dune_gist_sync_base_v1', JSON.stringify(b));
+        window.updateGistUI();
+        return {
+          read:window.GistSync.readSyncBase(),
+          effective:window.GistSync.effectiveBaseFor('G'),
+          reconnect:document.getElementById('sync-reconnect-btn').style.display,
+          choices:document.getElementById('sync-bootstrap-choice-row').style.display,
+        };
+      }, { base:valid, name });
+      expect(out.read).toBe(null);
+      expect(out.effective).toBe(null);
+      expect(out.reconnect).not.toBe('none');
+      expect(out.choices).toBe('flex');
+    });
+  }
+
+  test('G-R2-BASE wrong owner is never effective', async ({ page }) => {
+    const out = await page.evaluate((base) => {
+      localStorage.setItem('dune_gist_id_v1', 'ACTIVE');
+      localStorage.setItem('dune_gist_sync_base_v1', JSON.stringify({ ...base, gistId:'OTHER' }));
+      return window.GistSync.effectiveBaseFor('OTHER');
+    }, valid);
+    expect(out).toBe(null);
+  });
+
+  test('G-R2-BASE swallowed write with stale prior bytes is rejected and cleared', async ({ page }) => {
+    const out = await page.evaluate((base) => {
+      localStorage.setItem('dune_gist_id_v1', 'G');
+      localStorage.setItem('dune_gist_sync_base_v1', JSON.stringify(base));
+      const orig = Storage.prototype.setItem;
+      Storage.prototype.setItem = function(k, v){
+        if (k === 'dune_gist_sync_base_v1') return;
+        return orig.call(this, k, v);
+      };
+      try {
+        const result = window.GistSync.writeSyncBase({
+          gistId:'G', remoteVersion:'rev_new', baseDataHash:'b'.repeat(64), acceptedAt:'2026-09-02T00:00:00.000Z'
+        });
+        return { result, raw:localStorage.getItem('dune_gist_sync_base_v1'), effective:window.GistSync.effectiveBaseFor('G') };
+      } finally { Storage.prototype.setItem = orig; }
+    }, valid);
+    expect(out.result.ok).toBe(false);
+    expect(out.result.reason).toBe('readback-byte-mismatch');
+    expect(out.raw).toBe(null);
+    expect(out.effective).toBe(null);
+  });
+
+  test('G-R2-BASE acceptedAt readback mismatch is rejected', async ({ page }) => {
+    const out = await page.evaluate(() => {
+      localStorage.setItem('dune_gist_id_v1', 'G');
+      const origGet = Storage.prototype.getItem;
+      Storage.prototype.getItem = function(k){
+        const raw = origGet.call(this, k);
+        if (k === 'dune_gist_sync_base_v1' && raw){
+          const parsed = JSON.parse(raw);
+          parsed.acceptedAt = '2026-08-01T00:00:00.000Z';
+          return JSON.stringify(parsed);
+        }
+        return raw;
+      };
+      try {
+        return window.GistSync.writeSyncBase({
+          gistId:'G', remoteVersion:'rev_new', baseDataHash:'b'.repeat(64), acceptedAt:'2026-09-02T00:00:00.000Z'
+        });
+      } finally { Storage.prototype.getItem = origGet; }
+    });
+    expect(out.ok).toBe(false);
+    expect(out.reason).toBe('readback-byte-mismatch');
+  });
+
+  test('G-R2-BASE unverified attempted bytes remain non-consumable even if removal is swallowed', async ({ page }) => {
+    const out = await page.evaluate(() => {
+      localStorage.setItem('dune_gist_id_v1', 'G');
+      const origSet = Storage.prototype.setItem;
+      const origRemove = Storage.prototype.removeItem;
+      Storage.prototype.setItem = function(k, v){
+        if (k === 'dune_gist_sync_base_v1'){
+          const parsed = JSON.parse(v);
+          parsed.baseDataHash = 'f'.repeat(64);
+          return origSet.call(this, k, JSON.stringify(parsed));
+        }
+        return origSet.call(this, k, v);
+      };
+      Storage.prototype.removeItem = function(k){
+        if (k === 'dune_gist_sync_base_v1') return;
+        return origRemove.call(this, k);
+      };
+      let result;
+      try {
+        result = window.GistSync.writeSyncBase({ gistId:'G', remoteVersion:'rev_new', baseDataHash:'b'.repeat(64) });
+      } finally {
+        Storage.prototype.setItem = origSet;
+        Storage.prototype.removeItem = origRemove;
+      }
+      return {
+        result,
+        raw:localStorage.getItem('dune_gist_sync_base_v1'),
+        effective:window.GistSync.effectiveBaseFor('G'),
+      };
+    });
+    expect(out.result.ok).toBe(false);
+    expect(out.raw).toBeTruthy();
+    expect(out.effective).toBe(null);
+  });
+});
+
+test.describe('Round-2 overwrite generation guard', () => {
+  test('G-R2-IDENTITY rejects a response whose Gist ID does not match the requested target', async ({ page }) => {
+    const { mock, gistId } = await primeRound2Synced(page);
+    mock.beforeGet = ({ getNumber }) => {
+      if (getNumber === 1) mock.gists[0].id = 'g_wrong_response';
+    };
+    const out = await page.evaluate(() => window.GistSync.saveConnected());
+    expect(out.ok).toBe(false);
+    expect(out.reason).toBe('remote-fetch-failed');
+    expect(mock.patches).toBe(0);
+    expect(await page.evaluate((id) => window.GistSync.effectiveBaseFor(id), gistId)).toBeTruthy();
+  });
+
+  test('G-R2-SAVE remote change between classification and final guard causes zero PATCH', async ({ page }) => {
+    const { mock, gistId, bootData } = await primeRound2Synced(page);
+    await page.evaluate(() => localStorage.setItem('dune_finance_v1', JSON.stringify({ local:'L' })));
+    mock.beforeGet = ({ gist, getNumber }) => {
+      if (getNumber === 2){
+        gist.files['dune-backup.json'] = { content:JSON.stringify(makeBackupWrapper({ ...bootData, dune_finance_v1:{ remote:'R' } }), null, 2) };
+        gist.history.unshift({ version:'rev_remote_R' });
+      }
+    };
+    const out = await page.evaluate(() => window.GistSync.saveConnected());
+    expect(out.ok).toBe(false);
+    expect(out.reason).toBe('remote-changed-before-write');
+    expect(mock.patches).toBe(0);
+    const remote = JSON.parse(mock.gists[0].files['dune-backup.json'].content);
+    expect(remote.data.dune_finance_v1).toEqual({ remote:'R' });
+  });
+
+  test('G-R2-KEEP remote change before resolver invocation is reclassified without PATCH', async ({ page }) => {
+    const { mock, gistId, bootData } = await primeRound2Conflict(page);
+    setRemoteFileToData(mock, gistId, bootData);
+    mock.gists[0].history.unshift({ version:'rev_remote_back_to_base' });
+    const out = await page.evaluate(() => window.GistSync.resolveConflictKeepLocal({ confirmed:true }));
+    expect(out.ok).toBe(false);
+    expect(out.reason).toBe('no-longer-conflict');
+    expect(mock.patches).toBe(0);
+  });
+
+  test('G-R2-KEEP remote change after resolver fetch but before final guard causes zero PATCH', async ({ page }) => {
+    const { mock, bootData } = await primeRound2Conflict(page);
+    mock.beforeGet = ({ gist, getNumber }) => {
+      if (getNumber === 2){
+        gist.files['dune-backup.json'] = { content:JSON.stringify(makeBackupWrapper({ ...bootData, dune_finance_v1:{ remote:'R2' } }), null, 2) };
+        gist.history.unshift({ version:'rev_remote_R2' });
+      }
+    };
+    const out = await page.evaluate(() => window.GistSync.resolveConflictKeepLocal({ confirmed:true }));
+    expect(out.ok).toBe(false);
+    expect(out.reason).toBe('remote-changed-before-write');
+    expect(mock.patches).toBe(0);
+  });
+
+  for (const mode of ['write-failure','readback-mismatch']){
+    test('G-R2-KEEP audit ' + mode + ' causes zero PATCH', async ({ page }) => {
+      const { mock } = await primeRound2Conflict(page);
+      const out = await page.evaluate(async (mode) => {
+        const origSet = Storage.prototype.setItem;
+        const origGet = Storage.prototype.getItem;
+        if (mode === 'write-failure'){
+          Storage.prototype.setItem = function(k, v){
+            if (k === 'dune_gist_prior_remote_revision_v1') throw new Error('quota');
+            return origSet.call(this, k, v);
+          };
+        } else {
+          Storage.prototype.getItem = function(k){
+            const raw = origGet.call(this, k);
+            return k === 'dune_gist_prior_remote_revision_v1' && raw ? raw + 'corrupt' : raw;
+          };
+        }
+        try { return await window.GistSync.resolveConflictKeepLocal({ confirmed:true }); }
+        finally { Storage.prototype.setItem = origSet; Storage.prototype.getItem = origGet; }
+      }, mode);
+      expect(out.ok).toBe(false);
+      expect(out.reason).toBe(mode === 'write-failure' ? 'audit-write-failed' : 'audit-readback-mismatch');
+      expect(mock.patches).toBe(0);
+    });
+  }
+});
+
+test.describe('Round-2 convergence acceptance', () => {
+  test('G-R2-CONVERGED Load advances B→C/C to C without import or PATCH', async ({ page }) => {
+    const { mock, gistId } = await primeRound2Synced(page);
+    await page.evaluate(() => localStorage.setItem('dune_finance_v1', JSON.stringify({ converged:'C' })));
+    const localData = await page.evaluate(() => window.getAllBackupData());
+    const localHash = await page.evaluate(async () => window.GistSync.backupDataHash(window.getAllBackupData()));
+    setRemoteFileToData(mock, gistId, localData);
+    mock.gists[0].history.unshift({ version:'rev_C' });
+    const out = await page.evaluate(() => window.GistSync.loadConnected());
+    expect(out.ok).toBe(true);
+    expect(out.kind).toBe('converged');
+    expect(mock.patches).toBe(0);
+    const base = await page.evaluate(() => window.GistSync.readSyncBase());
+    expect(base.baseDataHash).toBe(localHash);
+    expect(base.remoteVersion).toBe('rev_C');
+  });
+
+  test('G-R2-CONVERGED next local edit classifies local-only and saves', async ({ page }) => {
+    const { mock, gistId } = await primeRound2Synced(page);
+    await page.evaluate(() => localStorage.setItem('dune_finance_v1', JSON.stringify({ converged:'C' })));
+    const localData = await page.evaluate(() => window.getAllBackupData());
+    setRemoteFileToData(mock, gistId, localData);
+    mock.gists[0].history.unshift({ version:'rev_C' });
+    const converged = await page.evaluate(() => window.GistSync.loadConnected());
+    expect(converged.ok).toBe(true);
+    await page.evaluate(() => localStorage.setItem('dune_finance_v1', JSON.stringify({ localAfterConvergence:'D' })));
+    const saved = await page.evaluate(() => window.GistSync.saveConnected());
+    expect(saved.ok).toBe(true);
+    expect(saved.kind).toBe('saved');
+    expect(mock.patches).toBe(1);
+  });
+});
+
+test.describe('Round-2 bootstrap resolvers and identity acknowledgement', () => {
+  async function primeDiverged(page){
+    const mock = await installGitHubMock(page, [
+      makeGistFixture({ id:'g_boot_r2', backupData:{ _placeholder:true }, revision:'rev_boot_R' })
+    ]);
+    await page.goto('/');
+    await waitReady(page);
+    await neuterReloadAndConfirm(page, true);
+    await page.evaluate(() => {
+      localStorage.removeItem('dune_gist_id_v1');
+      localStorage.removeItem('dune_gist_sync_base_v1');
+      localStorage.setItem('dune_github_token_v1', 'BOOT_TOKEN');
+    });
+    const { data:bootData } = await bootBaseline(page);
+    const remoteData = { ...bootData, dune_finance_v1:{ bootstrapRemote:'R' } };
+    setRemoteFileToData(mock, 'g_boot_r2', remoteData);
+    const boot = await page.evaluate(() => window.GistSync.bootstrapOrReconnect('reconnect'));
+    expect(boot.ok).toBe(true);
+    expect(boot.kind).toBe('connected-diverged');
+    mock.gets = 0;
+    return { mock, bootData, remoteData, gistId:'g_boot_r2' };
+  }
+
+  test('G-R2-BOOT swallowed Gist-ID write prevents connected success', async ({ page }) => {
+    const mock = await installGitHubMock(page, [
+      makeGistFixture({ id:'g_boot_id', backupData:{ _placeholder:true }, revision:'rev_boot' })
+    ]);
+    await page.goto('/');
+    await waitReady(page);
+    await page.evaluate(() => localStorage.setItem('dune_github_token_v1', 'BOOT_TOKEN'));
+    const { data } = await bootBaseline(page);
+    setRemoteFileToData(mock, 'g_boot_id', data);
+    const out = await page.evaluate(async () => {
+      const orig = Storage.prototype.setItem;
+      Storage.prototype.setItem = function(k, v){
+        if (k === 'dune_gist_id_v1') return;
+        return orig.call(this, k, v);
+      };
+      try { return await window.GistSync.bootstrapOrReconnect('reconnect'); }
+      finally { Storage.prototype.setItem = orig; }
+    });
+    expect(out.ok).toBe(false);
+    expect(out.reason).toBe('gist-id-readback-mismatch');
+    expect(await page.evaluate(() => window.GistSync.readSyncBase())).toBe(null);
+  });
+
+  test('G-R2-BOOT Use Local succeeds with final generation guard and verified base', async ({ page }) => {
+    const { mock } = await primeDiverged(page);
+    await page.evaluate(() => localStorage.setItem('dune_finance_v1', JSON.stringify({ bootstrapLocal:'L' })));
+    const out = await page.evaluate(() => window.GistSync.resolveBootstrapUseLocal({ confirmed:true }));
+    expect(out.ok).toBe(true);
+    expect(out.kind).toBe('bootstrap-use-local');
+    expect(mock.patches).toBe(1);
+    expect(await page.evaluate(() => window.GistSync.effectiveBaseFor('g_boot_r2'))).toBeTruthy();
+  });
+
+  test('G-R2-BOOT Use Local cancellation causes zero PATCH', async ({ page }) => {
+    const { mock } = await primeDiverged(page);
+    const out = await page.evaluate(() => {
+      window.confirm = () => false;
+      return window.GistSync.resolveBootstrapUseLocal();
+    });
+    expect(out.ok).toBe(false);
+    expect(out.reason).toBe('cancelled-by-user');
+    expect(mock.patches).toBe(0);
+  });
+
+  test('G-R2-BOOT Load Remote cancellation causes zero processImport', async ({ page }) => {
+    await primeDiverged(page);
+    const out = await page.evaluate(async () => {
+      window.confirm = () => false;
+      window._r2ImportCalls = 0;
+      const original = window.processImport;
+      window.processImport = async function(...args){ window._r2ImportCalls++; return original.apply(this, args); };
+      const result = await window.GistSync.resolveBootstrapLoadRemote();
+      return { result, calls:window._r2ImportCalls };
+    });
+    expect(out.result.ok).toBe(false);
+    expect(out.result.reason).toBe('cancelled-by-user');
+    expect(out.calls).toBe(0);
+  });
+
+  test('G-R2-BOOT Load Remote succeeds through real processImport and verified base', async ({ page }) => {
+    const { remoteData } = await primeDiverged(page);
+    const out = await page.evaluate(() => window.GistSync.resolveBootstrapLoadRemote({ confirmed:true }));
+    expect(out.ok, JSON.stringify(out)).toBe(true);
+    expect(out.kind).toBe('bootstrap-load-remote');
+    const finance = await page.evaluate(() => JSON.parse(localStorage.getItem('dune_finance_v1')));
+    expect(finance).toEqual(remoteData.dune_finance_v1);
+    expect(await page.evaluate(() => window.GistSync.effectiveBaseFor('g_boot_r2'))).toBeTruthy();
+  });
+});
+
+test.describe('Round-2 deleted Gist and recovery undo', () => {
+  test('G-R2-404 clears authority and exposes reconnect without retargeting', async ({ page }) => {
+    const { mock, gistId } = await primeRound2Synced(page, 'g_deleted_r2');
+    mock.gists.length = 0;
+    const out = await page.evaluate(() => window.GistSync.saveConnected());
+    expect(out.ok).toBe(false);
+    expect(out.reason).toBe('connected-gist-not-found');
+    const state = await page.evaluate((gistId) => ({
+      id:localStorage.getItem('dune_gist_id_v1'),
+      base:window.GistSync.effectiveBaseFor(gistId),
+      rawBase:localStorage.getItem('dune_gist_sync_base_v1'),
+      reconnect:document.getElementById('sync-reconnect-btn').style.display,
+    }), gistId);
+    expect(state.id).toBe(gistId);
+    expect(state.base).toBe(null);
+    expect(state.rawBase).toBe(null);
+    expect(state.reconnect).not.toBe('none');
+  });
+
+  test('G-R2-RESTORE current retains the newly-created real processImport undo capsule', async ({ page }) => {
+    await installGitHubMock(page, []);
+    await page.goto('/');
+    await waitReady(page);
+    await neuterReloadAndConfirm(page, true);
+    const targetData = await page.evaluate(() => {
+      localStorage.setItem('dune_finance_v1', JSON.stringify({ beforeRestore:'B' }));
+      const data = window.getAllBackupData();
+      data.dune_finance_v1 = { restoredTarget:'A' };
+      localStorage.setItem('dune_pre_import_backup_v1', JSON.stringify({
+        version:'2026.1', exported_at:'2026-09-01T00:00:00.000Z', data
+      }));
+      return data;
+    });
+    const out = await page.evaluate(() => window.GistSync.restorePreLoadRecovery('current'));
+    expect(out.ok).toBe(true);
+    const state = await page.evaluate(() => ({
+      finance:JSON.parse(localStorage.getItem('dune_finance_v1')),
+      capsule:JSON.parse(localStorage.getItem('dune_pre_import_backup_v1')),
+    }));
+    expect(state.finance).toEqual(targetData.dune_finance_v1);
+    expect(state.capsule.data.dune_finance_v1).toEqual({ beforeRestore:'B' });
+  });
+
+  test('G-R2-RESTORE immediate second current restore undoes the first restore', async ({ page }) => {
+    await installGitHubMock(page, []);
+    await page.goto('/');
+    await waitReady(page);
+    await neuterReloadAndConfirm(page, true);
+    await page.evaluate(() => {
+      localStorage.setItem('dune_finance_v1', JSON.stringify({ original:'B' }));
+      const target = window.getAllBackupData();
+      target.dune_finance_v1 = { target:'A' };
+      localStorage.setItem('dune_pre_import_backup_v1', JSON.stringify({
+        version:'2026.1', exported_at:'2026-09-01T00:00:00.000Z', data:target
+      }));
+    });
+    expect((await page.evaluate(() => window.GistSync.restorePreLoadRecovery('current'))).ok).toBe(true);
+    expect((await page.evaluate(() => window.GistSync.restorePreLoadRecovery('current'))).ok).toBe(true);
+    const state = await page.evaluate(() => ({
+      finance:JSON.parse(localStorage.getItem('dune_finance_v1')),
+      capsule:JSON.parse(localStorage.getItem('dune_pre_import_backup_v1')),
+    }));
+    expect(state.finance).toEqual({ original:'B' });
+    expect(state.capsule.data.dune_finance_v1).toEqual({ target:'A' });
   });
 });
 

@@ -1,11 +1,11 @@
-# Architecture — as of 2026-08-25
+# Architecture — as of 2026-09-10
 
 Snapshot of how the code actually works today. Update when reality changes, not when a plan changes.
 
 ## Runtime
 
 - Static site. `index.html` loads 15 same-origin `<script>` tags in a fixed order, one Google Fonts stylesheet, everything else self-hosted.
-- No framework, no build step, no `package.json`, no bundler.
+- No runtime framework, build step, or bundler. `package.json` is dev-tooling only (ADR-009).
 - Deployment: push to `main` → GitHub Pages rebuilds and serves from `/`.
 - PWA manifest is present (`manifest.json`) — installable, but **no service worker exists** so it is not offline-capable.
 
@@ -74,10 +74,11 @@ Manual backup synchronization to a private GitHub Gist. User-initiated only, nev
   "baseDataHash": "<sha-256 hex>", "acceptedAt": "<ISO>" }
 ```
 
-- `baseDataHash` is a SHA-256 of a **canonical JSON** rendering of the `backup.data` object (key-sorted objects, preserved arrays, no `exported_at`, no `version` wrapper field, no `dune_change_count_v1`).
+- `baseDataHash` is a SHA-256 of a **canonical semantic JSON** rendering of the `backup.data` object (key-sorted objects, preserved arrays, no outer `exported_at`/`version`, no `dune_change_count_v1`). Store transaction metadata that `processImport` necessarily regenerates—`dune_state_v4.revision`, `committedAt`, and `data.meta.lastUpdated`—is also excluded. The generic `canonicalHash` helper remains byte-semantic and does not apply this normalization.
 - `remoteVersion` is the Gist `history[0].version` revision SHA (or a `node_id@updated_at` fallback if history is unavailable).
-- The base is written only after a successful Save/Load and **read back and byte-verified** in the same call. If read-back fails, the operation reports "sync status could not be confirmed" and does NOT report the device as synced.
-- Ownership check: `syncBase.gistId` must equal `dune_gist_id_v1`. Mismatch → treated as absent (bootstrap).
+- A base is accepted only if all five fields are present and strictly valid: schema 1, bounded non-whitespace Gist/revision identifiers, an exact 64-hex SHA-256, and a parseable timestamp. Malformed records are never concurrency authority.
+- The base is written only after a successful Save/Load and **read back byte-for-byte, reparsed, and revalidated** in the same call. Every failed write/readback invalidates and attempts to remove the base; an in-memory fail-closed latch prevents stale bytes from becoming authoritative even if removal is swallowed.
+- Ownership check: a strict `syncBase.gistId` and the active, verified `dune_gist_id_v1` must both equal the requested Gist. Mismatch → treated as absent (bootstrap).
 - If SHA-256 (`crypto.subtle.digest`) is unavailable, Save/Load refuse with a truthful "sync unavailable" message and perform no destructive operation. There is no fallback hash; sync identity has one algorithm.
 
 **Four-state classifier.** Given `localHash`, `remoteHash`, `remoteVersion`, and `base`:
@@ -92,22 +93,24 @@ Manual backup synchronization to a private GitHub Gist. User-initiated only, nev
 | ≠ | ≠ (localHash ≠ remoteHash) | — | `conflict` |
 | base absent / non-owned | — | — | `no-base` |
 
-**Save.** Preflight → fetch the exact connected Gist (no discovery retargeting) → hash local + remote → classify → dispatch by kind. `local-only` / `converged` → PATCH the connected Gist → refetch → **verify `remoteHash === localHash`** → write and read-back-verify sync base → only then report synced. `remote-only` refuses. `conflict` refuses. `no-base` refuses (bootstrap). `synced` is a no-op. `synced-revision-drift` refreshes only the base's `remoteVersion` (no PATCH).
+**Save.** Preflight → fetch the exact connected Gist (no discovery retargeting) → hash local + remote → classify → dispatch by kind. `local-only` performs an immediate second exact-Gist GET and requires the same Gist ID, revision, and semantic hash before PATCH; it then refetches, verifies `remoteHash === localHash` and a newly advanced revision, and persists a verified base. `converged` accepts the already-identical remote as the new base without PATCH. `remote-only`, `conflict`, and `no-base` refuse; `synced` is a no-op; `synced-revision-drift` refreshes only the base revision.
+
+GitHub's Gist Update endpoint does not document an atomic conditional `PATCH` or an `If-Match` precondition for this unsafe method. The second GET closes the observed stale-classification window, but a residual provider race remains between that GET and PATCH. A post-PATCH semantic-hash and revision acknowledgement prevents the client from claiming a trusted base when the result cannot be proven; it cannot make the provider write itself atomic.
 
 **Load.** Same classifier. Destructive path (`remote-only`) runs in this exact order:
-1. Explicit confirmation (`processImport` runs the `confirm()`).
+1. Explicit confirmation (`processImport` runs the normal `confirm()`; a resolver that already displayed the same destructive confirmation passes a narrow `{confirmed:true}` option so it is not asked twice).
 2. Rotate the recovery capsule: copy `dune_pre_import_backup_v1` (if any) to `dune_pre_import_backup_prev_v1` and read-back-verify byte-for-byte. **Rotation is a hard gate — on any failure, destructive Load is refused before `processImport` is ever invoked.**
 3. Invoke `processImport(remoteContentText)`.
-4. Recompute `canonicalHash(getAllBackupData())` and assert it equals `remote.remoteHash`; on mismatch, clear sync base and refuse to claim synced.
+4. Recompute the semantic backup hash and assert it equals `remote.remoteHash`; on mismatch, clear sync base and refuse to claim synced.
 5. Write and read-back-verify sync base.
 
-`local-only` refuses (Save-first prompt). `conflict` refuses. `no-base` refuses (bootstrap). `synced`/`converged` are no-ops.
+`local-only` refuses (Save-first prompt). `conflict` refuses. `no-base` refuses (bootstrap). `synced` is a no-op. `converged` advances the verified base to the shared content/revision without importing or PATCHing.
 
-**Pre-Load recovery.** `processImport` already writes `dune_pre_import_backup_v1` before applying. `gist-sync.js` rotates that capsule into `dune_pre_import_backup_prev_v1` (one generation) before allowing the next destructive Load, so a second Load cannot silently destroy the only remaining pre-Load recovery point. A confirmation-gated Restore action ("Restore pre-Gist-load backup") in the Sync section hands each capsule back through `processImport` — bytes never enter Store directly.
+**Pre-Load recovery.** `processImport` writes `dune_pre_import_backup_v1` before applying. `gist-sync.js` rotates that capsule into `dune_pre_import_backup_prev_v1` (one generation) before allowing the next destructive Load, so a second Load cannot silently destroy the only remaining pre-Load recovery point. A confirmation-gated Restore action hands each capsule back through `processImport`—bytes never enter Store directly. Restoring the current capsule retains the fresh capsule created by that import, enabling an immediate second Restore as undo; restoring the previous generation consumes only the previous slot.
 
-**Discovery vs. connected identity.** Discovery of matching backup Gists happens only in `bootstrapOrReconnect` (explicit user action). Ordinary Save/Load targets exactly `dune_gist_id_v1`; multiple matching Gists in the account never silently retarget.
+**Discovery vs. connected identity.** Discovery of matching backup Gists happens only in `bootstrapOrReconnect` (explicit user action). The selected ID is serialized, read back byte-for-byte, and normalized before success is acknowledged; a failed acknowledgement clears base authority. Ordinary Save/Load targets exactly that verified `dune_gist_id_v1`; multiple matches never silently retarget. If the selected local and remote data differ, bootstrap remains base-less and exposes dedicated **Use Local** and **Load Remote** resolvers. Use Local confirms, byte-verifies a prior-remote audit record, revalidates the remote generation, then follows the guarded Save path. Load Remote preserves local recovery evidence, confirms, revalidates the remote generation, and executes the real destructive import. A connected-Gist 404 clears base authority and exposes reconnect without choosing another Gist.
 
-**Import** (unchanged): `app.js:processImport` is an `async` full-state transaction. Preflight → `beginFullStateTransaction({force:true, reason:'import'})` (freezes ordinary Store writes; UI banner via `lifeos:store-freeze-begin`) → snapshot byte-exact `BACKUP_KEYS` → write recovery capsule (`dune_pre_import_backup_v1`, preserved after both success and failure) → apply non-`dune_state_v4` `BACKUP_KEYS` in order (staged writes / removeItem for omitted keys) → derive candidate → `validateData` → `commitFullStateWrapper` writes `dune_state_v4` LAST as a schema-13 wrapper.
+**Import:** `app.js:processImport` remains an `async` full-state transaction. Preflight → confirmation (unless the calling resolver already confirmed) → `beginFullStateTransaction({force:true, reason:'import'})` → snapshot byte-exact `BACKUP_KEYS` → write recovery capsule (`dune_pre_import_backup_v1`, preserved after success and failure) → apply non-`dune_state_v4` keys → derive candidate → `validateData` → `commitFullStateWrapper` writes `dune_state_v4` LAST as a schema-13 wrapper. The optional confirmation acknowledgement changes no transaction, validation, recovery, or rollback invariant.
 
 **Security note.** The PAT is deliberately excluded from `BACKUP_KEYS`. `state.bht.ai` no longer carries an `apiKey` field (ADR-005). BHT AI provider config is fallback/ollama only; nothing that touches a network key is persisted.
 
