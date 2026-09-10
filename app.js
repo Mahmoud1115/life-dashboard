@@ -1875,7 +1875,7 @@ function preflightBackup(backup){
 // (`dune_pre_import_backup_v1`) is written before any destructive change
 // and survives both success and failure (per b4083a8).
 const STATE_KEY_NAME='dune_state_v4';
-async function processImport(text,options){
+function prepareBackupImport(text,options){
   options=options||{};
   let backup;
   try{backup=JSON.parse(text);}catch(e){showBackupToast('⚠ Invalid file — cannot parse JSON');return false;}
@@ -1885,6 +1885,13 @@ async function processImport(text,options){
   const preview=counts.map(c=>c[0]+': '+c[1]).join(' · ');
   const confirmed=options.confirmed===true||confirm('Restore backup from '+backup.exported_at+'?\n\n'+preview+'\n\n⚠ Overwrites current data. Current data saved as pre-restore backup.');
   if(!confirmed) return false;
+  return {backup,preview};
+}
+
+async function processImport(text,options){
+  const prepared=prepareBackupImport(text,options);
+  if(!prepared) return false;
+  const {backup,preview}=prepared;
 
   if(!window.Store
      ||typeof window.Store.beginFullStateTransaction!=='function'

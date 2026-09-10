@@ -884,3 +884,40 @@ worker and zero retries.
 **Risk and review.** This addendum changes storage authority, remote overwrite,
 backup/import, and recovery behavior and is therefore HIGH under ADR-012. It
 must receive independent Claude Code or human review before merge.
+
+
+### ADR-020 addendum #2 (2026-09-10) — Round-3 pre-push review remediation
+
+Report 142 identified three retained defects in the Round-2 candidate:
+normal Load rotated the previous recovery slot before confirmation, initial
+conflict-resolver 404s retained authority, and Save captured localStorage
+before pending Store edits were persisted.
+
+**Decision (proposed on this branch; subject to HIGH-risk review).**
+
+1. Extract the existing import parse/preflight/confirmation into
+   `prepareBackupImport`. Normal Gist Load calls it before recovery rotation;
+   cancellation and preflight refusal leave both recovery generations intact.
+   `processImport` repeats that preflight with the confirmation acknowledgement.
+   The transaction body, deeper apply-time validation, state-key-last commit,
+   rollback, and finally-unfreeze behavior remain unchanged.
+2. Both conflict resolvers handle their initial exact-Gist 404 through the same
+   authority-clear/reconnect path as normal Save/Load. They never auto-retarget.
+3. Sync capture awaits `Store.flushNow()` and verifies the result and
+   `Store.hasUnsavedWork()` before reading backup data. Persistence refusal,
+   conflict, failure, or remaining pending work refuses sync. Synchronous
+   normalized snapshot and connected-ID checks reject changed local inputs
+   after asynchronous work, including before PATCH and after its reread.
+   Newer local edits remain intact and cannot be acknowledged as part of the
+   earlier upload. If an edit arrives after PATCH, the remote may already hold
+   the earlier snapshot; the operation reports unacknowledged local movement
+   and retains the old accepted base. A subsequent sync may require conflict
+   resolution. No cross-tab or provider atomicity is claimed.
+
+The provider final-GET-to-PATCH race documented in addendum #1 remains.
+No storage schema, domain authority, dependency, or backend changes are added.
+Fourteen permanent regressions cover recovery cancellation/preflight refusal,
+confirmed rotation, both resolver 404s, production Ideas/BHT immediate saves,
+flush failure/refusal, and edits during all three Save GETs. A corrected exact
+candidate still requires pre-push review and independent Claude Code or human
+review before merge; implementer test results are not independent approval.

@@ -1533,3 +1533,168 @@ test.describe('conflict copy truthfulness (§9)', () => {
     expect(src).not.toMatch(/another device/i);
   });
 });
+
+// Round-3: regressions from exact-SHA pre-push report 142.
+test.describe('Round-3 review remediation', () => {
+  async function prepareRemoteLoad(page){
+    const seeded = await primeRound2Synced(page, 'g_review_r3');
+    const remoteData = { ...seeded.bootData, dune_finance_v1:{ syntheticRemote:'R3' } };
+    setRemoteFileToData(seeded.mock, seeded.gistId, remoteData);
+    seeded.mock.gists[0].history.unshift({ version:'rev_r3_remote' });
+    await neuterReloadAndConfirm(page, true);
+    await page.evaluate(() => {
+      const capsule = name => JSON.stringify({ version:'2026.1', exported_at:'2026-09-10T00:00:00Z',
+        data:{ ...getAllBackupData(), dune_finance_v1:{ syntheticCapsule:name } } });
+      localStorage.setItem('dune_pre_import_backup_v1', capsule('current'));
+      localStorage.setItem('dune_pre_import_backup_prev_v1', capsule('previous'));
+    });
+    return seeded;
+  }
+
+  async function recoveryState(page){
+    return page.evaluate(() => ({ data:JSON.stringify(getAllBackupData()),
+      current:localStorage.getItem('dune_pre_import_backup_v1'),
+      previous:localStorage.getItem('dune_pre_import_backup_prev_v1'),
+      base:localStorage.getItem('dune_gist_sync_base_v1') }));
+  }
+
+  test('G-R3-01: normal Load cancellation preserves distinct recovery slots byte-for-byte', async ({ page }) => {
+    const { mock } = await prepareRemoteLoad(page);
+    const before = await recoveryState(page);
+    const result = await page.evaluate(async () => {
+      let confirmations=0, imports=0;
+      window.confirm=()=>{ confirmations++; return false; };
+      const original=window.processImport;
+      window.processImport=(...args)=>{ imports++; return original(...args); };
+      return { result:await window.loadFromGist(), confirmations, imports };
+    });
+    expect(result.result.reason).toBe('cancelled-or-invalid');
+    expect(result.confirmations).toBe(1);
+    expect(result.imports).toBe(0);
+    expect(await recoveryState(page)).toEqual(before);
+    expect(mock.patches).toBe(0);
+  });
+
+  test('G-R3-02: invalid remote envelope refuses before confirmation, rotation, or import', async ({ page }) => {
+    const { mock } = await prepareRemoteLoad(page);
+    const wrapper=JSON.parse(mock.gists[0].files['dune-backup.json'].content);
+    wrapper.version='unsupported-review-version';
+    mock.gists[0].files['dune-backup.json'].content=JSON.stringify(wrapper);
+    const before=await recoveryState(page);
+    const out=await page.evaluate(async()=>{
+      let confirmations=0,imports=0;
+      window.confirm=()=>{ confirmations++; return true; };
+      const original=window.processImport;
+      window.processImport=(...args)=>{ imports++; return original(...args); };
+      return { result:await loadFromGist(), confirmations, imports };
+    });
+    expect(out.result.reason).toBe('cancelled-or-invalid');
+    expect(out.confirmations).toBe(0);
+    expect(out.imports).toBe(0);
+    expect(await recoveryState(page)).toEqual(before);
+  });
+
+  test('G-R3-03: successful normal Load confirms once then preserves prior current and immediate undo', async ({ page }) => {
+    await prepareRemoteLoad(page);
+    const before=await recoveryState(page);
+    const out=await page.evaluate(async()=>{
+      let confirmations=0;
+      window.confirm=()=>{ confirmations++; return true; };
+      return { result:await loadFromGist(), confirmations };
+    });
+    expect(out.result.ok).toBe(true);
+    expect(out.confirmations).toBe(1);
+    const after=await recoveryState(page);
+    expect(after.previous).toBe(before.current);
+    expect(JSON.parse(after.current).data).toEqual(JSON.parse(before.data));
+  });
+
+  for (const resolver of ['gistResolveKeepLocal','gistResolveLoadRemote']){
+    test('G-R3-04: exact 404 through '+resolver+' clears authority and exposes reconnect', async ({ page }) => {
+      const {mock,gistId}=await primeRound2Conflict(page);
+      expect((await page.evaluate(()=>saveToGist())).reason).toBe('conflict');
+      mock.gists.length=0;
+      const out=await page.evaluate(async({resolver,gistId})=>{
+        let imports=0;
+        const original=window.processImport;
+        window.processImport=(...args)=>{ imports++; return original(...args); };
+        const result=await window[resolver]();
+        return {result,imports,base:GistSync.effectiveBaseFor(gistId),id:GistSync.readConnectedGistId(),
+          reconnect:document.getElementById('sync-reconnect-btn').style.display};
+      },{resolver,gistId});
+      expect(out.result.reason).toBe('connected-gist-not-found');
+      expect(out.base).toBe(null);
+      expect(out.id).toBe(gistId);
+      expect(out.reconnect).not.toBe('none');
+      expect(out.imports).toBe(0);
+      expect(mock.patches).toBe(0);
+    });
+  }
+
+  for(const domain of ['Ideas','BHT']){
+    test('G-R3-05: immediate production '+domain+' edit is included by Save without a test-side flush', async({page})=>{
+      const {mock}=await primeRound2Synced(page);
+      const out=await page.evaluate(async(domain)=>{
+        const record=domain==='Ideas'
+          ? IDEAS.addIdea({title:'Synthetic pending R3 idea',tag:'other'})
+          : BHT.logEntry({habitId:'synthetic-r3',mood:'ok',notes:'Synthetic pending R3 entry'});
+        const pending=Store.hasUnsavedWork();
+        const result=await saveToGist();
+        return {result,pending,id:record.id};
+      },domain);
+      expect(out.pending).toBe(true);
+      expect(out.result.ok).toBe(true);
+      expect(out.result.kind).toBe('saved');
+      expect(mock.patches).toBe(1);
+      const data=JSON.parse(mock.lastPatchBody.files['dune-backup.json'].content).data.dune_state_v4.data;
+      const records=domain==='Ideas'?data.ideas:data.bht.entries;
+      expect(records.some(r=>r.id===out.id)).toBe(true);
+    });
+  }
+
+  for(const fault of ['reject','conflict','remaining-work','primary-write-failure']){
+    test('G-R3-06: '+fault+' refuses Save without acknowledging pending work',async({page})=>{
+      const {mock}=await primeRound2Synced(page);
+      const out=await page.evaluate(async(fault)=>{
+        const before=localStorage.getItem('dune_gist_sync_base_v1');
+        const record=IDEAS.addIdea({title:'Synthetic unsaved R3 idea',tag:'other'});
+        const originalFlush=Store.flushNow,originalSet=Storage.prototype.setItem;
+        if(fault==='reject')Store.flushNow=()=>Promise.reject(new Error('injected'));
+        if(fault==='conflict')Store.flushNow=()=>Promise.resolve({committed:false,reason:'CONFLICT'});
+        if(fault==='remaining-work')Store.flushNow=()=>Promise.resolve({committed:true});
+        if(fault==='primary-write-failure')Storage.prototype.setItem=function(k,v){
+          if(k==='dune_state_v4')throw new Error('injected primary write failure');
+          return originalSet.call(this,k,v);
+        };
+        let result;
+        try {result=await saveToGist();}
+        finally {Store.flushNow=originalFlush;Storage.prototype.setItem=originalSet;}
+        return {result,baseUnchanged:before===localStorage.getItem('dune_gist_sync_base_v1'),
+          retained:Store.get('ideas').some(i=>i.id===record.id)};
+      },fault);
+      expect(out.result.ok).toBe(false);
+      expect(out.result.reason).toBe('local-persistence-unsettled');
+      expect(out.baseUnchanged).toBe(true);
+      expect(out.retained).toBe(true);
+      expect(mock.patches).toBe(0);
+      expect(mock.gets).toBe(0);
+    });
+  }
+
+  for(const atGet of [1,2,3]){
+    test('G-R3-07: newer local edit during GET '+atGet+' is never acknowledged as synced',async({page})=>{
+      const {mock}=await primeRound2Synced(page);
+      await page.evaluate(()=>localStorage.setItem('dune_finance_v1',JSON.stringify({syntheticLocal:'R3'})));
+      mock.beforeGet=async({getNumber})=>{
+        if(getNumber===atGet)await page.evaluate(()=>IDEAS.addIdea({title:'Synthetic edit during sync',tag:'other'}));
+      };
+      const before=await page.evaluate(()=>localStorage.getItem('dune_gist_sync_base_v1'));
+      const result=await page.evaluate(()=>saveToGist());
+      expect(result.ok).toBe(false);
+      expect(result.reason).toBe('local-changed-during-sync');
+      expect(mock.patches).toBe(atGet===3?1:0);
+      expect(await page.evaluate(()=>localStorage.getItem('dune_gist_sync_base_v1'))).toBe(before);
+      expect(await page.evaluate(()=>Store.get('ideas').some(i=>i.title==='Synthetic edit during sync'))).toBe(true);
+    });
+  }
+});
