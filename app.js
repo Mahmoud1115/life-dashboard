@@ -292,10 +292,28 @@ async function _hydrateUnderLock() {
       return { ok: false, reason: 'recovery-required', classification: 'ABSENT', error: String(e) };
     }
   }
-  // 4. Recovery-required states — MALFORMED / CORRUPT / FUTURE.
+  // 4. READ_FAILED — durable primary read threw. Never treat as
+  //    a fresh cold boot; do not seed defaults; require recovery.
+  //    PRV-0.5 Round-10 (Codex Round-9 P2-01): the evaluator surfaces
+  //    the throw distinctly from ABSENT, and hydration must fail
+  //    closed with the READ_FAILED classification carried through.
+  else if (classification === 'READ_FAILED') {
+    return {
+      ok: false,
+      reason: 'recovery-required',
+      classification: 'READ_FAILED',
+      blocker: persistedEval.blocker || null,
+      readError: persistedEval.readError || null,
+      evalReasons: persistedEval.reasons
+    };
+  }
+  // 5. Recovery-required states — MALFORMED / CORRUPT / FUTURE /
+  //    WRAPPER_VERSION_ABSENT / LEGACY_SOURCE_INVALID.
   else if (classification === 'MALFORMED_CURRENT_SCHEMA'
         || classification === 'CORRUPT_STALE_COLLIDING'
-        || classification === 'UNSUPPORTED_FUTURE_SCHEMA') {
+        || classification === 'UNSUPPORTED_FUTURE_SCHEMA'
+        || classification === 'WRAPPER_VERSION_ABSENT'
+        || classification === 'LEGACY_SOURCE_INVALID') {
     return {
       ok: false,
       reason: 'recovery-required',
@@ -304,7 +322,7 @@ async function _hydrateUnderLock() {
       evalReasons: persistedEval.reasons
     };
   }
-  // 5. Unknown classification — fail closed.
+  // 6. Unknown classification — fail closed.
   else {
     return {
       ok: false, reason: 'recovery-required', classification: classification || 'UNKNOWN',

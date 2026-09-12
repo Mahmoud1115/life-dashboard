@@ -1667,15 +1667,44 @@
   function evaluatePersistedAuthority(raw) {
     // Read raw from disk when caller passes undefined; a null caller
     // request stays ABSENT.
+    //
+    // PRV-0.5 Round-10 (Codex Round-9 P2-01 remediation): the durable
+    // read is TRI-STATE. A thrown getItem MUST NOT collapse into the
+    // absence branch — that would falsely claim recoveryRequired:false
+    // and mask an unreadable primary as a fresh cold boot. The three
+    // legal outcomes for the internal read path are, disjointly:
+    //   successful read + null bytes  => ABSENT
+    //   successful read + raw bytes   => PRESENT(raw) -> parse pipeline
+    //   thrown durable read           => READ_FAILED (recoveryRequired)
+    // The explicit-null caller argument keeps its own ABSENT semantics
+    // — it is not a read outcome. See ADR-015 addendum #18.
     let rawEffective;
+    let readError = null;
     if (raw === undefined) {
       try { rawEffective = localStorage.getItem(STATE_KEY); }
-      catch (e) { rawEffective = null; }
+      catch (e) { readError = e || new Error('durable-read-threw'); rawEffective = undefined; }
     } else {
       rawEffective = raw;
     }
     const blocker = durabilityBlocker ? Object.assign({}, durabilityBlocker) : null;
-    const reasons = [];
+    // READ_FAILED precedes every absence/null handler. A thrown durable
+    // read has NO knowledge of on-disk contents, so acceptForBackup,
+    // acceptFastPathMigrated, authoritative, seedLegacy all remain
+    // false, recoveryRequired is true, and rawIdentityMatchesStore is
+    // false (we cannot claim identity with any Store baseline).
+    if (readError) {
+      const errName = (readError && readError.name) ? String(readError.name) : 'Error';
+      const errMsg  = (readError && readError.message) ? String(readError.message) : String(readError);
+      return {
+        classification: 'READ_FAILED', canonical: false,
+        acceptFastPathMigrated: false, authoritative: false, seedLegacy: false,
+        acceptForBackup: false, recoveryRequired: true, blocker,
+        rawIdentityMatchesStore: false,
+        wrapper: null, data: null, marker: null,
+        readError: { name: errName, message: errMsg },
+        reasons: ['read-failed', 'error=' + errName]
+      };
+    }
     if (rawEffective === null || rawEffective === undefined) {
       return {
         classification: 'ABSENT', canonical: false,

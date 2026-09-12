@@ -2513,3 +2513,43 @@ Round-9 lands as new local commits on top of `9280382…`: `d7b1516…` (core.js
 The full audit shows the invariant holds at every site.
 
 **Date:** 2026-09-09 (Round-9 remediation on top of Codex Round-8 review of `9280382a63defd0b86c560acbd1399a87bda3088`; local only, unpushed pending ChatGPT pre-push review then Codex final independent HIGH-risk re-review).
+
+
+### ADR-015 addendum #18 (2026-09-12) — Round-10 remediation for Codex Round-9 exact-SHA review
+
+Codex Round-9 review of `0cb6d45947c86e538d03836a7614b8b610ad108b` returned **FAIL** with one HIGH-risk correctness defect and one documentation-drift issue. Round-9 successfully closed its three inherited targets (P1-01 strict boot admission, P1-02 outer-version provenance, P2-01 collision truth) and every prior Round-8 invariant. The Round-10 remediation is narrowly scoped to the two Round-9 findings and preserves every Round-9 closure.
+
+**PRV-R9-CX-P2-01 (HIGH-risk correctness) — `evaluatePersistedAuthority` READ_FAILED vs. ABSENT.** Codex's adversarial probe instrumented `Storage.prototype.getItem` to throw only for the canonical primary key `dune_state_v4`, then invoked `Store.evaluatePersistedAuthority()` without an explicit raw argument. The prior (Round-9) implementation caught the exception at `core.js:1673` and assigned `rawEffective = null`, which then fell through to the ABSENT branch and returned `{classification:'ABSENT', recoveryRequired:false, reason:'absent'}` — a false claim that the primary was successfully read and legitimately empty. The binding read-state contract is tri-state (§ Round-10 handoff §3):
+
+- `successful read → null bytes  ⇒ ABSENT`
+- `successful read → raw bytes   ⇒ PRESENT(raw)` and downstream classification
+- `thrown durable read           ⇒ READ_FAILED`
+
+**Remediation.** `evaluatePersistedAuthority` now carries an explicit `readError` variable that captures the exception from the internal `localStorage.getItem` call. Immediately after the try/catch and before the null-handling branch, a new READ_FAILED branch returns `{classification:'READ_FAILED', canonical:false, acceptFastPathMigrated:false, authoritative:false, seedLegacy:false, acceptForBackup:false, recoveryRequired:true, rawIdentityMatchesStore:false, wrapper:null, data:null, marker:null, readError:{name, message}, reasons:['read-failed', 'error=<Name>']}`. The explicit-null caller argument (`raw === null`) is unchanged and still classifies as `ABSENT` — it is a caller declaration, not a read outcome. `app.js:_hydrateUnderLock` gains a dedicated READ_FAILED classification branch that returns `{ok:false, reason:'recovery-required', classification:'READ_FAILED', blocker, readError, evalReasons}` — no seed, no default-state success. The recovery-required cluster is extended to include `WRAPPER_VERSION_ABSENT` and `LEGACY_SOURCE_INVALID` explicitly (both classifications already existed in the evaluator; the switch's default clause already fail-closed on them, but the explicit membership makes the hydration contract exhaustive).
+
+**Consumer audit.** Every consumer of `Store.evaluatePersistedAuthority` was inspected: `_readPersistedWrapper` (app.js) — `classification === 'ABSENT'` special case is unchanged; READ_FAILED lands in the `!evalRes.canonical` branch and returns `{ok:false, reason:'READ_FAILED'}`. `_hydrateUnderLock` — dedicated READ_FAILED branch above. Post-atomic-conversion `verifiedEval` at app.js — asserts `classification === 'AUTHORITATIVE_MIGRATED'`; READ_FAILED trips the `durability-verification-failed` branch. `evaluateBackupAuthority` — reads `ev.acceptForBackup === true`; READ_FAILED sets `false`, so normal backup is refused; the caller can still export recovery evidence via `exportRecoveryEvidence`. `core.js` internal callers were already resilient (the evaluator was only surfaced across the `Store` facade at line 4136 for external consumers). No consumer treats READ_FAILED as absence, and none advances default-state provenance in response to a throw.
+
+**Blocker semantics.** READ_FAILED does not itself install a new `STORE_READ_FAILED` durability blocker; the durability-blocker layer already carries `STORE_READ_FAILED` as a distinct non-source-bound blocker (per Round-7 P1-02 "Retained (not source-bound)" list) that describes this tab's own uncertain state. The evaluator's `readError` field carries the concrete throw for diagnostics and is deliberately kept independent of the blocker layer — the blocker records tab uncertainty, the classification records the read outcome at evaluation time. `rawIdentityMatchesStore` is set to `false` on READ_FAILED because a thrown read cannot claim identity with any Store baseline.
+
+**PRV-R9-CX-P3-01 (documentation drift) — `docs/lifeos/ARCHITECTURE.md`.** Two clauses in the `Rolling snapshot buffer` bullet and the `Current-schema (v14) canonical validation` bullet stated (a) "the load-time `validate()` gate stays permissive so a stale-shape wrapper still loads and the recovery path can act" and (b) "boot for legacy uses the softer-floor + `STORE_LEGACY_CONVERSION_PENDING` pathway (ADR-015 addendum #7) which itself refuses partial legacy sources at atomic conversion." Neither matches Round-9 production behavior. Round-10 replaces both:
+
+- Boot admission is now strict at admission (PRV-0.5 Round-9 P1-01, ADR-015 addendum #17). Supported historical sources are source-validated BEFORE `migrateUp` default-fill; unsupported and partial historical sources fail admission and are never converted. When admission refuses a persisted primary, the rejected raw is preserved on disk as evidence, a source-specific blocker is installed, ordinary writes and normal backup export refuse, and the boot renders a fallback in-memory shape while the rejected durable primary stays untouched until recovery lands through an approved full-state transaction.
+- `STORE_LEGACY_CONVERSION_PENDING` marks a *valid* v8..v13 source awaiting atomic conversion; the softer-floor legacy boot pathway from ADR-015 addendum #7 no longer applies — partial legacy sources now fail at admission, not at atomic conversion.
+
+The corrected text reuses ADR-015 addendum #17's Round-9 language rather than introducing a new architecture model.
+
+**Test evidence.** A new permanent regression was added in `tests/prv-preservation.spec.js` (R10-P2-01): synthetic setup instruments `Storage.prototype.getItem` so that only reads for `dune_state_v4` throw, then invokes `window.Store.evaluatePersistedAuthority()` without an explicit raw argument. Asserts: `classification === 'READ_FAILED'`, `canonical === false`, `authoritative === false`, `seedLegacy === false`, `acceptFastPathMigrated === false`, `acceptForBackup === false`, `recoveryRequired === true`, `readError` is a `{name, message}` shape, the result is **not** `ABSENT`, and no durable write or default publication was triggered by the throw. A second row (R10-P2-01B) verifies that an explicit-null caller argument still classifies as `ABSENT` (the caller-declared absence path is unchanged).
+
+**Scope.** Files changed:
+
+- `core.js` — `evaluatePersistedAuthority` READ_FAILED branch + tri-state read comment.
+- `app.js` — `_hydrateUnderLock` explicit READ_FAILED branch + extended recovery-required cluster.
+- `docs/lifeos/ARCHITECTURE.md` — stale clauses corrected.
+- `docs/lifeos/DECISIONS.md` — this addendum.
+- `tests/prv-preservation.spec.js` — R10-P2-01 and R10-P2-01B regressions.
+
+No Gist P1 changes. No Roadmap, Documents, Missions, USA, or Observatory work. No dependency, framework, or unrelated UI changes. `BACKUP_KEYS`, `qatarVisit` retention, and every Round-9 closure preserved.
+
+**Provenance.** Round-10 base is Round-9 head `0cb6d45947c86e538d03836a7614b8b610ad108b`; `9280382a63defd0b86c560acbd1399a87bda3088` (Round-8) is ancestor; `ef6e4019…` is NOT an ancestor. Fresh worktree `/Users/mahmoudmarwan/LIFE/.claude/worktrees/prv-0-5-round10-read-failed`. Branch `claude/prv-0-5-round10-read-failed-remediation`.
+
+**Date:** 2026-09-12 (Round-10 remediation on top of Codex Round-9 exact-SHA review of `0cb6d45…`; awaiting independent Codex re-review).

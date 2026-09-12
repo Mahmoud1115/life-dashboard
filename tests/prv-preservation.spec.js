@@ -8071,3 +8071,109 @@ for (const version of [8, 9, 10, 11, 12, 13]) {
     expect(cross.candidate.canonical).toBe(false);
   });
 }
+
+// ─── PRV-0.5 Round-10 — READ_FAILED vs. ABSENT tri-state contract ───
+// Reproduces Codex Round-9 P2-01 adversarial probe. Before Round-10,
+// `evaluatePersistedAuthority` caught a thrown durable read and fell
+// through to the ABSENT branch, returning
+//   { classification:'ABSENT', recoveryRequired:false, reason:'absent' }
+// which falsely claimed a successful empty read on an unreadable
+// primary. Round-10 refactors the evaluator into a tri-state contract:
+//   successful read + null  ⇒ ABSENT
+//   successful read + bytes ⇒ PRESENT(raw)
+//   thrown durable read     ⇒ READ_FAILED
+// This test locks that contract as a permanent regression.
+
+test('R10-P2-01 — thrown durable read on dune_state_v4 classifies as READ_FAILED with recoveryRequired:true (never ABSENT)', async ({ page }) => {
+  await page.addInitScript(() => {
+    // Boot cleanly, then instrument getItem so only the canonical
+    // primary key throws. Every other key still reads normally so the
+    // rest of boot succeeds; the throw is the evaluator's problem.
+    window.__prv05DisableBootHydration = true;
+    window.__prv05HydrationAutoRetryEnabled = false;
+    // Ensure the primary starts empty; the throw injection happens
+    // after boot so app.js does not observe it during initialLoad.
+    try { localStorage.removeItem('dune_state_v4'); } catch (_) {}
+  });
+  await page.goto('/');
+  await waitForApp(page);
+  const proof = await page.evaluate(() => {
+    // Snapshot every localStorage key so we can prove no durable side
+    // effects fired as a result of the throw.
+    const before = {};
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      before[k] = localStorage.getItem(k);
+    }
+    // Install the narrow throw AFTER boot completed.
+    const origGet = Storage.prototype.getItem;
+    let throwCount = 0;
+    Storage.prototype.getItem = function (key) {
+      if (this === localStorage && key === 'dune_state_v4') {
+        throwCount++;
+        throw new DOMException('SecurityError: simulated durable read failure', 'SecurityError');
+      }
+      return origGet.call(this, key);
+    };
+    let evalRes;
+    try {
+      // No argument — internal read path exercised.
+      evalRes = window.Store.evaluatePersistedAuthority();
+    } finally {
+      Storage.prototype.getItem = origGet;
+    }
+    const after = {};
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      after[k] = localStorage.getItem(k);
+    }
+    // Byte-equal proof of no durable side effects.
+    const beforeKeys = Object.keys(before).sort();
+    const afterKeys = Object.keys(after).sort();
+    const sameKeySet = beforeKeys.length === afterKeys.length
+      && beforeKeys.every((k, i) => k === afterKeys[i]);
+    const sameKeyValues = sameKeySet && beforeKeys.every(k => before[k] === after[k]);
+    return { evalRes, throwCount, sameKeySet, sameKeyValues, beforeKeys, afterKeys };
+  });
+  // Binding classification contract (Round-10 handoff §3):
+  expect(proof.evalRes.classification).toBe('READ_FAILED');
+  expect(proof.evalRes.classification).not.toBe('ABSENT');
+  expect(proof.evalRes.canonical).toBe(false);
+  expect(proof.evalRes.authoritative).toBe(false);
+  expect(proof.evalRes.seedLegacy).toBe(false);
+  expect(proof.evalRes.acceptFastPathMigrated).toBe(false);
+  expect(proof.evalRes.acceptForBackup).toBe(false);
+  expect(proof.evalRes.recoveryRequired).toBe(true);
+  expect(proof.evalRes.rawIdentityMatchesStore).toBe(false);
+  expect(proof.evalRes.wrapper).toBeNull();
+  expect(proof.evalRes.data).toBeNull();
+  expect(proof.evalRes.marker).toBeNull();
+  // reasons array carries a truthful read-failed marker.
+  expect(Array.isArray(proof.evalRes.reasons)).toBe(true);
+  expect(proof.evalRes.reasons).toContain('read-failed');
+  // readError shape.
+  expect(proof.evalRes.readError).toBeTruthy();
+  expect(typeof proof.evalRes.readError.name).toBe('string');
+  expect(typeof proof.evalRes.readError.message).toBe('string');
+  // The throw actually fired (probe wired to the real evaluator path).
+  expect(proof.throwCount).toBeGreaterThan(0);
+  // No durable write triggered by the read failure — every key byte-equal
+  // before and after the evaluator call.
+  expect(proof.sameKeySet).toBe(true);
+  expect(proof.sameKeyValues).toBe(true);
+});
+
+test('R10-P2-01B — explicit null caller argument still classifies as ABSENT (caller declaration, not a read outcome)', async ({ page }) => {
+  await page.addInitScript(() => {
+    window.__prv05DisableBootHydration = true;
+    window.__prv05HydrationAutoRetryEnabled = false;
+    try { localStorage.removeItem('dune_state_v4'); } catch (_) {}
+  });
+  await page.goto('/');
+  await waitForApp(page);
+  const evalRes = await page.evaluate(() => window.Store.evaluatePersistedAuthority(null));
+  expect(evalRes.classification).toBe('ABSENT');
+  expect(evalRes.classification).not.toBe('READ_FAILED');
+  expect(evalRes.recoveryRequired).toBe(false);
+  expect(evalRes.reasons).toContain('absent');
+});
