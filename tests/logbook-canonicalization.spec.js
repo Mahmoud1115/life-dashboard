@@ -19,20 +19,102 @@ test.beforeEach(async ({ context, page }) => {
   );
 });
 
+// A quick readiness check that returns as soon as Store + LOGBOOK
+// are available, WITHOUT waiting for the boot atomic legacy
+// conversion to clear its blocker. Used by tests whose seeds are
+// designed to reject at the strict-matrix source validation (so the
+// blocker never clears).
+async function waitAppSurfaces(page) {
+  await page.waitForFunction(() =>
+    typeof window.Store !== 'undefined' &&
+    typeof window.LOGBOOK !== 'undefined' &&
+    typeof window.LOGBOOK.reconcile === 'function',
+    { timeout: 5000 }
+  );
+}
+
 async function waitReady(page) {
   await page.waitForFunction(() =>
     typeof window.Store !== 'undefined' &&
     typeof window.LOGBOOK !== 'undefined' &&
     typeof window.LOGBOOK.reconcile === 'function'
   );
+  // PRV-0.5 Pre-Push R2 / BINDING-3-A: the boot init()'s
+  // LOGBOOK.reconcile() may fire while the boot atomic legacy
+  // conversion still holds STORE_LEGACY_CONVERSION_PENDING; its
+  // Store.set is then refused and the reconciled envelope is not
+  // applied. Wait for the durability blocker to clear (the atomic
+  // legacy conversion has committed the migrated wrapper and cleared
+  // the blocker on success) then re-run reconcile deterministically.
+  // On seeds with no legacy blocker (no dune_state_v4 at all) the
+  // wait completes immediately.
+  const blockerCleared = await page.waitForFunction(() => {
+    if (!window.Store || typeof window.Store.getDurabilityBlocker !== 'function') return true;
+    return window.Store.getDurabilityBlocker() === null;
+  }, { timeout: 2500 }).then(() => true).catch(() => false);
+  if (blockerCleared) {
+    // Blocker cleared → atomic legacy conversion completed → re-run
+    // reconcile so the reconciled envelope is applied deterministically
+    // (the init-time reconcile may have fired while the blocker was
+    // still set and been refused).
+    try {
+      await page.evaluate(() => {
+        try { window.LOGBOOK && window.LOGBOOK.reconcile && window.LOGBOOK.reconcile(); }
+        catch (e) { /* best-effort */ }
+      });
+    } catch (e) { /* page might have closed for reload flows */ }
+  }
+  // If the blocker did not clear (e.g. malformed-source atomic conversion
+  // refused), the test that follows exercises that scenario directly and
+  // does not need the deterministic re-reconcile step.
+}
+
+// PRV-0.5 Pre-Push R2 / BINDING-3-A: legacy dune_state_v4 wrappers
+// (v8..v13) must carry the evidence-backed full defaultState-shape
+// emitted at their bump commit. Fill any missing domain with the
+// v9-shape default so a boot-time atomic legacy conversion (which
+// runs validateLegacySourceRequiredFields under the exclusive
+// lock) accepts the seed as a legitimate historical source. Any
+// domain explicitly provided by the caller wins.
+function _fillLegacyStateDomains(state) {
+  if (!state || typeof state !== 'object' || !state.data || typeof state.data !== 'object') return state;
+  // PRV-0.5 Codex-final P1-03: full emission audit added `meta` and
+  // `money.expenses` to every v8..v13 required set. Keep the fill
+  // helper aligned with the strict matrix so seeds pass validation
+  // whether the caller opts into v11 (logbook array) or v12+
+  // (logbook envelope) shape.
+  const isEnvelopeVersion = state.version && state.version >= 12;
+  const defaultLogbook = isEnvelopeVersion
+    ? { schemaVersion: 1, authority: 'legacy-mirror', entries: [],
+        migration: { version: 1, sourceCounts: { tracker: 0, builder: 0 } },
+        reconciled: false, drift: null }
+    : [];
+  const defaults = {
+    money: { salary_net: 130000, expenses: {}, usd_rate: 88, save_target: 55000 },
+    qatarVisit: {},
+    career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+    bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} },
+    telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
+    todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
+    logbook: defaultLogbook,
+    meta: { version: state.version, createdAt: '2026-08-25T00:00:00Z', lastUpdated: '2026-08-25T00:00:00Z' }
+  };
+  const filled = Object.assign({}, defaults, state.data);
+  // If caller passed money without expenses, merge in the default
+  // expenses object rather than overriding money wholesale.
+  if (filled.money && typeof filled.money === 'object' && !Array.isArray(filled.money) && !filled.money.expenses) {
+    filled.money = Object.assign({}, defaults.money, filled.money);
+  }
+  return Object.assign({}, state, { data: filled });
 }
 
 async function seed(page, { tracker = null, builder = null, state = null } = {}) {
+  const filled = state ? _fillLegacyStateDomains(state) : null;
   await page.addInitScript(([t, b, s]) => {
     if (t !== undefined) localStorage.setItem('dune_logbook_v1', JSON.stringify(t));
     if (b !== undefined) localStorage.setItem('dune_logbook_entries_v1', JSON.stringify(b));
     if (s) localStorage.setItem('dune_state_v4', JSON.stringify(s));
-  }, [tracker, builder, state]);
+  }, [tracker, builder, filled]);
 }
 
 function trackerRec(overrides = {}) {
@@ -205,8 +287,12 @@ test('L9 — empty Tracker key is authoritative: no resurrection from old envelo
     state: {
       version: 12,
       data: {
-        money: { salary_net: 130000 },
+        money: { salary_net: 130000, expenses: {} },
         qatarVisit: {},
+        career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+        bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
+        todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
+        meta: { version: 12, createdAt: '2026-08-25T00:00:00Z', lastUpdated: '2026-08-25T00:00:00Z' },
         logbook: {
           schemaVersion: 1,
           authority: 'legacy-mirror',
@@ -230,31 +316,35 @@ test('L9 — empty Tracker key is authoritative: no resurrection from old envelo
 });
 
 test('L10 — Tracker key absent: recover tracker-tagged records from envelope', async ({ page }) => {
-  await page.addInitScript(() => {
+  // PRV-0.5 Pre-Push R2 / BINDING-3-A: state passed through
+  // _fillLegacyStateDomains so the strict matrix accepts it at
+  // boot-time atomic legacy conversion.
+  const _state = _fillLegacyStateDomains({
+    version: 12,
+    data: {
+      money: { salary_net: 130000 },
+      qatarVisit: {},
+      logbook: {
+        schemaVersion: 1,
+        authority: 'legacy-mirror',
+        entries: [
+          { id: 'lb2:tracker:lb_recovered', source: 'tracker', legacyId: 'lb_recovered', sourceIndex: 0,
+            inferredCreatedAt: null, date: '2026-01-01', aircraft: 'A320', registration: null,
+            ata: '72', ataLabel: null, description: 'from state', hours: 1.5, supervisor: null,
+            company: null, engineType: null, system: null, role: null, stampStatus: null,
+            language: null, b1Relevance: null, ref: null, possibleDuplicateKey: null, legacyExtra: {} }
+        ],
+        migration: { version: 1, sourceCounts: { tracker: 1, builder: 0 } },
+        drift: null
+      }
+    }
+  });
+  await page.addInitScript((s) => {
     // Tracker key deliberately not set → truly absent.
     localStorage.removeItem('dune_logbook_v1');
     localStorage.setItem('dune_logbook_entries_v1', JSON.stringify([]));
-    localStorage.setItem('dune_state_v4', JSON.stringify({
-      version: 12,
-      data: {
-        money: { salary_net: 130000 },
-        qatarVisit: {},
-        logbook: {
-          schemaVersion: 1,
-          authority: 'legacy-mirror',
-          entries: [
-            { id: 'lb2:tracker:lb_recovered', source: 'tracker', legacyId: 'lb_recovered', sourceIndex: 0,
-              inferredCreatedAt: null, date: '2026-01-01', aircraft: 'A320', registration: null,
-              ata: '72', ataLabel: null, description: 'from state', hours: 1.5, supervisor: null,
-              company: null, engineType: null, system: null, role: null, stampStatus: null,
-              language: null, b1Relevance: null, ref: null, possibleDuplicateKey: null, legacyExtra: {} }
-          ],
-          migration: { version: 1, sourceCounts: { tracker: 1, builder: 0 } },
-          drift: null
-        }
-      }
-    }));
-  });
+    localStorage.setItem('dune_state_v4', JSON.stringify(s));
+  }, _state);
   await page.goto('/');
   await waitReady(page);
   const env = await page.evaluate(() => window.Store.get('logbook'));
@@ -270,8 +360,12 @@ test('L11 — empty Builder key is authoritative: no builder resurrection', asyn
     state: {
       version: 12,
       data: {
-        money: { salary_net: 130000 },
+        money: { salary_net: 130000, expenses: {} },
         qatarVisit: {},
+        career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+        bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
+        todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
+        meta: { version: 12, createdAt: '2026-08-25T00:00:00Z', lastUpdated: '2026-08-25T00:00:00Z' },
         logbook: {
           schemaVersion: 1,
           authority: 'legacy-mirror',
@@ -420,36 +514,57 @@ test('L18 — reconciliation is idempotent on unchanged legacy', async ({ page }
   expect(second).toBe(first);
 });
 
-test('L19 — malformed envelope in Store recovers safely; legacy entries still present', async ({ page }) => {
+test('L19 — malformed logbook in dune_state_v4 is rejected by the strict source matrix; blocker set, envelope shape preserved', async ({ page }) => {
+  // PRV-0.5 Pre-Push R2 / BINDING-3-A: a legacy source with a
+  // malformed logbook (neither array nor envelope object) is
+  // UNPROVEN under the strict matrix and MUST fail the atomic
+  // legacy conversion — no silent recovery. The Store still boots
+  // with a well-typed envelope shape (default-filled), but
+  // STORE_LEGACY_CONVERSION_PENDING remains set until the user
+  // recovers explicitly.
+  test.setTimeout(15000);
   await seed(page, {
     tracker: [trackerRec({ id: 'lb_ok' })],
     builder: [],
     state: {
       version: 12,
       data: {
-        money: { salary_net: 130000 },
+        money: { salary_net: 130000, expenses: {} },
         qatarVisit: {},
-        // Malformed logbook (not an envelope, not an array).
         logbook: 'this is not valid',
       }
     },
   });
   await page.goto('/');
-  await waitReady(page);
-  const env = await page.evaluate(() => window.Store.get('logbook'));
-  expect(env.authority).toBe('legacy-mirror');
-  expect(env.entries.length).toBe(1);
-  expect(env.entries[0].legacyId).toBe('lb_ok');
+  await waitAppSurfaces(page);
+  const proof = await page.evaluate(() => ({
+    env: window.Store.get('logbook'),
+    blocker: window.Store.getDurabilityBlocker && window.Store.getDurabilityBlocker()
+  }));
+  expect(proof.env.authority).toBe('legacy-mirror');
+  expect(Array.isArray(proof.env.entries)).toBe(true);
+  // PRV-0.5 Round-9 P1-01 semantic tightening: malformed logbook on a
+  // historical outer wrapper is refused at boot ADMISSION (strict source
+  // gate) rather than at atomic-legacy-conversion COMMIT. Either blocker
+  // preserves the same invariant — disk untouched, ordinary writes
+  // refused, envelope shape default-filled in memory. Accept either code.
+  expect(['STORE_LEGACY_CONVERSION_PENDING', 'STORE_CORRUPT_AUTHORITATIVE_STATE']).toContain(proof.blocker && proof.blocker.code);
 });
 
 test('L21 — schema-11 state-only Tracker recovery: legacy key absent, v11 Store array survives', async ({ page }) => {
   await page.addInitScript(() => {
     // No dune_logbook_v1, no dune_logbook_entries_v1 — both truly absent.
+    // PRV-0.5 Pre-Push R2 / BINDING-3-A: v11 legacy wrappers require the
+    // full defaultState-shape emitted at commit 8a1e374.
     localStorage.setItem('dune_state_v4', JSON.stringify({
       version: 11,
       data: {
-        money: { salary_net: 130000 },
+        money: { salary_net: 130000, expenses: {} },
         qatarVisit: {},
+        career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+        bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
+        todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
+        meta: { version: 12, createdAt: '2026-08-25T00:00:00Z', lastUpdated: '2026-08-25T00:00:00Z' },
         logbook: [
           { id: 'lb_1_recover', date: '2026-08-25', company: 'X',
             aircraft_type: 'A320', registration: 'S', engine_type: 'CFM',
@@ -477,8 +592,12 @@ test('L22 — schema-12 state-only Builder recovery: Builder legacy key absent, 
     localStorage.setItem('dune_state_v4', JSON.stringify({
       version: 12,
       data: {
-        money: { salary_net: 130000 },
+        money: { salary_net: 130000, expenses: {} },
         qatarVisit: {},
+        career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+        bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
+        todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
+        meta: { version: 12, createdAt: '2026-08-25T00:00:00Z', lastUpdated: '2026-08-25T00:00:00Z' },
         logbook: {
           schemaVersion: 1,
           authority: 'legacy-mirror',
@@ -510,8 +629,12 @@ test('L23 — both legacy keys absent: canonical Tracker + Builder entries both 
     localStorage.setItem('dune_state_v4', JSON.stringify({
       version: 12,
       data: {
-        money: { salary_net: 130000 },
+        money: { salary_net: 130000, expenses: {} },
         qatarVisit: {},
+        career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+        bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
+        todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
+        meta: { version: 12, createdAt: '2026-08-25T00:00:00Z', lastUpdated: '2026-08-25T00:00:00Z' },
         logbook: {
           schemaVersion: 1, authority: 'legacy-mirror',
           entries: [
@@ -549,8 +672,12 @@ test('L24 — empty legacy key suppresses recovery for that source', async ({ pa
     localStorage.setItem('dune_state_v4', JSON.stringify({
       version: 12,
       data: {
-        money: { salary_net: 130000 },
+        money: { salary_net: 130000, expenses: {} },
         qatarVisit: {},
+        career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+        bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
+        todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
+        meta: { version: 12, createdAt: '2026-08-25T00:00:00Z', lastUpdated: '2026-08-25T00:00:00Z' },
         logbook: {
           schemaVersion: 1, authority: 'legacy-mirror',
           entries: [
@@ -798,33 +925,60 @@ test('L31 — implausible legacy epoch → inferredCreatedAt=null; plausible →
   expect(rows['plausible 2025']).toMatch(/^2025-/);
 });
 
-test('L32 — malformed schema-12 Logbook envelope: recover locally, unrelated slices preserved', async ({ page }) => {
-  await page.addInitScript(() => {
+test('L32 — malformed schema-12 Logbook: strict source rejection, blocker set, rejected values NOT leaked into public state', async ({ page }) => {
+  // PRV-0.5 Round-9 P1-01: v12 source with a malformed logbook fails
+  // strict source-shape admission at boot BEFORE migrateUp can default-
+  // fill the malformed slice. Under R8's soft-floor path, the Store
+  // used to boot with the user's `money`/`qatarVisit` values in
+  // memory + STORE_LEGACY_CONVERSION_PENDING blocker. Under R9's strict
+  // admission, the user sentinel values from a rejected wrapper MUST
+  // NOT enter public Store state — Codex's Round-8 exact-SHA finding.
+  // The in-memory baseline comes from `migrateFromLegacy()` (Gen-1
+  // keys), not from the rejected `dune_state_v4` wrapper.
+  //
+  // What is preserved instead: the exact durable raw remains untouched
+  // (recovery-eligible) and the Store refuses ordinary writes via the
+  // durability blocker. Under either enforcement point, the invariant
+  // "malformed source cannot be silently repaired" holds.
+  test.setTimeout(15000);
+  const seedRaw = JSON.stringify({
+    version: 12,
+    data: {
+      money: { salary_net: 999888, expenses: {}, save_target: 44444, usd_rate: 77 },
+      qatarVisit: { foo: 'bar' },
+      career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+      bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
+      todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
+      meta: { version: 12, createdAt: '2026-08-25T00:00:00Z', lastUpdated: '2026-08-25T00:00:00Z' },
+      logbook: 'not an envelope',
+    }
+  });
+  await page.addInitScript((raw) => {
     localStorage.setItem('dune_logbook_v1', JSON.stringify([]));
     localStorage.setItem('dune_logbook_entries_v1', JSON.stringify([]));
-    localStorage.setItem('dune_state_v4', JSON.stringify({
-      version: 12,
-      data: {
-        money: { salary_net: 999888, expenses: {}, save_target: 44444, usd_rate: 77 },
-        qatarVisit: { foo: 'bar' },
-        logbook: 'not an envelope', // malformed
-      }
-    }));
-  });
+    localStorage.setItem('dune_state_v4', raw);
+  }, seedRaw);
   await page.goto('/');
-  await waitReady(page);
+  await waitAppSurfaces(page);
   const s = await page.evaluate(() => ({
     logbook: window.Store.get('logbook'),
     salary: window.Store.get('money.salary_net'),
     saveTarget: window.Store.get('money.save_target'),
     qatarVisit: window.Store.get('qatarVisit'),
+    blocker: window.Store.getDurabilityBlocker && window.Store.getDurabilityBlocker(),
+    diskRaw: localStorage.getItem('dune_state_v4')
   }));
+  // Envelope shape is present in memory (default-filled by migrateFromLegacy).
   expect(s.logbook.authority).toBe('legacy-mirror');
-  expect(s.logbook.entries.length).toBe(0);
-  // Unrelated slices survived — no full-state reset.
-  expect(s.salary).toBe(999888);
-  expect(s.saveTarget).toBe(44444);
-  expect(s.qatarVisit).toEqual({ foo: 'bar' });
+  expect(Array.isArray(s.logbook.entries)).toBe(true);
+  // Rejected wrapper's values do NOT leak into public state.
+  expect(s.salary).not.toBe(999888);
+  expect(s.saveTarget).not.toBe(44444);
+  expect(s.qatarVisit).not.toEqual({ foo: 'bar' });
+  // Truthful blocker installed at either enforcement point.
+  expect(['STORE_LEGACY_CONVERSION_PENDING', 'STORE_CORRUPT_AUTHORITATIVE_STATE']).toContain(s.blocker && s.blocker.code);
+  // Rejected raw preserved byte-exact on disk (recovery-eligible).
+  expect(s.diskRaw).toBe(seedRaw);
 });
 
 // Production-writer path helpers: attach the minimal DOM the writer
@@ -1076,11 +1230,17 @@ test('L39 — legacyExtra participates in drift digest: same-ID same-normalised-
 test('L40 — first reconciliation after schema-11 migration produces reconciled marker and no false drift', async ({ page }) => {
   await page.addInitScript(() => {
     // Schema-11 state with a stale/dormant Tracker array.
+    // PRV-0.5 Pre-Push R2 / BINDING-3-A: v11 requires the full
+    // defaultState-shape emitted at commit 8a1e374.
     localStorage.setItem('dune_state_v4', JSON.stringify({
       version: 11,
       data: {
-        money: { salary_net: 130000 },
+        money: { salary_net: 130000, expenses: {} },
         qatarVisit: {},
+        career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+        bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
+        todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
+        meta: { version: 12, createdAt: '2026-08-25T00:00:00Z', lastUpdated: '2026-08-25T00:00:00Z' },
         logbook: [
           { id: 'lb_stale', date: '2020-01-01', company: 'stale',
             aircraft_type: 'X', registration: 'X', engine_type: 'X',
@@ -1135,8 +1295,14 @@ test('L20 — old schema-11 array in dune_state_v4 migrates into envelope and re
     state: {
       version: 11,
       data: {
-        money: { salary_net: 130000 },
+        // PRV-0.5 Pre-Push R2 / BINDING-3-A: v11 requires full
+        // defaultState-shape emission (commit 8a1e374).
+        money: { salary_net: 130000, expenses: {} },
         qatarVisit: {},
+        career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+        bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
+        todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [],
+        meta: { version: 12, createdAt: '2026-08-25T00:00:00Z', lastUpdated: '2026-08-25T00:00:00Z' },
         logbook: [
           { id: 'lb_from_state', date: '2026-08-01', company: 'X',
             aircraft_type: 'A320', registration: 'S', engine_type: 'CFM',

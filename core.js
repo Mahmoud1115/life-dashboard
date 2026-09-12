@@ -10,7 +10,15 @@
   // ──────────────────────────────────────────────
   // SCHEMA
   // ──────────────────────────────────────────────
-  const SCHEMA_VERSION = 13;
+  const SCHEMA_VERSION = 14;
+  // PRV-0.5 R2 (ADR-015 addendum #1): version 14 introduces persisted
+  // migration-status state for the four record domains (deadlines,
+  // claims, risks, goals) under `data.records.*` with a companion
+  // `data.meta.recordsMigration` marker. Fresh cold-boot state is
+  // `{ status: 'migrated', at: <iso> }` with empty record arrays, so
+  // Reset cannot resurrect legacy personal records. A v13 wrapper
+  // migrated up marks `status: 'unmigrated'`; app.js hydration reads
+  // this marker to decide whether to seed from LEGACY_RECORDS.
   const STATE_KEY = 'dune_state_v4';
   const SNAPSHOTS_KEY = 'dune_snapshots_v1';
   const MAX_SNAPSHOTS = 8;
@@ -491,10 +499,29 @@
         focusReserve: 100
       },
       ideas: [],
+      // PRV-0.5 R2 (schema 14): explicit per-domain record store for
+      // deadlines / claims / risks / goals. Fresh state ships EMPTY;
+      // hydration in app.js seeds from LEGACY_RECORDS only when a
+      // v13-or-earlier wrapper is migrated up (see meta.recordsMigration).
+      records: {
+        deadlines: [],
+        claims: [],
+        risks: [],
+        goals: []
+      },
       meta: {
         version: SCHEMA_VERSION,
         createdAt: isoNow,
-        lastUpdated: isoNow
+        lastUpdated: isoNow,
+        // Fresh cold-boot and post-Reset state is `migrated + empty`:
+        // Reset cannot rehydrate legacy personal records because the
+        // hydration path (app.js) only fires when status === 'unmigrated'.
+        recordsMigration: {
+          status: 'migrated',
+          schemaVersion: SCHEMA_VERSION,
+          at: isoNow,
+          reason: 'default-state'
+        }
       }
     };
   }
@@ -633,8 +660,59 @@
       s.logbook = defaultLogbookEnvelope();
     }
 
+    // v13 → v14: records subtree + persisted migration marker (ADR-015
+    // addendum #1 / PRV-0.5 Round 2). A wrapper that reaches this
+    // migration step from a version <14 has never carried a records.*
+    // subtree; app.js hydration is responsible for populating it from
+    // LEGACY_RECORDS + any surviving Gen-1 override keys. The marker
+    // starts as 'unmigrated' so hydration fires on next boot; hydration
+    // flips it to 'migrated' only after durable persistence is verified.
+    // A wrapper migrated up that ALREADY has records.* populated (e.g.
+    // an older PRV-0.5 attempt that persisted its shape but not the
+    // marker) is preserved: records survive, and the marker is set
+    // conservatively to 'unmigrated' so the async verifier can prove
+    // durability before promoting to 'migrated'.
+    if ((fromVersion || 0) < 14) {
+      if (!s.records || typeof s.records !== 'object' || Array.isArray(s.records)) {
+        s.records = { deadlines: [], claims: [], risks: [], goals: [] };
+      } else {
+        for (const d of ['deadlines', 'claims', 'risks', 'goals']) {
+          if (!Array.isArray(s.records[d])) s.records[d] = [];
+        }
+      }
+      // PRV-0.5 Round-9 P1-02 (belt): unconditionally overwrite
+      // meta.recordsMigration on every historical migration
+      // (fromVersion < SCHEMA_VERSION). A forged inner marker
+      // (status:'migrated' + schemaVersion:14 sneaked onto an outer v8-v13
+      // wrapper) MUST NOT survive migrateUp and be classified as
+      // AUTHORITATIVE_MIGRATED by evaluateCandidateData downstream. The
+      // outer source version is the sole provenance authority; anything
+      // the inner data claims about its own migration status is stripped
+      // here and set to the truthful 'unmigrated' state for hydration.
+      s.meta.recordsMigration = {
+        status: 'unmigrated',
+        schemaVersion: SCHEMA_VERSION,
+        priorSchemaVersion: fromVersion || 0,
+        reason: 'migrateUp-from-v' + (fromVersion || 0)
+      };
+    }
+
     s.meta.version = SCHEMA_VERSION;
     s.meta.lastUpdated = nowISO();
+    // PRV-0.5 Codex Round-7 P3: historical `bht.ai.apiKey` sanitization
+    // (ADR-005). Every migrated candidate — regardless of source version
+    // — MUST NOT carry a `bht.ai.apiKey` field. The runtime BHT layer
+    // (bht.js:sanitizeAI) strips it at load, but the Store-level
+    // migration must strip it too so external candidates that reach
+    // authority via evaluateCandidateWrapper (import, snapshot, boot
+    // hydration, external adoption) never persist the key. Old
+    // backups written before ADR-005 lands with `bht.ai.apiKey` are
+    // sanitized by this step.
+    if (s && s.bht && s.bht.ai && typeof s.bht.ai === 'object' && !Array.isArray(s.bht.ai)) {
+      if (Object.prototype.hasOwnProperty.call(s.bht.ai, 'apiKey')) {
+        delete s.bht.ai.apiKey;
+      }
+    }
     return s;
   }
 
@@ -866,10 +944,21 @@
   }
   // Wrapper-only structural gate. Used by both snapshot paths; data-level
   // validation is performed separately (see validateSnapshotWrapperFull).
+  //
+  // PRV-0.5 R5 (Codex Round-4 P1-5): reject wrappers whose version is
+  // strictly greater than SCHEMA_VERSION. Unknown future semantics MUST
+  // NOT be silently downgraded by migrateUp; the wrapper is quarantined.
   function isValidSnapshotWrapperShape(parsed) {
     if (!parsed || typeof parsed !== 'object') return false;
     if (typeof parsed.version !== 'number' || !Number.isInteger(parsed.version)) return false;
-    if (parsed.version === 13) {
+    if (parsed.version > SCHEMA_VERSION) return false;
+    // PRV-0.5 Codex-final P1-04: the wrapper's integer revision was
+    // introduced at v13 (94254c4) and is a REQUIRED wrapper-level
+    // field for every schema >= 13, including current v14 and any
+    // future >=13 SCHEMA_VERSION bumps. Restricting the guard to
+    // v13 alone let a v14 snapshot with a missing/malformed revision
+    // reach destructive restore, violating the wrapper contract.
+    if (parsed.version >= 13) {
       const rev = parsed.revision;
       if (!(typeof rev === 'number' && Number.isFinite(rev) && Number.isInteger(rev) && rev >= 0 && rev <= Number.MAX_SAFE_INTEGER)) {
         return false;
@@ -877,20 +966,382 @@
     }
     return !!parsed.data;
   }
-  // Full snapshot wrapper validation: structural gate + migrate + Store data
-  // validation. Never mutates Store. Returns { ok, data? }; on ok:true, data
+  // Full snapshot wrapper validation: structural gate → SOURCE
+  // validation → migrate → Store data validation → canonical evaluator.
+  // Never mutates Store. Returns { ok, data?, reason? }; on ok:true, data
   // is the migrated candidate suitable for commitFullStateWrapper.
+  //
+  // PRV-0.5 R5: routes through the Store-owned authority evaluator so the
+  // snapshot-restore boundary applies the same canonical marker + records +
+  // future-version rules used by hydration and import.
+  //
+  // PRV-0.5 R6 (Codex Round-5 P1-5): SOURCE validation runs BEFORE
+  // migrateUp so that a source-invalid legacy generation (e.g. a v13
+  // snapshot missing required `money.salary_net`) is REJECTED rather
+  // than default-filled into plausibility. Recovery selection can
+  // then skip this snapshot and choose the next independently valid
+  // generation. Fields that legitimately did not exist in that
+  // historical schema are NOT required at the source stage.
   function validateSnapshotWrapperFull(parsed) {
-    if (!isValidSnapshotWrapperShape(parsed)) return { ok: false };
+    if (!isValidSnapshotWrapperShape(parsed)) return { ok: false, reason: 'SNAPSHOT_WRAPPER_SHAPE_INVALID' };
+    // PRV-0.5 Round-6 (Claude-authored, P1-A): a v14 snapshot must be
+    // held to the current canonical contract at the source stage,
+    // BEFORE any default-fill runs. Using validateLegacySourceRequiredFields
+    // on a v14 wrapper would apply the legacy-envelope contract to
+    // current-schema bytes — legitimate v14 sources would still pass
+    // by coincidence, but a v14 wrapper missing `logbook` would slip
+    // through the legacy-array clause and be silently repaired.
+    const sourceCheck = parsed.version === SCHEMA_VERSION
+      ? validateFullStateCanonical(parsed.data)
+      : validateLegacySourceRequiredFields(parsed.data, parsed.version);
+    if (!sourceCheck.ok) return { ok: false, reason: 'SNAPSHOT_SOURCE_' + sourceCheck.reason };
     let migrated;
     try {
       migrated = (parsed.version === SCHEMA_VERSION && parsed.data)
         ? parsed.data
         : migrateUp(parsed.data || {}, parsed.version || 0);
       normalizeLogbookDomain(migrated);
-    } catch (e) { return { ok: false }; }
-    if (!validate(migrated)) return { ok: false };
+    } catch (e) { return { ok: false, reason: 'SNAPSHOT_MIGRATE_THREW' }; }
+    if (!validate(migrated)) return { ok: false, reason: 'SNAPSHOT_DATA_INVALID' };
+    const evalRes = evaluateCandidateData(migrated);
+    if (!evalRes.canonical) return { ok: false, reason: 'SNAPSHOT_CANDIDATE_' + evalRes.classification };
     return { ok: true, data: migrated };
+  }
+  // PRV-0.5 R6 (Codex Round-5 P1-5): source-required invariants keyed
+  // by the wrapper's DECLARED historical schema version. This runs
+  // BEFORE migrateUp fills defaults so a snapshot / import candidate
+  // whose stored data is missing an invariant that its own schema
+  // required is REJECTED — the next independently valid generation
+  // wins. Schemas prior to v12 predate the money slice and are not
+  // required to carry it; from v12 onward the money slice was written
+  // and is required.
+  // PRV-0.5 Pre-Push Review Round-2 (BINDING-3-A closure): the
+  // Historical-Version Matrix is now fully evidence-backed. Every
+  // SUPPORTED row is anchored to a concrete emission commit; anything
+  // that cannot be so anchored FAILS CLOSED with reason
+  // `version-unsupported`. Interpolated / runtime-floor acceptance
+  // has been eliminated.
+  //
+  // Emission evidence (SHAs are ancestors of origin/main):
+  //   v0..v3   — pre-history. No SCHEMA_VERSION constant. FAIL CLOSED.
+  //   v4..v7   — pre-Phase-1 iterations; defaultState shape predates
+  //              bht (v7)/telemetry (v8)/ideas (v9). Not a supported
+  //              legacy import target. FAIL CLOSED.
+  //   v8       — 85e1d22 (2026-06-14) "core.js: additive v7 → v8
+  //              schema migration — add telemetry slice". core.js:11
+  //              bumps SCHEMA_VERSION 7→8; core.js:110 seeds
+  //              telemetry:{...} in defaultState; write path unchanged
+  //              at core.js:282-283 emits
+  //              JSON.stringify({version: SCHEMA_VERSION, data: state})
+  //              — every genuine v8 emission carries the full
+  //              defaultState shape below.
+  //   v9       — cea0dab (2026-06-15) "Add Ideas section — parking
+  //              lot for what's next". core.js:11 bumps 8→9;
+  //              defaultState adds `ideas: []` (core.js:115);
+  //              migrateUp v8→v9 seeds `s.ideas = []`.
+  //   v10      — 04af26a (2026-06-19) "About You: update with
+  //              everything added since the original build".
+  //              core.js:11 bumps 9→10; no domain added — migrateUp
+  //              v9→v10 only touches s.about.lastUpdated string.
+  //              Emission shape = v9 shape.
+  //   v11      — 8a1e374 (2026-06-19) "About: fix date — 19 June,
+  //              not 15". core.js:11 bumps 10→11; migrateUp v10→v11
+  //              only touches s.about.lastUpdated string. Emission
+  //              shape = v9 shape.
+  //   v12      — 521fe70 (2026-08-25) "feat(logbook): add canonical
+  //              mirror phase A". core.js bumps 11→12; introduces
+  //              logbook envelope + records mirror in defaultState.
+  //   v13      — 94254c4 (2026-08-25) "feat(store): B0 durability
+  //              protocol (schema-13 wrapper + CAS + coordinator)".
+  //              Wrapper gains integer `revision` + committedAt.
+  //   v14      — 4ead699 (2026-08-29) "feat(prv-0.5-r2): schema 14
+  //              migration marker + durable-verified hydration".
+  //              Adds records subtree + meta.recordsMigration marker.
+  //              (Current SCHEMA_VERSION.)
+  //
+  // Required-shape derivation for v8..v11: at each of those commits,
+  // defaultState() seeded the same fifteen top-level domains (money,
+  // qatarVisit, todayFocus, goals, career, easa, logbook, reviews,
+  // decisions, timeline, about, apartments, sbTasks, bht, telemetry,
+  // meta) plus — from v9 onward — `ideas`. initialLoad() at those
+  // SHAs ran migrateUp + a defaultState merge before the very next
+  // write, so any genuine v8..v11 wrapper on disk carries all fifteen
+  // (or sixteen at v9+) domains. A minimal `{money, qatarVisit}`
+  // wrapper was never emitted by this repository at any tag and is
+  // classified as UNPROVEN → fail closed.
+  //
+  // For v12..v13 the emission set additionally includes the logbook
+  // envelope shape (v12) and the wrapper-level integer revision (v13
+  // — enforced in parseWrapperRaw, not here).
+  //
+  // records + meta.recordsMigration are v14-only and must NEVER be
+  // required in a v<14 historical source (they would default-fill
+  // downstream at migrateUp v13→v14, which is the legitimate
+  // migration path).
+  // PRV-0.5 Codex-final P1-03: complete emission-audit — `meta`
+  // and `money.expenses` were emitted by every v8..v13 defaultState
+  // and are now REQUIRED. Version-specific Logbook contract replaces
+  // the generic `array-or-object` (which accepted arbitrary objects
+  // and let malformed persisted Logbook survive strict validation).
+  //
+  // Emission evidence (verified via `git show <SHA>:core.js` per
+  // version-bump commit — see HISTORICAL_SCHEMA_REQUIREMENTS header):
+  //   v8..v11: defaultState().logbook = [] (ARRAY)
+  //   v12..v13: defaultState().logbook = defaultLogbookEnvelope()
+  //             (schemaVersion:1, authority:'legacy-mirror',
+  //              entries:array, migration:{version, sourceCounts},
+  //              reconciled:bool, drift:null)
+  //   v8..v13: defaultState().meta = { version:int,
+  //             createdAt:ISO, lastUpdated:ISO }
+  //   v8..v13: defaultState().money.expenses = { rent, food,
+  //             transport, utilities, phone, family_transfer,
+  //             other, mai } (object)
+  const _V8_REQUIRED_OBJECTS = ['money', 'qatarVisit', 'career', 'easa', 'about', 'sbTasks', 'goals', 'bht', 'telemetry', 'meta'];
+  const _V8_REQUIRED_ARRAYS  = ['todayFocus', 'timeline', 'reviews', 'decisions', 'apartments'];
+  // PRV-0.5 Round-6 (Claude-authored): complete emission audit for the
+  // BHT and telemetry subtrees. defaultState() (this file, line 495)
+  // has emitted the following BHT nested shape at every v8..v13 tag:
+  //   bht.habits[], entries[], snapshots[], lifeEvents[],
+  //       vocab.{triggers[], coping[], moods[]},
+  //       ai.{provider:string, ollamaUrl:string, model:string},
+  //       meta{}
+  // and telemetry.{accumulatedFatigue, weeklyShiftHours, focusReserve}
+  // as numbers. migrateUp() default-fills every one of these paths
+  // (see lines 638-640 for telemetry, defaultState() for BHT), so a
+  // partial persisted source can be silently repaired unless the
+  // source contract requires them BEFORE migration. Requiring them
+  // here at the source stage closes that vector.
+  //
+  // `bht.ai.apiKey` is intentionally NOT required at the source stage:
+  // ADR-005 removed it in v12 for privacy (no longer emitted by v12+
+  // defaultState). Older per-provider keys were emitted only under
+  // legacy provider modes and are not universally attested.
+  const _BHT_EMITTED_NESTED = {
+    'bht.habits':          'array',
+    'bht.entries':         'array',
+    'bht.snapshots':       'array',
+    'bht.lifeEvents':      'array',
+    'bht.vocab':           'object',
+    'bht.vocab.triggers':  'array',
+    'bht.vocab.coping':    'array',
+    'bht.vocab.moods':     'array',
+    'bht.ai':              'object',
+    'bht.ai.provider':     'string',
+    'bht.ai.ollamaUrl':    'string',
+    'bht.ai.model':        'string',
+    'bht.meta':            'object'
+  };
+  const _TELEMETRY_EMITTED_NESTED = {
+    'telemetry.accumulatedFatigue': 'number',
+    'telemetry.weeklyShiftHours':   'number',
+    'telemetry.focusReserve':       'number'
+  };
+  // Base nested spec shared by v8..v11 (Logbook required as ARRAY —
+  // pre-envelope emission). money.expenses required as an object.
+  const _V8_NESTED = Object.assign({}, _BHT_EMITTED_NESTED, _TELEMETRY_EMITTED_NESTED, {
+    'logbook': 'array',
+    'money.salary_net': 'number',
+    'money.expenses': 'object'
+  });
+  const _V9_REQUIRED_ARRAYS  = _V8_REQUIRED_ARRAYS.concat(['ideas']);
+  // v12+ Logbook contract: must be a valid envelope OBJECT with the
+  // exact required shape (schemaVersion === LOGBOOK_ENVELOPE_VERSION,
+  // authority === 'legacy-mirror', entries is an array). The
+  // pre-normalization guard here (mirrored below by the same explicit
+  // envelope check) prevents an arbitrary non-envelope object from
+  // being silently normalized to an empty envelope during migration.
+  const _V12_NESTED = Object.assign({}, _BHT_EMITTED_NESTED, _TELEMETRY_EMITTED_NESTED, {
+    'logbook': 'logbook-envelope',
+    'money.salary_net': 'number',
+    'money.expenses': 'object'
+  });
+  const HISTORICAL_SCHEMA_REQUIREMENTS = Object.freeze({
+    // v8 (85e1d22): telemetry introduced; ideas not yet present;
+    // logbook emitted as legacy array.
+    8:  Object.freeze({ requiredObjects: Object.freeze(_V8_REQUIRED_OBJECTS.slice()),
+                        requiredArrays: Object.freeze(_V8_REQUIRED_ARRAYS.slice()),
+                        nested: Object.freeze(Object.assign({}, _V8_NESTED)) }),
+    // v9 (cea0dab): ideas array introduced. Same shape through v11.
+    9:  Object.freeze({ requiredObjects: Object.freeze(_V8_REQUIRED_OBJECTS.slice()),
+                        requiredArrays: Object.freeze(_V9_REQUIRED_ARRAYS.slice()),
+                        nested: Object.freeze(Object.assign({}, _V8_NESTED)) }),
+    10: Object.freeze({ requiredObjects: Object.freeze(_V8_REQUIRED_OBJECTS.slice()),
+                        requiredArrays: Object.freeze(_V9_REQUIRED_ARRAYS.slice()),
+                        nested: Object.freeze(Object.assign({}, _V8_NESTED)) }),
+    11: Object.freeze({ requiredObjects: Object.freeze(_V8_REQUIRED_OBJECTS.slice()),
+                        requiredArrays: Object.freeze(_V9_REQUIRED_ARRAYS.slice()),
+                        nested: Object.freeze(Object.assign({}, _V8_NESTED)) }),
+    // v12 (521fe70): logbook transitions to envelope object. records
+    // mirror added but that domain migrates in at v13→v14, so we do
+    // not require it in the pre-migration source.
+    12: Object.freeze({ requiredObjects: Object.freeze(_V8_REQUIRED_OBJECTS.slice()),
+                        requiredArrays: Object.freeze(_V9_REQUIRED_ARRAYS.slice()),
+                        nested: Object.freeze(Object.assign({}, _V12_NESTED)) }),
+    // v13 (94254c4): wrapper-level integer revision + committedAt
+    // (enforced by parseWrapperRaw / isValidSnapshotWrapperShape).
+    // Data shape unchanged from v12.
+    13: Object.freeze({ requiredObjects: Object.freeze(_V8_REQUIRED_OBJECTS.slice()),
+                        requiredArrays: Object.freeze(_V9_REQUIRED_ARRAYS.slice()),
+                        nested: Object.freeze(Object.assign({}, _V12_NESTED)) })
+  });
+  function _checkNestedShape(data, spec) {
+    for (const path of Object.keys(spec)) {
+      const parts = path.split('.');
+      let cur = data;
+      for (let i = 0; i < parts.length; i++) {
+        if (cur === null || cur === undefined || typeof cur !== 'object') return { ok: false, reason: 'missing-' + path };
+        cur = cur[parts[i]];
+      }
+      const kind = spec[path];
+      if (kind === 'array' && !Array.isArray(cur)) return { ok: false, reason: 'malformed-' + path };
+      if (kind === 'number' && typeof cur !== 'number') return { ok: false, reason: 'malformed-' + path };
+      // PRV-0.5 Round-6 (Claude-authored): string kind supports the
+      // bht.ai.{provider,ollamaUrl,model} historical emission contract.
+      if (kind === 'string' && typeof cur !== 'string') return { ok: false, reason: 'malformed-' + path };
+      if (kind === 'object') {
+        if (!(cur && typeof cur === 'object' && !Array.isArray(cur))) return { ok: false, reason: 'malformed-' + path };
+      }
+      if (kind === 'array-or-object') {
+        const ok = Array.isArray(cur) || (cur && typeof cur === 'object');
+        if (!ok) return { ok: false, reason: 'malformed-' + path };
+      }
+      // PRV-0.5 Codex-final P1-02: version-specific Logbook contract.
+      // A v12+ source must carry the exact envelope shape (as emitted
+      // by defaultLogbookEnvelope() at 521fe70). This runs BEFORE any
+      // downstream normalization so a malformed persisted Logbook
+      // object cannot be silently replaced with an empty envelope.
+      if (kind === 'logbook-envelope') {
+        if (!isLogbookEnvelope(cur)) return { ok: false, reason: 'malformed-' + path };
+      }
+    }
+    return { ok: true };
+  }
+  function validateLegacySourceRequiredFields(data, version) {
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      return { ok: false, reason: 'shape-invalid' };
+    }
+    if (typeof version !== 'number' || !Number.isInteger(version)) {
+      return { ok: false, reason: 'version-not-integer' };
+    }
+    // Money/salary + qatarVisit are the runtime `validate()` floor for
+    // every version.
+    if (!data.money || typeof data.money !== 'object' || Array.isArray(data.money)) return { ok: false, reason: 'missing-money' };
+    if (typeof data.money.salary_net !== 'number') return { ok: false, reason: 'missing-money-salary_net' };
+    if (!data.qatarVisit || typeof data.qatarVisit !== 'object' || Array.isArray(data.qatarVisit)) return { ok: false, reason: 'missing-qatarVisit' };
+    // PRV-0.5 Pre-Push Review Round-2 (BINDING-3-A closure): every
+    // supported historical version is anchored to a concrete
+    // emission commit (see HISTORICAL_SCHEMA_REQUIREMENTS header),
+    // and its required source shape is the strict evidence-backed
+    // matrix. Anything below v8 predates the earliest attested
+    // emission of the current-generation domain set and FAILS
+    // CLOSED with `version-unsupported`. There is no permissive
+    // runtime-floor path for v8..v11 any more — a minimal
+    // `{money, qatarVisit}` wrapper was never emitted by this
+    // repository at any tag and is classified as UNPROVEN.
+    if (version < 8) return { ok: false, reason: 'version-unsupported', version };
+    const req = HISTORICAL_SCHEMA_REQUIREMENTS[Math.min(version, 13)];
+    if (!req) return { ok: false, reason: 'no-requirements-matrix', version };
+    for (const d of req.requiredObjects) {
+      if (!data[d] || typeof data[d] !== 'object' || Array.isArray(data[d])) {
+        return { ok: false, reason: 'missing-' + d, version };
+      }
+    }
+    for (const d of req.requiredArrays) {
+      if (!Array.isArray(data[d])) return { ok: false, reason: 'missing-' + d, version };
+    }
+    // BHT substructure: preserve R6/R7 reason string
+    // `malformed-bht-substructure` for backward compat with existing
+    // reason-coupled tests.
+    if (data.bht && (!Array.isArray(data.bht.habits) || !Array.isArray(data.bht.entries))) {
+      return { ok: false, reason: 'malformed-bht-substructure', version };
+    }
+    const nested = _checkNestedShape(data, req.nested);
+    if (!nested.ok) return { ok: false, reason: nested.reason, version };
+    return { ok: true };
+  }
+  // PRV-0.5 Codex-final P1-03b: return an immutable deep snapshot,
+  // not a reference to the internal matrix, so external callers cannot
+  // mutate the live validation policy. The matrix itself is already
+  // deep-frozen at definition (defense-in-depth); we additionally
+  // return fresh frozen copies so a caller that tries to reassign an
+  // array element or nested key gets a TypeError in strict mode (and
+  // a silent no-op in sloppy mode) — either way the internal
+  // validator behavior does not change.
+  function getHistoricalRequirements(version) {
+    if (typeof version !== 'number' || !Number.isInteger(version)) return null;
+    if (version < 8 || version >= SCHEMA_VERSION) return null;
+    const req = HISTORICAL_SCHEMA_REQUIREMENTS[Math.min(version, 13)];
+    if (!req) return null;
+    return Object.freeze({
+      requiredObjects: Object.freeze(req.requiredObjects.slice()),
+      requiredArrays: Object.freeze(req.requiredArrays.slice()),
+      nested: Object.freeze(Object.assign({}, req.nested))
+    });
+  }
+  // PRV-0.5 R7 (Codex Round-6 P1-3, INV-4): COMPLETE canonical
+  // full-state validation for schema-14 destructive commits. Every
+  // required top-level domain must exist with the right container
+  // type. Missing/wrong-type/null domains fail closed before mutation.
+  function validateFullStateCanonical(data) {
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      return { ok: false, reason: 'shape-invalid' };
+    }
+    const requiredObjects = ['money', 'qatarVisit', 'goals', 'career', 'easa', 'about', 'sbTasks', 'bht', 'telemetry', 'meta'];
+    const missing = [];
+    for (const d of requiredObjects) {
+      if (!data[d] || typeof data[d] !== 'object' || Array.isArray(data[d])) missing.push(d);
+    }
+    const requiredArrays = ['todayFocus', 'reviews', 'decisions', 'timeline', 'apartments', 'ideas'];
+    for (const d of requiredArrays) {
+      if (!Array.isArray(data[d])) missing.push(d);
+    }
+    // PRV-0.5 Round-6 (Claude-authored, P1-A): v14 canonical Logbook
+    // must be a valid envelope OBJECT. Missing / null / malformed /
+    // legacy-array values are REJECTED here — no silent normalization
+    // to an empty envelope is permitted at the canonical validation
+    // boundary. defaultState() at v14 emits an envelope; any current
+    // persisted authority that fails this check is corruption, never
+    // permission to fabricate an empty envelope over the top of it.
+    // (v8..v11 array shape is accepted at the LEGACY source stage —
+    // see validateLegacySourceRequiredFields — never here.)
+    if (!isLogbookEnvelope(data.logbook)) {
+      missing.push('logbook');
+    }
+    // money nested invariants.
+    if (data.money && (typeof data.money.salary_net !== 'number' || !data.money.expenses || typeof data.money.expenses !== 'object')) {
+      missing.push('money.salary_net-or-expenses');
+    }
+    // PRV-0.5 Round-6 (Claude-authored, P1-B): the same complete BHT
+    // and telemetry emitted-paths contract that guards legacy sources
+    // (see _BHT_EMITTED_NESTED / _TELEMETRY_EMITTED_NESTED) now guards
+    // the current-schema canonical boundary too. Without this, a v14
+    // wrapper with a bare `bht: {habits:[], entries:[]}` (or a
+    // telemetry missing accumulatedFatigue) would still pass canonical
+    // validation because migrateUp default-fills the rest — the exact
+    // silent-repair vector this remediation closes.
+    const currentNested = _checkNestedShape(data, Object.assign({},
+      _BHT_EMITTED_NESTED,
+      _TELEMETRY_EMITTED_NESTED,
+      { 'money.salary_net': 'number', 'money.expenses': 'object' }
+    ));
+    if (!currentNested.ok) missing.push(currentNested.reason);
+    // records subtree (v14 addition).
+    if (!data.records || typeof data.records !== 'object' || Array.isArray(data.records)) {
+      missing.push('records');
+    } else {
+      for (const d of ['deadlines', 'claims', 'risks', 'goals']) {
+        if (!Array.isArray(data.records[d])) missing.push('records.' + d);
+      }
+    }
+    // meta.recordsMigration required (canonical marker).
+    if (data.meta) {
+      const m = data.meta.recordsMigration;
+      if (!m || typeof m !== 'object' || Array.isArray(m)) missing.push('meta.recordsMigration');
+      else if (m.schemaVersion !== SCHEMA_VERSION) missing.push('meta.recordsMigration.schemaVersion');
+      else if (m.status !== MARKER_STATUS_MIGRATED && m.status !== MARKER_STATUS_UNMIGRATED) missing.push('meta.recordsMigration.status');
+    }
+    if (missing.length > 0) return { ok: false, missing: missing, reason: 'missing-required-domains' };
+    return { ok: true };
   }
   // Retained alias — existing callers went through the shape-only gate.
   // Every production caller of the old name has been switched to the
@@ -919,6 +1370,599 @@
     if (!data.qatarVisit) return false;
     return true;
   }
+  // PRV-0.5 R4 (Codex Round-3 P1-B): a supplementary shape guard used by
+  // DESTRUCTIVE boundaries only (snapshot restore, import). Every
+  // schema-14 candidate MUST carry a canonical migration marker AND a
+  // canonical records shape — a missing/invalid marker or missing/
+  // non-array domain is REJECTED at the destructive boundary rather
+  // than silently accepted (which is the Codex Round-3 bypass that let
+  // a marker-less schema-14 backup overwrite good current state and
+  // trigger intent-inventing legacy resurrection). Load-time uses the
+  // softer `validate()` above so a stale-shape wrapper still loads and
+  // can be healed by app.js hydration rather than being rejected into
+  // a stranded disk-vs-memory revision divergence.
+  function isRecordsMigrationShapeSafe(data) {
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
+    // A schema-14 candidate MUST carry a marker with a recognized status.
+    // Missing/invalid/unknown-status = REJECT at destructive boundary.
+    const rm = data.meta && data.meta.recordsMigration;
+    if (!rm || typeof rm !== 'object' || Array.isArray(rm)) return false;
+    if (rm.status !== 'migrated' && rm.status !== 'unmigrated') return false;
+    // Canonical records shape is REQUIRED regardless of marker status —
+    // both migrated and unmigrated schema-14 states carry all four
+    // arrays after migrateUp. A shape violation at destructive commit
+    // would replace good current state with malformed data.
+    const r = data.records;
+    if (!r || typeof r !== 'object' || Array.isArray(r)) return false;
+    for (const d of ['deadlines', 'claims', 'risks', 'goals']) {
+      if (!Array.isArray(r[d])) return false;
+    }
+    return true;
+  }
+  // ══════════════════════════════════════════════════════════════
+  // PRV-0.5 R5 (ADR-015 addendum #4): STORE-OWNED AUTHORITY EVALUATOR.
+  //
+  // Codex Round-4 identified five HIGH-risk defects rooted in the SAME
+  // architectural cause: parallel authority predicates in app.js and
+  // core.js diverged and let ambiguous / stale / corrupt / future
+  // wrappers pass one path while the other rejected them. R5 collapses
+  // every wrapper-authority decision into this single evaluator.
+  //
+  // Consumers:
+  //   - hydration fast-path (app.js) → evaluatePersistedAuthority()
+  //   - production import (app.js processImport) → evaluateCandidateWrapper()
+  //   - snapshot restore (validateSnapshotWrapperFull) → evaluateCandidateData()
+  //   - backup/export (app.js exportBackup / copyBackupToClipboard) →
+  //         evaluatePersistedAuthority() then checks acceptForBackup
+  //   - boot recovery (initialLoad) → applies same classification to
+  //         decide durability blocker vs. legacy fallback
+  //
+  // Classifications (six behavioural classes; A/B/G share behaviour and
+  // return AUTHORITATIVE_MIGRATED with sub-flags):
+  //   AUTHORITATIVE_MIGRATED     (A / B / G)
+  //   VERIFIED_LEGACY_TRANSITION (C — the ONLY class that authorises
+  //                                    LEGACY_RECORDS seeding)
+  //   MALFORMED_CURRENT_SCHEMA   (D — invalid marker / non-canonical
+  //                                    records / non-canonical marker
+  //                                    schemaVersion / unmigrated w/o
+  //                                    supported provenance)
+  //   CORRUPT_STALE_COLLIDING    (E — invalid wrapper JSON, invalid
+  //                                    revision, stale revision, equal
+  //                                    revision divergent bytes, active
+  //                                    Store durability blocker)
+  //   UNSUPPORTED_FUTURE_SCHEMA  (F — version > SCHEMA_VERSION)
+  //   ABSENT                     (no wrapper on disk / no candidate)
+  //
+  // Only VERIFIED_LEGACY_TRANSITION authorises LEGACY_RECORDS seeding.
+  // Only AUTHORITATIVE_MIGRATED authorises the hydration fast-path
+  // "already-migrated" skip AND normal backup export.
+  // MALFORMED / CORRUPT / FUTURE always require explicit recovery
+  // (accepted snapshot / import / reset) — never a synthesized `[]`,
+  // never a silent seed, never a normal backup.
+  // ══════════════════════════════════════════════════════════════
+
+  const MARKER_STATUS_MIGRATED = 'migrated';
+  const MARKER_STATUS_UNMIGRATED = 'unmigrated';
+  const REQUIRED_RECORD_DOMAINS = ['deadlines', 'claims', 'risks', 'goals'];
+  // Legacy transition source versions. migrateUp only understands
+  // wrappers whose version is strictly less than SCHEMA_VERSION; higher
+  // versions are UNSUPPORTED_FUTURE_SCHEMA.
+  // PRV-0.5 Codex Round-7 P1-01 remediation: the whole-system SUPPORTED
+  // destructive/adoption legacy range is the frozen v8..v13 evidence
+  // matrix (BINDING-3-A). v0..v7 predate the earliest attested emission
+  // of the current-generation domain set and must fail closed. Prior
+  // range `v >= 0` allowed an unsupported version's `unmigrated` marker
+  // to pass classifyMarker and be classified as VERIFIED_LEGACY_TRANSITION
+  // at persisted-authority level.
+  function isSupportedLegacySourceVersion(v) {
+    return typeof v === 'number' && Number.isInteger(v) && v >= 8 && v < SCHEMA_VERSION;
+  }
+  // Canonical marker predicate. A schema-14 marker MUST carry:
+  //   - status ∈ { 'migrated', 'unmigrated' }
+  //   - schemaVersion === SCHEMA_VERSION (exact — future/older not accepted)
+  //   - for 'unmigrated': priorSchemaVersion in [0..SCHEMA_VERSION-1] AND
+  //     reason string matching migrateUp's provenance format
+  //     ('migrateUp-from-vN' where N === priorSchemaVersion).
+  // The provenance requirement is what makes an 'unmigrated' marker
+  // PROVABLE — an arbitrary caller cannot fabricate a marker that
+  // passes this check without also claiming a supported priorSchema.
+  function classifyMarker(marker) {
+    if (!marker || typeof marker !== 'object' || Array.isArray(marker)) {
+      return { canonical: false, kind: 'missing' };
+    }
+    if (marker.schemaVersion !== SCHEMA_VERSION) {
+      return { canonical: false, kind: 'wrong-schema-version' };
+    }
+    if (marker.status === MARKER_STATUS_MIGRATED) {
+      return { canonical: true, kind: 'migrated' };
+    }
+    if (marker.status === MARKER_STATUS_UNMIGRATED) {
+      if (!isSupportedLegacySourceVersion(marker.priorSchemaVersion)) {
+        return { canonical: false, kind: 'unmigrated-no-provenance' };
+      }
+      const expectedReason = 'migrateUp-from-v' + marker.priorSchemaVersion;
+      if (marker.reason !== expectedReason) {
+        return { canonical: false, kind: 'unmigrated-reason-mismatch' };
+      }
+      return { canonical: true, kind: 'unmigrated' };
+    }
+    return { canonical: false, kind: 'unknown-status' };
+  }
+  // Canonical records-domain predicate. All four required domains must
+  // be present as arrays. Absent / non-array / non-object = malformed.
+  // Used identically at every destructive boundary; there is NO length
+  // inference, and a missing domain is NEVER synthesized to [].
+  function classifyRecords(records) {
+    if (!records || typeof records !== 'object' || Array.isArray(records)) {
+      return { canonical: false, kind: 'missing-or-shape-invalid', missing: REQUIRED_RECORD_DOMAINS.slice() };
+    }
+    const missing = [];
+    for (const d of REQUIRED_RECORD_DOMAINS) {
+      if (!Array.isArray(records[d])) missing.push(d);
+    }
+    if (missing.length) return { canonical: false, kind: 'missing-domain', missing };
+    let allEmpty = true;
+    for (const d of REQUIRED_RECORD_DOMAINS) {
+      if (records[d].length > 0) { allEmpty = false; break; }
+    }
+    return { canonical: true, kind: allEmpty ? 'all-empty' : 'populated', allEmpty };
+  }
+  // Evaluate a bare `data` object (post-migrateUp when needed). Used by
+  // snapshot restore, import candidate validation, and the boot-recovery
+  // path. Returns { canonical, classification, marker, records, reasons }.
+  function evaluateCandidateData(data) {
+    const reasons = [];
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      return { canonical: false, classification: 'MALFORMED_CURRENT_SCHEMA', reasons: ['data-shape-invalid'] };
+    }
+    const marker = data.meta && data.meta.recordsMigration;
+    const mk = classifyMarker(marker);
+    const rk = classifyRecords(data.records);
+    if (!mk.canonical) reasons.push('marker:' + mk.kind);
+    if (!rk.canonical) reasons.push('records:' + rk.kind + (rk.missing ? '[' + rk.missing.join(',') + ']' : ''));
+    if (mk.canonical && rk.canonical) {
+      if (mk.kind === 'migrated') {
+        return {
+          canonical: true,
+          classification: 'AUTHORITATIVE_MIGRATED',
+          allEmpty: rk.allEmpty === true,
+          marker: marker, records: data.records, reasons
+        };
+      }
+      // unmigrated + canonical provenance + canonical records (four
+      // arrays present) → VERIFIED_LEGACY_TRANSITION.
+      //
+      // Records are permitted to be non-empty here: a partial prior
+      // migration attempt may have persisted some records BEFORE the
+      // marker flip. The R5 authority contract keys off provenance
+      // alone (priorSchemaVersion + canonical reason) — a fabricated
+      // 'unmigrated' marker cannot pass classifyMarker regardless of
+      // records emptiness.
+      return {
+        canonical: true,
+        classification: 'VERIFIED_LEGACY_TRANSITION',
+        marker: marker, records: data.records, reasons
+      };
+    }
+    return { canonical: false, classification: 'MALFORMED_CURRENT_SCHEMA', marker, records: data.records, reasons };
+  }
+  // Evaluate an external candidate WRAPPER (parsed JSON object OR raw
+  // JSON string) for destructive boundaries (import, snapshot restore).
+  // Does NOT consider Store's live baseWrapperRaw / durabilityBlocker
+  // (those belong to evaluatePersistedAuthority — the live-disk view).
+  function evaluateCandidateWrapper(input) {
+    if (input === null || input === undefined) {
+      return { classification: 'ABSENT', canonical: false, reasons: ['absent'] };
+    }
+    let parsed;
+    if (typeof input === 'string') {
+      const p = parseWrapperRaw(input);
+      if (!p) return { classification: 'ABSENT', canonical: false, reasons: ['null-parse'] };
+      if (p.corrupt) {
+        // PRV-0.5 R6 (Codex Round-5 P2-1): a future-version string
+        // candidate must classify as UNSUPPORTED_FUTURE_SCHEMA — same
+        // as the object-candidate branch below and the live-disk
+        // evaluatePersistedAuthority path. Never collapse a known
+        // future version into generic corruption.
+        if (p.reason === 'wrapper-version-unsupported') {
+          return { classification: 'UNSUPPORTED_FUTURE_SCHEMA', canonical: false, reasons: ['wrapper-version-unsupported', 'version=' + p.version], wrapperVersion: p.version };
+        }
+        return { classification: 'CORRUPT_STALE_COLLIDING', canonical: false, reasons: ['wrapper-corrupt', 'reason=' + (p.reason || 'unknown')] };
+      }
+      parsed = p;
+    } else if (typeof input === 'object' && !Array.isArray(input)) {
+      // Bare candidate wrapper object (from JSON.parse in caller).
+      const v = (typeof input.version === 'number' && Number.isInteger(input.version)) ? input.version : null;
+      if (v === null) return { classification: 'CORRUPT_STALE_COLLIDING', canonical: false, reasons: ['wrapper-version-invalid'] };
+      if (v > SCHEMA_VERSION) {
+        return { classification: 'UNSUPPORTED_FUTURE_SCHEMA', canonical: false, reasons: ['version>' + SCHEMA_VERSION], wrapperVersion: v };
+      }
+      if (v >= 13) {
+        if (!isValidRevision(input.revision)) {
+          return { classification: 'CORRUPT_STALE_COLLIDING', canonical: false, reasons: ['revision-invalid'], wrapperVersion: v };
+        }
+      }
+      parsed = { version: v, revision: isValidRevision(input.revision) ? input.revision : 0, committedAt: input.committedAt || null, data: input.data || null, corrupt: false };
+    } else {
+      return { classification: 'CORRUPT_STALE_COLLIDING', canonical: false, reasons: ['wrapper-shape-invalid'] };
+    }
+    if (parsed.version > SCHEMA_VERSION) {
+      return { classification: 'UNSUPPORTED_FUTURE_SCHEMA', canonical: false, reasons: ['version>' + SCHEMA_VERSION], wrapperVersion: parsed.version };
+    }
+    // PRV-0.5 R6 (Codex Round-5 P1-5): source-required invariants for
+    // a legacy candidate MUST hold BEFORE migrateUp fills defaults.
+    // A v12+ candidate missing `money.salary_net` at the source stage
+    // is REJECTED — recovery selection can move on to the next
+    // independently valid generation.
+    if (parsed.version < SCHEMA_VERSION) {
+      const src = validateLegacySourceRequiredFields(parsed.data, parsed.version);
+      if (!src.ok) {
+        return {
+          classification: 'MALFORMED_CURRENT_SCHEMA', canonical: false,
+          reasons: ['legacy-source-' + src.reason],
+          wrapperVersion: parsed.version
+        };
+      }
+    } else {
+      // PRV-0.5 Round-6 (Claude-authored, P1-A): current-schema
+      // candidate wrappers arriving through Import / Snapshot Restore
+      // / recovery evaluation are held to the full canonical contract
+      // BEFORE normalizeLogbookDomain runs. A v14 wrapper missing
+      // `logbook`, or missing any BHT/telemetry emitted path, is
+      // corruption and is rejected here — not silently repaired by
+      // default-fill and then written back as durable authority.
+      const src = validateFullStateCanonical(parsed.data);
+      if (!src.ok) {
+        return {
+          classification: 'MALFORMED_CURRENT_SCHEMA', canonical: false,
+          reasons: ['current-source-' + src.reason].concat(
+            (src.missing || []).map(function (p) { return 'current-source-' + p; })
+          ),
+          wrapperVersion: parsed.version
+        };
+      }
+    }
+    // Migrate the inner data up if the wrapper is a legacy source.
+    let migrated;
+    try {
+      migrated = (parsed.version === SCHEMA_VERSION && parsed.data)
+        ? parsed.data
+        : migrateUp(parsed.data || {}, parsed.version || 0);
+      normalizeLogbookDomain(migrated);
+    } catch (e) {
+      return { classification: 'MALFORMED_CURRENT_SCHEMA', canonical: false, reasons: ['migrateUp-threw'], wrapperVersion: parsed.version };
+    }
+    if (!validate(migrated)) {
+      return { classification: 'MALFORMED_CURRENT_SCHEMA', canonical: false, reasons: ['validate-failed'], wrapperVersion: parsed.version, data: migrated };
+    }
+    const inner = evaluateCandidateData(migrated);
+    inner.wrapperVersion = parsed.version;
+    inner.wrapperRevision = parsed.revision;
+    inner.data = migrated;
+    return inner;
+  }
+  // Evaluate the CURRENTLY PERSISTED authority (raw wrapper bytes on
+  // disk, considered against the Store's live baseWrapperRaw,
+  // knownRevision, and durabilityBlocker). Consumers: hydration
+  // fast-path, backup/export gate, boot-recovery classification.
+  //
+  // `raw` (optional):
+  //   - undefined  → read localStorage[STATE_KEY] internally.
+  //   - null       → treat as ABSENT.
+  //   - string     → treat as the raw persisted bytes.
+  //
+  // Returned booleans (consumer decisions):
+  //   acceptFastPathMigrated → true iff AUTHORITATIVE_MIGRATED, no active
+  //     durability blocker, raw bytes match Store's accepted baseline (no
+  //     equal-revision divergent-bytes attack).
+  //   authoritative         → true for AUTHORITATIVE_MIGRATED and
+  //     VERIFIED_LEGACY_TRANSITION.
+  //   seedLegacy            → true ONLY for VERIFIED_LEGACY_TRANSITION.
+  //   acceptForBackup       → true iff authoritative AND no active
+  //     durability blocker AND (for AUTHORITATIVE_MIGRATED) the raw
+  //     matches the Store baseline. Malformed/corrupt/future/stale
+  //     wrappers refuse normal backup and require quarantine.
+  //   recoveryRequired      → true for MALFORMED, CORRUPT_STALE_COLLIDING,
+  //     UNSUPPORTED_FUTURE_SCHEMA (with data on disk).
+  function evaluatePersistedAuthority(raw) {
+    // Read raw from disk when caller passes undefined; a null caller
+    // request stays ABSENT.
+    //
+    // PRV-0.5 Round-10 (Codex Round-9 P2-01 remediation): the durable
+    // read is TRI-STATE. A thrown getItem MUST NOT collapse into the
+    // absence branch — that would falsely claim recoveryRequired:false
+    // and mask an unreadable primary as a fresh cold boot. The three
+    // legal outcomes for the internal read path are, disjointly:
+    //   successful read + null bytes  => ABSENT
+    //   successful read + raw bytes   => PRESENT(raw) -> parse pipeline
+    //   thrown durable read           => READ_FAILED (recoveryRequired)
+    // The explicit-null caller argument keeps its own ABSENT semantics
+    // — it is not a read outcome. See ADR-015 addendum #18.
+    let rawEffective;
+    let readError = null;
+    if (raw === undefined) {
+      try { rawEffective = localStorage.getItem(STATE_KEY); }
+      catch (e) { readError = e || new Error('durable-read-threw'); rawEffective = undefined; }
+    } else {
+      rawEffective = raw;
+    }
+    const blocker = durabilityBlocker ? Object.assign({}, durabilityBlocker) : null;
+    // READ_FAILED precedes every absence/null handler. A thrown durable
+    // read has NO knowledge of on-disk contents, so acceptForBackup,
+    // acceptFastPathMigrated, authoritative, seedLegacy all remain
+    // false, recoveryRequired is true, and rawIdentityMatchesStore is
+    // false (we cannot claim identity with any Store baseline).
+    if (readError) {
+      const errName = (readError && readError.name) ? String(readError.name) : 'Error';
+      const errMsg  = (readError && readError.message) ? String(readError.message) : String(readError);
+      return {
+        classification: 'READ_FAILED', canonical: false,
+        acceptFastPathMigrated: false, authoritative: false, seedLegacy: false,
+        acceptForBackup: false, recoveryRequired: true, blocker,
+        rawIdentityMatchesStore: false,
+        wrapper: null, data: null, marker: null,
+        readError: { name: errName, message: errMsg },
+        reasons: ['read-failed', 'error=' + errName]
+      };
+    }
+    if (rawEffective === null || rawEffective === undefined) {
+      return {
+        classification: 'ABSENT', canonical: false,
+        acceptFastPathMigrated: false, authoritative: false, seedLegacy: false,
+        acceptForBackup: false, recoveryRequired: false, blocker,
+        rawIdentityMatchesStore: baseWrapperRaw === null,
+        wrapper: null, data: null, marker: null, reasons: ['absent']
+      };
+    }
+    // Parse wrapper via Store's own rules — single source of truth.
+    const parsed = parseWrapperRaw(rawEffective);
+    if (!parsed) {
+      return {
+        classification: 'CORRUPT_STALE_COLLIDING', canonical: false,
+        acceptFastPathMigrated: false, authoritative: false, seedLegacy: false,
+        acceptForBackup: false, recoveryRequired: true, blocker,
+        rawIdentityMatchesStore: rawEffective === baseWrapperRaw,
+        wrapper: null, data: null, marker: null, reasons: ['null-parse']
+      };
+    }
+    if (parsed.corrupt) {
+      // PRV-0.5 R6 (Codex Round-5 P2-1): preserve outer wrapper context
+      // even when parseWrapperRaw declines to migrate. A future-version
+      // raw wrapper must classify as UNSUPPORTED_FUTURE_SCHEMA on the
+      // live-disk path — same as evaluateCandidateWrapper on the same
+      // bytes — instead of collapsing to generic CORRUPT_STALE_COLLIDING.
+      if (parsed.reason === 'wrapper-version-unsupported') {
+        return {
+          classification: 'UNSUPPORTED_FUTURE_SCHEMA', canonical: false,
+          acceptFastPathMigrated: false, authoritative: false, seedLegacy: false,
+          acceptForBackup: false, recoveryRequired: true, blocker,
+          rawIdentityMatchesStore: rawEffective === baseWrapperRaw,
+          wrapper: { version: parsed.version, revision: null, committedAt: null },
+          data: null, marker: null,
+          reasons: ['wrapper-version-unsupported', 'version=' + parsed.version]
+        };
+      }
+      // PRV-0.5 Final Closure (INV-J, R7-P1-09): a persisted primary
+      // wrapper missing its `version` key classifies distinctly as
+      // WRAPPER_VERSION_ABSENT so consumers (backup refusal,
+      // hydration, recovery UX) can distinguish it from generic JSON
+      // corruption. No legacy transition auth is issued (parseWrapperRaw
+      // now returns corrupt, so initialLoad's legacyTransitionCapability
+      // check fails closed automatically).
+      if (parsed.reason === 'wrapper-version-absent') {
+        return {
+          classification: 'WRAPPER_VERSION_ABSENT', canonical: false,
+          acceptFastPathMigrated: false, authoritative: false, seedLegacy: false,
+          acceptForBackup: false, recoveryRequired: true, blocker,
+          rawIdentityMatchesStore: rawEffective === baseWrapperRaw,
+          wrapper: null, data: null, marker: null,
+          reasons: ['wrapper-version-absent']
+        };
+      }
+      return {
+        classification: 'CORRUPT_STALE_COLLIDING', canonical: false,
+        acceptFastPathMigrated: false, authoritative: false, seedLegacy: false,
+        acceptForBackup: false, recoveryRequired: true, blocker,
+        rawIdentityMatchesStore: rawEffective === baseWrapperRaw,
+        wrapper: null, data: null, marker: null,
+        reasons: ['wrapper-corrupt', 'reason=' + (parsed.reason || 'unknown')]
+      };
+    }
+    if (parsed.version > SCHEMA_VERSION) {
+      return {
+        classification: 'UNSUPPORTED_FUTURE_SCHEMA', canonical: false,
+        acceptFastPathMigrated: false, authoritative: false, seedLegacy: false,
+        acceptForBackup: false, recoveryRequired: true, blocker,
+        rawIdentityMatchesStore: rawEffective === baseWrapperRaw,
+        wrapper: { version: parsed.version, revision: parsed.revision, committedAt: parsed.committedAt },
+        data: null, marker: null, reasons: ['version>' + SCHEMA_VERSION]
+      };
+    }
+    if (!isValidRevision(parsed.revision)) {
+      return {
+        classification: 'CORRUPT_STALE_COLLIDING', canonical: false,
+        acceptFastPathMigrated: false, authoritative: false, seedLegacy: false,
+        acceptForBackup: false, recoveryRequired: true, blocker,
+        rawIdentityMatchesStore: rawEffective === baseWrapperRaw,
+        wrapper: { version: parsed.version, revision: parsed.revision, committedAt: parsed.committedAt },
+        data: null, marker: null, reasons: ['revision-invalid']
+      };
+    }
+    // Stale relative to Store's accepted disk revision.
+    if (typeof knownRevision === 'number' && parsed.revision < knownRevision) {
+      return {
+        classification: 'CORRUPT_STALE_COLLIDING', canonical: false,
+        acceptFastPathMigrated: false, authoritative: false, seedLegacy: false,
+        acceptForBackup: false, recoveryRequired: true, blocker,
+        rawIdentityMatchesStore: rawEffective === baseWrapperRaw,
+        wrapper: { version: parsed.version, revision: parsed.revision, committedAt: parsed.committedAt },
+        data: null, marker: null, reasons: ['revision-stale', 'known=' + knownRevision]
+      };
+    }
+    // At this point outer wrapper metadata is well-formed. Now evaluate
+    // inner authority (marker + records) via evaluateCandidateData.
+    // For version < SCHEMA_VERSION we treat this as a legacy source
+    // wrapper — always VERIFIED_LEGACY_TRANSITION (post-migrateUp the
+    // marker will read as 'unmigrated' with valid provenance).
+    if (parsed.version < SCHEMA_VERSION) {
+      if (!isSupportedLegacySourceVersion(parsed.version)) {
+        // v0..v7, negative, non-integer, or out-of-range legacy version —
+        // unsupported historical. PRV-0.5 Round-9 P1-01: distinct from
+        // both MALFORMED_CURRENT_SCHEMA (current-schema shape violation)
+        // and LEGACY_SOURCE_INVALID (supported-version-window but
+        // partial/invalid). LEGACY_SOURCE_INVALID captures both here so
+        // consumers have a single legacy-refusal class to switch on.
+        return {
+          classification: 'LEGACY_SOURCE_INVALID', canonical: false,
+          acceptFastPathMigrated: false, authoritative: false, seedLegacy: false,
+          acceptForBackup: false, recoveryRequired: true, blocker,
+          rawIdentityMatchesStore: rawEffective === baseWrapperRaw,
+          wrapper: { version: parsed.version, revision: parsed.revision, committedAt: parsed.committedAt },
+          data: null, marker: null, reasons: ['unsupported-legacy-v' + parsed.version]
+        };
+      }
+      // PRV-0.5 Round-9 P1-01: source-shape validation for supported
+      // v8..v13 must also happen in the persisted-authority evaluator,
+      // not only in _admitExternalWrapper. This is what makes the
+      // cross-path consistency matrix hold — the boot admission, the
+      // storage-event admission, and the persisted-authority evaluator
+      // all reject the same partial/invalid v13 raw. Previously, the
+      // strict evaluator refused these while evaluatePersistedAuthority
+      // would still hand them out as VERIFIED_LEGACY_TRANSITION with
+      // seedLegacy:true — the Codex-reproduced inconsistency.
+      const src = validateLegacySourceRequiredFields(parsed.data, parsed.version);
+      if (!src || !src.ok) {
+        return {
+          classification: 'LEGACY_SOURCE_INVALID', canonical: false,
+          acceptFastPathMigrated: false, authoritative: false, seedLegacy: false,
+          acceptForBackup: false, recoveryRequired: true, blocker,
+          rawIdentityMatchesStore: rawEffective === baseWrapperRaw,
+          wrapper: { version: parsed.version, revision: parsed.revision, committedAt: parsed.committedAt },
+          data: null, marker: null,
+          reasons: ['legacy-source-invalid:' + ((src && src.reason) || 'unknown'), 'source-version=' + parsed.version]
+        };
+      }
+      return {
+        classification: 'VERIFIED_LEGACY_TRANSITION', canonical: true,
+        acceptFastPathMigrated: false,
+        authoritative: true,
+        seedLegacy: !blocker,
+        acceptForBackup: !blocker && rawEffective === baseWrapperRaw,
+        recoveryRequired: false, blocker,
+        rawIdentityMatchesStore: rawEffective === baseWrapperRaw,
+        wrapper: { version: parsed.version, revision: parsed.revision, committedAt: parsed.committedAt },
+        data: parsed.data, marker: null,
+        reasons: ['legacy-source-v' + parsed.version]
+      };
+    }
+    // parsed.version === SCHEMA_VERSION — canonical marker + records
+    // required.
+    const inner = evaluateCandidateData(parsed.data);
+    if (inner.classification === 'AUTHORITATIVE_MIGRATED') {
+      const rawIdentityMatchesStore = rawEffective === baseWrapperRaw;
+      const higherRevisionMismatch =
+        baseWrapperRaw !== null &&
+        parsed.revision > knownRevision &&
+        !rawIdentityMatchesStore;
+      const equalRevisionDivergentBytes =
+        baseWrapperRaw !== null &&
+        parsed.revision === knownRevision &&
+        !rawIdentityMatchesStore;
+      const acceptFastPathMigrated = !blocker && rawIdentityMatchesStore;
+      const reasonsOut = inner.reasons.slice();
+      if (blocker) reasonsOut.push('durability-blocker:' + blocker.code);
+      if (higherRevisionMismatch) reasonsOut.push('higher-revision-raw-mismatch');
+      if (equalRevisionDivergentBytes) reasonsOut.push('equal-revision-divergent-bytes');
+      if (!rawIdentityMatchesStore) reasonsOut.push('raw-identity-mismatch');
+      // PRV-0.5 R6 (Codex Round-5 P1-3, P1-4): equal-revision divergent
+      // bytes, higher-revision raw mismatch, OR an active durability
+      // blocker demote AUTHORITATIVE_MIGRATED into CORRUPT_STALE_COLLIDING
+      // for consumers. Higher-revision mismatch is called out separately
+      // because the Store storage-event handler owns the safe
+      // adopt/rebase decision — hydration/backup/fast-path must NOT
+      // silently seed or accept on the mismatched newer bytes.
+      if (equalRevisionDivergentBytes || higherRevisionMismatch || blocker) {
+        return {
+          classification: 'CORRUPT_STALE_COLLIDING', canonical: false,
+          acceptFastPathMigrated: false, authoritative: false, seedLegacy: false,
+          acceptForBackup: false, recoveryRequired: true, blocker,
+          rawIdentityMatchesStore,
+          wrapper: { version: parsed.version, revision: parsed.revision, committedAt: parsed.committedAt },
+          data: parsed.data, marker: inner.marker, reasons: reasonsOut
+        };
+      }
+      return {
+        classification: 'AUTHORITATIVE_MIGRATED', canonical: true,
+        allEmpty: inner.allEmpty === true,
+        acceptFastPathMigrated,
+        authoritative: true, seedLegacy: false,
+        acceptForBackup: acceptFastPathMigrated,
+        recoveryRequired: false, blocker,
+        rawIdentityMatchesStore,
+        wrapper: { version: parsed.version, revision: parsed.revision, committedAt: parsed.committedAt },
+        data: parsed.data, marker: inner.marker, reasons: reasonsOut
+      };
+    }
+    if (inner.classification === 'VERIFIED_LEGACY_TRANSITION') {
+      // PRV-0.5 R6 (Codex Round-5 P1-1): a schema-14 wrapper's inner
+      // marker cannot self-attest legacy provenance. Legacy transition
+      // authority is a transaction-scoped Store capability that this
+      // boot only holds when it observed a supported outer legacy raw
+      // wrapper (parsed.version < SCHEMA_VERSION). If the capability is
+      // NOT set here, the wrapper's claim of `unmigrated` provenance is
+      // forgeable — downgrade to MALFORMED_CURRENT_SCHEMA so consumers
+      // refuse to seed. The forgery reproduction Codex ran on schema-14
+      // + fabricated marker cold-boots into this downgrade branch.
+      const rawIdentityMatchesStore = rawEffective === baseWrapperRaw;
+      // PRV-0.5 R7: source-bound legacy transition auth is required.
+      // The auth's sourceRawBytes must exactly match the current disk
+      // raw — a schema-14 wrapper whose marker claims prior transition
+      // but whose bytes do NOT match a Store-issued auth is forgery.
+      if (!(_transitionAuth && _transitionAuth.kind === 'legacy'
+            && _transitionAuth.sourceRawBytes === rawEffective)) {
+        return {
+          classification: 'MALFORMED_CURRENT_SCHEMA', canonical: false,
+          acceptFastPathMigrated: false, authoritative: false, seedLegacy: false,
+          acceptForBackup: false, recoveryRequired: true, blocker,
+          rawIdentityMatchesStore,
+          wrapper: { version: parsed.version, revision: parsed.revision, committedAt: parsed.committedAt },
+          data: parsed.data, marker: inner.marker,
+          reasons: inner.reasons.concat(['current-schema-cannot-self-attest-legacy-provenance'])
+        };
+      }
+      return {
+        classification: 'VERIFIED_LEGACY_TRANSITION', canonical: true,
+        acceptFastPathMigrated: false,
+        authoritative: true,
+        seedLegacy: !blocker,
+        acceptForBackup: !blocker && rawIdentityMatchesStore,
+        recoveryRequired: false, blocker,
+        rawIdentityMatchesStore,
+        wrapper: { version: parsed.version, revision: parsed.revision, committedAt: parsed.committedAt },
+        data: parsed.data, marker: inner.marker, reasons: inner.reasons
+      };
+    }
+    // inner === MALFORMED_CURRENT_SCHEMA
+    return {
+      classification: 'MALFORMED_CURRENT_SCHEMA', canonical: false,
+      acceptFastPathMigrated: false, authoritative: false, seedLegacy: false,
+      acceptForBackup: false, recoveryRequired: true, blocker,
+      rawIdentityMatchesStore: rawEffective === baseWrapperRaw,
+      wrapper: { version: parsed.version, revision: parsed.revision, committedAt: parsed.committedAt },
+      data: parsed.data, marker: inner.marker || null, reasons: inner.reasons
+    };
+  }
+
+  // PRV-0.5 Codex-final P1-02: normalizeLogbookDomain performs only
+  // the contractually normalizable array→envelope transition. It
+  // does NOT silently replace a malformed persisted Logbook with an
+  // empty envelope any more — that erasure was the exact defect
+  // Codex reproduced (malformed sentinel bytes replaced by empty
+  // canonical). A valid envelope passes through unchanged. Anything
+  // else (missing, wrong-type, envelope-shape-invalid) is left
+  // untouched so the caller's validation step (validateLegacySourceRequiredFields
+  // for legacy sources; validateFullStateCanonical for v14 candidates)
+  // rejects it explicitly.
   function normalizeLogbookDomain(data) {
     if (!data || typeof data !== 'object') return;
     if (Array.isArray(data.logbook)) {
@@ -929,9 +1973,20 @@
       data.logbook = env;
       return;
     }
-    if (!isLogbookEnvelope(data.logbook)) {
-      data.logbook = defaultLogbookEnvelope();
-    }
+    // PRV-0.5 Round-6 (Claude-authored, P1-A): the previous branch
+    // here installed a fresh envelope whenever data.logbook was
+    // `undefined`. That was the destructive-fabrication defect: a v14
+    // persisted wrapper missing `logbook` (corruption) was silently
+    // repaired with an empty envelope and then written back as the
+    // durable authority — erasing the user's data. Fresh-storage
+    // initialization goes through defaultState(), which emits its own
+    // envelope; persisted authority never receives one here.
+    //
+    // Missing, wrong-type, or envelope-shape-invalid values now pass
+    // through untouched so the caller's validation step
+    // (validateLegacySourceRequiredFields for legacy sources;
+    // validateFullStateCanonical for v14 candidates) rejects them
+    // explicitly.
   }
 
   // ── WRAPPER · LOAD ───────────────────────────────
@@ -946,20 +2001,48 @@
   function parseWrapperRaw(raw) {
     if (raw === null || raw === undefined) return null;
     let parsed;
-    try { parsed = JSON.parse(raw); } catch (e) { return { corrupt: true }; }
-    if (!parsed || typeof parsed !== 'object') return { corrupt: true };
-    const version = (typeof parsed.version === 'number') ? parsed.version : 0;
+    try { parsed = JSON.parse(raw); } catch (e) { return { corrupt: true, reason: 'json-parse-failed' }; }
+    if (!parsed || typeof parsed !== 'object') return { corrupt: true, reason: 'wrapper-shape-invalid' };
+    // PRV-0.5 R7 (Codex Round-6 P1-7): strict version semantics.
+    // If `version` is present, it MUST be an integer in [0, SCHEMA_VERSION].
+    // Any other type (string, boolean, null, object, non-integer number)
+    // is a hard corruption signal — NOT a fallback to v0. This closes
+    // the R6 defect where `version:"99"` silently became legacy v0,
+    // migrated, and gained transition capability.
+    //
+    // PRV-0.5 Final Closure (INV-J, R7-P1-09): the `version` key must
+    // be PRESENT on every persisted primary wrapper. Repository history
+    // always emitted an explicit outer version (v6+); an absent version
+    // is version-provenance corruption — never a silent fallback to
+    // v0 that would gain legacy transition capability. Explicit
+    // legacy-only import formats travel through a distinct
+    // processImport path (evaluateCandidateWrapper), never through
+    // parseWrapperRaw as a persisted primary wrapper.
+    if (!('version' in parsed)) {
+      return { corrupt: true, reason: 'wrapper-version-absent' };
+    }
+    const rawVersion = parsed.version;
+    if (typeof rawVersion !== 'number' || !Number.isFinite(rawVersion) || !Number.isInteger(rawVersion)) {
+      return { corrupt: true, reason: 'wrapper-version-malformed', versionType: typeof rawVersion };
+    }
+    if (rawVersion > SCHEMA_VERSION) {
+      return { corrupt: true, reason: 'wrapper-version-unsupported', version: rawVersion };
+    }
+    if (rawVersion < 0) {
+      return { corrupt: true, reason: 'wrapper-version-invalid', version: rawVersion };
+    }
+    const version = rawVersion;
     // Schema-13 wrappers MUST carry an integer revision in range.
     // Any other numeric shape (1.5, NaN, Infinity, negative, string) is a
     // hard corruption signal, not a fall-back-to-zero.
     let revision = 0;
     if (version >= 13) {
-      if (!isValidRevision(parsed.revision)) return { corrupt: true };
+      if (!isValidRevision(parsed.revision)) return { corrupt: true, reason: 'revision-invalid' };
       revision = parsed.revision;
     } else if ('revision' in parsed) {
       // Older versions never wrote revision; if present but invalid, corrupt.
       if (parsed.revision !== undefined && parsed.revision !== null && !isValidRevision(parsed.revision)) {
-        return { corrupt: true };
+        return { corrupt: true, reason: 'revision-invalid-legacy' };
       }
       if (isValidRevision(parsed.revision)) revision = parsed.revision;
     }
@@ -968,37 +2051,150 @@
     return { version, revision, committedAt, data, corrupt: false };
   }
   function migrateAndValidate(rawParsed) {
-    // Returns { ok, data } — data is a defensive clone if ok.
+    // PRV-0.5 Round-9 P1-01: boot uses the exact same strict admission
+    // pipeline as every other persisted-authority admission surface.
+    // Historical outer versions v0..v7, malformed, versionless, partial
+    // v8..v13, and future versions all fail closed HERE — before
+    // migrateUp default-fill can synthesize a "valid" shape that would
+    // then be adopted as public authority. Round-6/7's soft-floor
+    // rationale (do not strand users on partial legacy) is superseded:
+    // initialLoad's refusal branch now catches every strict-admission
+    // failure and installs a truthful STORE_CORRUPT_AUTHORITATIVE_STATE
+    // blocker, preserving the rejected raw as evidence and refusing
+    // ordinary writes until recovery — the same shape the corrupt-
+    // wrapper path already produces. The atomic legacy-conversion
+    // commit (LEGACY_CONVERSION_SOURCE_INVALID) still runs as a
+    // second-line defense.
+    //
+    // Returns:
+    //   { ok:true, data, classification }         on admission success.
+    //   { ok:false, admissionRefusal:{blockerCode, reason} } on strict refusal
+    //     (caller uses this to install a truthful blocker with the exact reason).
+    //   { ok:false }                              on clone failure only.
     if (!rawParsed) return { ok: false };
-    if (rawParsed.corrupt) return { ok: false };
-    const rawData = rawParsed.data;
-    const data = (rawParsed.version === SCHEMA_VERSION && rawData)
-      ? rawData
-      : migrateUp(rawData || {}, rawParsed.version || 0);
-    normalizeLogbookDomain(data);
-    if (!validate(data)) return { ok: false };
+    if (rawParsed.corrupt) {
+      // Preserve the exact parse-time reason unchanged (e.g.
+      // `wrapper-version-absent`, `wrapper-version-unsupported`) so the
+      // pre-existing test/UX contract on this specific reason string
+      // holds under the new admissionRefusal envelope.
+      return { ok: false, admissionRefusal: { blockerCode: 'STORE_CORRUPT_AUTHORITATIVE_STATE', reason: rawParsed.reason || 'wrapper-corrupt' } };
+    }
+    const admitted = _admitFromParsed(rawParsed);
+    if (!admitted.ok) {
+      return { ok: false, admissionRefusal: { blockerCode: admitted.blockerCode, reason: admitted.reason } };
+    }
     try {
-      const cloned = clonePersistable(data);
-      return { ok: true, data: cloned };
+      const cloned = clonePersistable(admitted.data);
+      return { ok: true, data: cloned, classification: admitted.classification };
     } catch (e) {
       return { ok: false };
     }
   }
   function initialLoad() {
+    // PRV-0.5 Final Closure (INV-C, R7-P1-03): a boot-time getItem
+    // throw is NOT the same as "no state exists". The app still
+    // needs an in-memory shape to render, but writes must refuse
+    // until the user acknowledges recovery — otherwise a transiently
+    // unreadable localStorage would let boot's own scheduleFlush
+    // overwrite whatever bytes are actually on disk.
     let raw = null;
-    try { raw = localStorage.getItem(STATE_KEY); } catch (e) { raw = null; }
+    let bootReadFailed = false;
+    try { raw = localStorage.getItem(STATE_KEY); }
+    catch (e) { bootReadFailed = true; raw = null; }
+    if (bootReadFailed) {
+      return {
+        data: clonePersistable(migrateFromLegacy()),
+        revision: 0, committedAt: null, rawWrapper: null,
+        pendingBlocker: { code: 'STORE_READ_FAILED', detail: { where: 'initialLoad' } }
+      };
+    }
     if (raw !== null) {
       const parsed = parseWrapperRaw(raw);
       const m = migrateAndValidate(parsed);
-      if (m.ok) return { data: m.data, revision: parsed.revision, committedAt: parsed.committedAt, rawWrapper: raw };
-      // Corrupt / invalid — fall through to snapshot then legacy.
+      if (m.ok) {
+        // PRV-0.5 R6 (Codex Round-5 P1-1): if the raw wrapper this boot
+        // observed was a supported outer legacy version, grant the
+        // Store the transient legacy-transition capability so app.js
+        // hydration on THIS boot may authorise a legacy seed. A
+        // schema-14 raw wrapper NEVER grants this capability — a
+        // current-schema wrapper cannot self-attest a prior transition.
+        //
+        // PRV-0.5 Pre-Push Amendment §2 (atomic legacy conversion):
+        // a legacy raw ALSO sets a STORE_LEGACY_CONVERSION_PENDING
+        // durability blocker so ordinary Store.set/update refuse
+        // until the atomic legacy-conversion commit completes.
+        // There is no "durable current-schema unmigrated + ordinary
+        // writes enabled" intermediate operating state.
+        const legacyTransitionCapability =
+          parsed && !parsed.corrupt && typeof parsed.version === 'number'
+          && parsed.version < SCHEMA_VERSION;
+        const result = {
+          data: m.data, revision: parsed.revision, committedAt: parsed.committedAt,
+          rawWrapper: raw,
+          legacyTransitionCapability: legacyTransitionCapability
+        };
+        if (legacyTransitionCapability) {
+          result.pendingBlocker = {
+            code: 'STORE_LEGACY_CONVERSION_PENDING',
+            detail: { sourceVersion: parsed.version, sourceRevision: parsed.revision }
+          };
+        }
+        return result;
+      }
+      // PRV-0.5 R5 (Codex Round-4 P1-4): a raw persisted wrapper exists
+      // but Store's own parse/migrate/validate rejects it. That is a
+      // durability invariant break — NOT an invitation to silently
+      // reconstruct from legacy defaults. Preserve the raw bytes as
+      // evidence (baseWrapperRaw = raw) and stage a pending durability
+      // blocker so subsequent writes cannot overwrite the corrupt
+      // wrapper. Recovery MUST go through an approved full-state
+      // transaction (snapshot restore / import / reset).
+      //
+      // Snapshot fallback still runs when a valid snapshot exists so a
+      // recoverable rolling snapshot lets the user keep going — but the
+      // durability blocker still fires (the disk itself is corrupt and
+      // ordinary writes must not blindly overwrite it before the user
+      // acknowledges recovery). The blocker is cleared automatically by
+      // any accepted full-state transaction (commitFullStateWrapper).
+      // PRV-0.5 Round-9 P1-01: prefer the exact strict-admission reason
+      // when the refusal came from _strictSourceAdmit (unsupported-legacy-vN,
+      // legacy-source-<field>, current-source-<field>, etc.) — that is what
+      // makes the blocker detail truthful about WHY the boot wrapper was
+      // refused. Fall back to the previous parse-derived reason when this
+      // is a parse-time corruption (no admissionRefusal present).
+      const admissionBlockerCode = (m && m.admissionRefusal && m.admissionRefusal.blockerCode) || 'STORE_CORRUPT_AUTHORITATIVE_STATE';
+      const admissionReason = (m && m.admissionRefusal && m.admissionRefusal.reason) || null;
+      const pendingReason = admissionReason || (parsed && parsed.reason) ||
+        (parsed && parsed.corrupt ? 'wrapper-corrupt' : 'validate-failed');
       let snap = null;
       try { snap = restoreFromSnapshot(); } catch (e) { snap = null; }
       if (snap && validate(snap)) {
-        try { return { data: clonePersistable(snap), revision: 0, committedAt: null, rawWrapper: null }; }
-        catch (e) { /* snap clone failed — fall through */ }
+        try {
+          return {
+            data: clonePersistable(snap), revision: 0, committedAt: null,
+            rawWrapper: raw,
+            pendingBlocker: { code: admissionBlockerCode, detail: { reason: pendingReason, recoveredFromSnapshot: true, where: 'initialLoad-strict-admit' } }
+          };
+        } catch (e) { /* snap clone failed — fall through */ }
       }
-      return { data: clonePersistable(migrateFromLegacy()), revision: 0, committedAt: null, rawWrapper: null };
+      // No valid snapshot either — surface recovery-required. Return
+      // a safe in-memory baseline (so the app can render), but preserve
+      // the rejected raw as baseWrapperRaw evidence and stage a truthful
+      // durability blocker so writes / backup / export refuse until an
+      // approved recovery lands. Round-9 §3 amendment: the rejected raw
+      // must survive boot, readiness, AND any attempted ordinary
+      // mutation. The durability blocker (installed here) is enforced
+      // by every write path via `!durabilityBlocker` gates —
+      // scheduleFlush() and commitLocked() both refuse while a blocker
+      // is present. `migrateFromLegacy()` reads Gen-1 keys only; it
+      // never inherits values from the rejected dune_state_v4 raw, so
+      // no user sentinel from the rejected wrapper can leak into
+      // public Store state.
+      return {
+        data: clonePersistable(migrateFromLegacy()), revision: 0, committedAt: null,
+        rawWrapper: raw,
+        pendingBlocker: { code: admissionBlockerCode, detail: { reason: pendingReason, recoveredFromSnapshot: false, where: 'initialLoad-strict-admit' } }
+      };
     }
     return { data: clonePersistable(migrateFromLegacy()), revision: 0, committedAt: null, rawWrapper: null };
   }
@@ -1018,6 +2214,26 @@
   let activeFullStateTransaction = false;
   let fullStateTxToken = null;
   let deferredStorageEvents = [];
+  // PRV-0.5 Codex-final P1-01: explicit full-state settlement state.
+  // Set to `{ reason, ... }` whenever commitFullStateWrapper enters a
+  // POST-WRITE uncertainty (durable byte-verify failed, post-write
+  // authority classification failed, etc.). Consumed and cleared by
+  // endFullStateTransaction so it CANNOT independently adopt the
+  // divergent disk bytes as authority — instead a truthful
+  // STORE_FULL_STATE_POST_WRITE_UNCERTAIN blocker is installed and
+  // memory/knownRevision/baseWrapperRaw/snapshot/subscribers are NOT
+  // advanced. This closes the composition failure Codex reproduced
+  // where a failed commit reported failure and settlement then
+  // adopted the divergent bytes as success.
+  let _fullStatePostWriteUncertain = null;
+  // PRV-0.5 Round-3 review remediation: track whether the current
+  // transaction's commitFullStateWrapper actually landed a successful
+  // durable write. Only a `true` value at endFullStateTransaction
+  // permits the ordinary success-publication path
+  // (rebuildOptimistic + notifyAll). Any pre-write rejection or
+  // post-write uncertainty leaves this false so subscribers do NOT
+  // see a "successful state change" for a transaction that failed.
+  let _fullStateCommitSucceeded = false;
   // Persistent durability blocker (corrupt disk, revision regression, etc.).
   // Set to a {code, since, detail?} record; when non-null Store rejects new
   // writes AND flushes with STORE_DURABILITY_BLOCKED until cleared via
@@ -1025,6 +2241,135 @@
   let durabilityBlocker = null;
   const saveListeners = new Set();
   const errorListeners = new Set();
+  // PRV-0.5 R5 (Codex Round-4 P1-4): honour any pending durability
+  // blocker that boot detected. `nowISO()` is not required in the record
+  // returned by initialLoad — set it here so the blocker follows the
+  // same shape as setDurabilityBlocker's records.
+  if (_boot.pendingBlocker) {
+    durabilityBlocker = {
+      code: _boot.pendingBlocker.code,
+      since: nowISO(),
+      detail: _boot.pendingBlocker.detail || null
+    };
+  }
+  // PRV-0.5 R7 (Codex Round-6 P1-1, P1-2, INV-1, INV-2, INV-3, INV-12):
+  // authority contexts are SOURCE-GENERATION BOUND. A single narrow
+  // `_transitionAuth` object carries:
+  //   - kind: 'legacy' (issued by initialLoad when raw was a supported
+  //           outer legacy wrapper) OR 'recovery' (issued by a
+  //           recovery entry point when the current authority is
+  //           corrupt).
+  //   - sourceRawBytes: the EXACT raw bytes of the source generation
+  //     the auth is authorised to replace. Under the destructive
+  //     coordinator lock, the current disk raw is re-read and MUST
+  //     byte-match this string — anything else (attacker substituted
+  //     a different wrapper, another tab successfully recovered, a
+  //     rogue write landed) causes fail-closed refusal with no
+  //     mutation.
+  //   - sourceVersion / sourceRevision: metadata for diagnostics.
+  //   - issuedAt.
+  // Auth is single-use: cleared on any accepted commit (recovery or
+  // ordinary). Never persisted to disk; lives only in this Store
+  // instance's memory.
+  let _transitionAuth = null;
+  // PRV-0.5 Pre-Push Amendment (BINDING-1): test-only flag that
+  // simulates a no-lock environment for destructive-commit fail-closed
+  // proofs. Production callers never touch this; the default false
+  // preserves normal cross-tab lock behavior.
+  let _testForceNoLockFlag = false;
+  // PRV-0.5 Round-4 review remediation: test-only hook that forces
+  // the post-write authority classification to fail non-canonical,
+  // so R4-P1-01d can deterministically reach
+  // FULL_STATE_POST_WRITE_VERIFICATION_FAILED without racing an
+  // external mutator. Analogous to _testForceNoLockFlag. Production
+  // never sets this; only exposed via Store._testForcePostWriteEvalFailure(bool).
+  let _testForcePostWriteEvalFailureFlag = false;
+  function _computeSourceIdentity(raw, parsed) {
+    return {
+      raw: raw,
+      version: parsed && !parsed.corrupt && typeof parsed.version === 'number' ? parsed.version : null,
+      revision: parsed && !parsed.corrupt && typeof parsed.revision === 'number' ? parsed.revision : null,
+      corruptReason: parsed && parsed.corrupt ? (parsed.reason || 'unknown') : null
+    };
+  }
+  function _issueLegacyTransitionAuth(rawBytes, parsed) {
+    _transitionAuth = {
+      kind: 'legacy',
+      sourceRawBytes: rawBytes,
+      sourceVersion: parsed && !parsed.corrupt && typeof parsed.version === 'number' ? parsed.version : null,
+      sourceRevision: parsed && !parsed.corrupt && typeof parsed.revision === 'number' ? parsed.revision : null,
+      issuedAt: nowISO()
+    };
+  }
+  function _issueRecoveryAuthFromCurrentDisk() {
+    // PRV-0.5 Final Closure (INV-E, R7-P1-02): recovery is legitimate
+    // for EVERY blocker class that denotes invalid/untrusted
+    // authority — corrupt JSON, malformed wrapper, revision
+    // regression, unsupported future schema, absent primary,
+    // versionless primary. The auth binds to:
+    //   - the exact raw bytes currently on disk (or absence identity),
+    //   - the blocker class the auth was issued under,
+    //   - the knownRevision at issue (regression recovery must
+    //     enforce monotonic advance past it).
+    // A stale auth (disk changed after issue, blocker cleared /
+    // changed class) fails the pre-commit source-identity + blocker
+    // recheck under the destructive lock.
+    if (!durabilityBlocker) return { ok: false, error: 'RECOVERY_AUTH_NO_BLOCKER' };
+    let rawNow;
+    try { rawNow = localStorage.getItem(STATE_KEY); } catch (e) { return { ok: false, error: 'RECOVERY_AUTH_READ_FAILED' }; }
+    if (rawNow === null) {
+      // Recovery from an absent primary is permitted as a special case
+      // (e.g. STATE_KEY externally cleared with prior authority).
+      _transitionAuth = {
+        kind: 'recovery', sourceRawBytes: null, sourceVersion: null, sourceRevision: null,
+        blockerClassAtIssue: durabilityBlocker.code,
+        knownRevisionAtIssue: knownRevision,
+        issuedAt: nowISO(), absent: true
+      };
+      return { ok: true };
+    }
+    const parsed = parseWrapperRaw(rawNow);
+    _transitionAuth = {
+      kind: 'recovery',
+      sourceRawBytes: rawNow,
+      sourceVersion: parsed && !parsed.corrupt && typeof parsed.version === 'number' ? parsed.version : null,
+      sourceRevision: parsed && !parsed.corrupt && typeof parsed.revision === 'number' ? parsed.revision : null,
+      corruptReason: parsed && parsed.corrupt ? (parsed.reason || 'unknown') : null,
+      blockerClassAtIssue: durabilityBlocker.code,
+      knownRevisionAtIssue: knownRevision,
+      issuedAt: nowISO()
+    };
+    return { ok: true };
+  }
+  function _hasValidTransitionAuthForCurrentDisk(expectedKind) {
+    if (!_transitionAuth || _transitionAuth.kind !== expectedKind) return { ok: false, reason: 'no-auth-or-wrong-kind' };
+    let rawNow;
+    try { rawNow = localStorage.getItem(STATE_KEY); } catch (e) { return { ok: false, reason: 'disk-read-failed' }; }
+    // Absent-recovery auth: current disk must still be absent.
+    if (_transitionAuth.absent === true) {
+      if (rawNow !== null) return { ok: false, reason: 'disk-no-longer-absent' };
+      return { ok: true };
+    }
+    if (rawNow !== _transitionAuth.sourceRawBytes) {
+      return { ok: false, reason: 'source-generation-changed' };
+    }
+    return { ok: true };
+  }
+  function _consumeTransitionAuth() { _transitionAuth = null; }
+  // Boot: if initialLoad observed a supported outer legacy source,
+  // issue the source-bound legacy-transition auth.
+  if (_boot.legacyTransitionCapability === true && typeof _boot.rawWrapper === 'string') {
+    _issueLegacyTransitionAuth(_boot.rawWrapper, parseWrapperRaw(_boot.rawWrapper));
+  }
+  // Legacy R6-compat public read; now backed by the source-bound auth.
+  function canAuthoriseLegacySeedForCurrentDisk() {
+    const check = _hasValidTransitionAuthForCurrentDisk('legacy');
+    return check.ok === true;
+  }
+  // Held so callers of `Store.reset()` (which still returns a boolean
+  // for backward compat) can await the actual asynchronous commit via
+  // `Store._lastResetSettled`. Overwritten by every reset invocation.
+  let _lastResetSettled = null;
 
   // Backward-compat pause flag: legacy import code (b4083a8) calls
   // pausePersistence/resumePersistence and relies on scheduleSave being a
@@ -1270,27 +2615,64 @@
     // and refuses to overwrite; the human must recover via an approved
     // full-state transaction (snapshot restore, import, reset) or explicit
     // clearDurabilityBlocker after inspection.
+    //
+    // PRV-0.5 Final Closure (INV-C, R7-P1-03): a primary-read exception
+    // is NEVER equivalent to "no state exists". Fail closed with a
+    // STORE_READ_FAILED blocker — never overwrite an unreadable
+    // primary based on the assumption it is absent.
     let rawNow;
-    try { rawNow = localStorage.getItem(STATE_KEY); } catch (e) { rawNow = null; }
+    try { rawNow = localStorage.getItem(STATE_KEY); }
+    catch (e) {
+      setDurabilityBlocker('STORE_READ_FAILED', { where: 'commitLocked', message: e && e.message });
+      return { committed: false, reason: 'STORE_READ_FAILED' };
+    }
     if (rawNow === null && baseWrapperRaw !== null) {
       // External clear of an accepted STATE_KEY — invariant break, block writes.
       setDurabilityBlocker('STORE_STATE_CLEARED_EXTERNAL', { knownRevision });
       return { committed: false, reason: 'STORE_STATE_CLEARED_EXTERNAL' };
     }
     if (rawNow !== null && rawNow !== baseWrapperRaw) {
-      const parsed = parseWrapperRaw(rawNow);
-      if (!parsed || parsed.corrupt) {
-        setDurabilityBlocker('STORE_CORRUPT_AUTHORITATIVE_STATE');
-        return { committed: false, reason: 'STORE_CORRUPT_AUTHORITATIVE_STATE' };
+      // PRV-0.5 Round-9 P2-01: collision-before-admission on the ordinary
+      // CAS pre-write external reread. Same predicate as settlement and
+      // storage-event paths: emit STORE_REVISION_COLLISION when the disk
+      // parses to the same revision Store holds, BEFORE strict admission.
+      // Non-numeric/absent revision falls through to admission and is
+      // treated as corruption, not a fabricated collision.
+      let commitLockedEntryCollision = false;
+      try {
+        const preParse = parseWrapperRaw(rawNow);
+        if (preParse && !preParse.corrupt
+            && typeof preParse.version === 'number' && Number.isFinite(preParse.version)
+            && isValidRevision(preParse.revision)
+            && typeof knownRevision === 'number'
+            && preParse.revision === knownRevision) {
+          emitError({ code: 'STORE_REVISION_COLLISION', revision: preParse.revision });
+          commitLockedEntryCollision = true;
+        }
+      } catch (e) { /* defensive: collision detection must not throw */ }
+      // PRV-0.5 Codex Round-7 P1-01: ordinary CAS pre-write external
+      // reread goes through the SAME strict admission helper. A partial
+      // v13 or v7 disk wrapper cannot be default-filled by
+      // migrateAndValidate and adopted as the new baseState.
+      const admitPre = _admitExternalWrapper(rawNow);
+      if (!admitPre.ok) {
+        setDurabilityBlocker(admitPre.blockerCode, {
+          where: commitLockedEntryCollision ? 'commitLocked-external-reread-collision' : 'commitLocked-external-reread',
+          reason: admitPre.reason,
+          externalCollision: commitLockedEntryCollision || undefined
+        });
+        return { committed: false, reason: admitPre.blockerCode };
       }
-      const m = migrateAndValidate(parsed);
-      if (!m.ok) {
-        setDurabilityBlocker('STORE_CORRUPT_AUTHORITATIVE_STATE');
-        return { committed: false, reason: 'STORE_CORRUPT_AUTHORITATIVE_STATE' };
-      }
+      const parsed = admitPre.parsed;
       if (parsed.revision > knownRevision) {
         // Newer external state — adopt as new base before replay.
-        baseState      = m.data;
+        // PRV-0.5 Final Closure (INV-A, R7-P1-01): adoption of external
+        // bytes invalidates any transition auth bound to the previous
+        // source generation.
+        if (_transitionAuth && _transitionAuth.sourceRawBytes !== rawNow) {
+          _consumeTransitionAuth();
+        }
+        baseState      = admitPre.data;
         knownRevision  = parsed.revision;
         committedAt    = parsed.committedAt;
         baseWrapperRaw = rawNow;
@@ -1300,11 +2682,18 @@
         return { committed: false, reason: 'STORE_REVISION_REGRESSION' };
       } else { // parsed.revision === knownRevision, raw differs
         // Equal revision, different raw wrapper — collision. Adopt disk
-        // defensively; surface warning.
-        baseState      = m.data;
+        // defensively; surface warning. PRV-0.5 Round-9 P2-01: guard
+        // against double emit — the pre-admit predicate above already
+        // emitted STORE_REVISION_COLLISION for this same revision.
+        if (_transitionAuth && _transitionAuth.sourceRawBytes !== rawNow) {
+          _consumeTransitionAuth();
+        }
+        baseState      = admitPre.data;
         committedAt    = parsed.committedAt;
         baseWrapperRaw = rawNow;
-        emitError({ code: 'STORE_REVISION_COLLISION', revision: parsed.revision });
+        if (!commitLockedEntryCollision) {
+          emitError({ code: 'STORE_REVISION_COLLISION', revision: parsed.revision });
+        }
       }
     }
 
@@ -1339,6 +2728,31 @@
       emitError({ code: 'STORE_QUOTA', error: e });
       return { committed: false, reason: 'QUOTA' };
     }
+    // PRV-0.5 Final Closure (INV-B, R7-P1-06): ORDINARY CAS commits
+    // require the same durable-reread + byte-match proof that
+    // full-state commits use. Silent no-op writes, writes that
+    // land altered bytes, and writes that go elsewhere are all
+    // caught here — BEFORE memory / snapshot / pending / auth
+    // state advance. On mismatch we set a persistent
+    // STORE_ORDINARY_DURABLE_VERIFY_FAILED blocker (subsequent
+    // ordinary writes refuse), keep pending ops intact, and do not
+    // touch baseState / knownRevision / baseWrapperRaw / snapshot /
+    // listeners / _transitionAuth. Recovery requires an approved
+    // full-state transaction the same way the corrupt-authority
+    // path does.
+    let durableRawCas;
+    try { durableRawCas = localStorage.getItem(STATE_KEY); }
+    catch (e) {
+      setDurabilityBlocker('STORE_ORDINARY_DURABLE_READ_FAILED');
+      return { committed: false, reason: 'STORE_ORDINARY_DURABLE_READ_FAILED' };
+    }
+    if (durableRawCas !== payload) {
+      setDurabilityBlocker('STORE_ORDINARY_DURABLE_VERIFY_FAILED', {
+        disk: durableRawCas === null ? 'absent' : 'divergent-bytes',
+        knownRevision, attemptedRevision: nextRevision
+      });
+      return { committed: false, reason: 'STORE_ORDINARY_DURABLE_VERIFY_FAILED' };
+    }
     // Snapshot failure after primary success is a non-fatal degradation —
     // primary commit remains accepted; captured ops are dropped; a
     // STORE_SNAPSHOT_DEGRADED error is emitted so UI/log can surface it.
@@ -1349,6 +2763,20 @@
     baseWrapperRaw = payload;
     pendingOps     = pendingOps.filter(op => op.seq > capturedMaxSeq);
     rebuildOptimistic();
+    // PRV-0.5 Pre-Push Amendment §2 (no rebind architecture): ordinary
+    // CAS writes never mutate _transitionAuth. Legacy conversion is
+    // handled atomically via commitFullStateWrapper's legacyConversion
+    // mode, which consumes the auth in ONE write. If a rogue ordinary
+    // commit ever landed with the marker still 'unmigrated' (which
+    // is prevented now because STORE_LEGACY_CONVERSION_PENDING is
+    // set on any legacy raw at boot and blocks ordinary Store.set /
+    // update / commitLocked), it would not resurrect any auth here.
+    try {
+      const newMarker = baseState && baseState.meta && baseState.meta.recordsMigration;
+      if (newMarker && newMarker.status === MARKER_STATUS_MIGRATED) {
+        if (_transitionAuth && _transitionAuth.kind === 'legacy') _consumeTransitionAuth();
+      }
+    } catch (e) { /* ignore */ }
 
     // 6. Post-commit hooks (fire outside lock — collect here, caller fires).
     const listenersSnapshot = Array.from(saveListeners);
@@ -1430,6 +2858,47 @@
     return { ok: true };
   }
 
+  // ── QUARANTINE-KEY ALLOCATION ────────────────────
+  // PRV-0.5 Final Closure (INV-H, R7-P2-01): quarantine key format is
+  // `dune_state_v4_quarantine_<epoch-ms>_<random-suffix>`. Allocation
+  // requires the candidate key to be currently absent in localStorage
+  // — never overwrite existing recovery evidence. Retries up to 8
+  // attempts with a fresh suffix; if none is unique, fail closed
+  // BEFORE any primary mutation begins.
+  const _QUARANTINE_KEY_PREFIX = 'dune_state_v4_quarantine_';
+  function _quarantineRandomSuffix() {
+    try {
+      if (typeof crypto !== 'undefined' && crypto && typeof crypto.getRandomValues === 'function') {
+        const a = new Uint32Array(2);
+        crypto.getRandomValues(a);
+        return a[0].toString(36) + a[1].toString(36);
+      }
+    } catch (e) { /* fall through */ }
+    return Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10);
+  }
+  function _allocateQuarantineKey() {
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const key = _QUARANTINE_KEY_PREFIX + Date.now() + '_' + _quarantineRandomSuffix();
+      let existing;
+      try { existing = localStorage.getItem(key); } catch (e) {
+        return { ok: false, reason: 'read-failed' };
+      }
+      if (existing === null) return { ok: true, key: key };
+    }
+    return { ok: false, reason: 'collision-cap-exceeded' };
+  }
+  function _listQuarantineKeys() {
+    const out = [];
+    let n;
+    try { n = localStorage.length; } catch (e) { return out; }
+    for (let i = 0; i < n; i++) {
+      let k;
+      try { k = localStorage.key(i); } catch (e) { continue; }
+      if (typeof k === 'string' && k.indexOf(_QUARANTINE_KEY_PREFIX) === 0) out.push(k);
+    }
+    return out;
+  }
+
   // ── FULL-STATE TRANSACTIONS ──────────────────────
   // Import / snapshot restore / reset. Freezes ordinary Store.set/update.
   // commitFullStateWrapper is token-guarded — no caller can bypass the freeze,
@@ -1439,6 +2908,11 @@
     if (activeFullStateTransaction) return { ok: false, error: 'FULL_STATE_TRANSACTION_IN_PROGRESS' };
     if (pendingOps.length > 0 && !opts.force) return { ok: false, error: 'PENDING_CHANGES' };
     clearTimeout(saveTimer); saveTimer = null;
+    // PRV-0.5 Codex-final P1-01: reset settlement state at the start
+    // of every new transaction so a prior transaction's uncertainty
+    // flag never leaks into this one.
+    _fullStatePostWriteUncertain = null;
+    _fullStateCommitSucceeded = false;
     activeFullStateTransaction = true;
     fullStateTxToken = { id: 'tx_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8), reason: opts.reason || 'full-state' };
     // Fire freeze-begin so UI can render the banner.
@@ -1461,76 +2935,740 @@
     // wrapper, lower revision than what we accepted. Adopt safely on a newer
     // valid wrapper.
     deferredStorageEvents.length = 0;
+    // PRV-0.5 Codex Round-6 P1-02: track whether settlement adopted a
+    // newer valid EXTERNAL authoritative wrapper without the current
+    // transaction having committed its own. The adoption path advances
+    // internal baseState / knownRevision / baseWrapperRaw / committedAt;
+    // the settlement completion block below rebuilds the OPTIMISTIC
+    // public state, fires `notifyAll()`, and emits a distinct
+    // `lifeos:store-external-adoption` convergence event so subscribers
+    // observe the adopted authority and no listener can misread an
+    // abandoned/failed transaction as committed.
+    let externalAdopted = null;
+    // PRV-0.5 Round-9 P2-01: track "settlement observed same-revision
+    // divergent durable bytes and did NOT adopt them" as an independent
+    // fact from externalAdopted. externalCollisionThisTx is set when the
+    // collision predicate below fires; the two flags compose into the
+    // FULL_STATE_*_EXTERNAL_COLLISION settlement labels. Never both true
+    // at once — mutual exclusion is enforced in the settlement branch.
+    let externalCollisionThisTx = false;
+    let externalCollisionFacts = null;
+    // PRV-0.5 Codex-final P1-01: consume the post-write uncertainty
+    // flag set by commitFullStateWrapper. If a full-state commit
+    // reported post-write uncertainty during this transaction, we
+    // MUST NOT independently adopt whatever bytes are on disk now
+    // as authority — those bytes could be the intended payload
+    // corrupted, an unrelated altered-but-valid wrapper, or the
+    // pre-write source. Install a truthful blocker and leave memory
+    // state (baseState / knownRevision / baseWrapperRaw / snapshot /
+    // subscribers) UNCHANGED so explicit recovery is required.
+    const postWriteUncertain = _fullStatePostWriteUncertain;
+    _fullStatePostWriteUncertain = null;
     let rawNow = null;
-    try { rawNow = localStorage.getItem(STATE_KEY); } catch (e) { rawNow = null; }
-    if (rawNow === null) {
+    let endReadFailed = false;
+    try { rawNow = localStorage.getItem(STATE_KEY); }
+    catch (e) { endReadFailed = true; rawNow = null; }
+    if (postWriteUncertain) {
+      // PRV-0.5 Round-4 review remediation: a primary mutation was
+      // attempted and durable verification failed. Any pre-existing
+      // blocker (e.g. STORE_CORRUPT_AUTHORITATIVE_STATE from a
+      // recovery flow) described the pre-write generation, which may
+      // have been REPLACED by whatever bytes are now on disk. That
+      // prior claim is no longer proven; keeping it as the active
+      // blocker would let a listener treat "old corrupt bytes are
+      // still there" as the truth. Overwrite unconditionally with
+      // STORE_FULL_STATE_POST_WRITE_UNCERTAIN and preserve the prior
+      // blocker as diagnostic history in `detail.priorBlocker`.
+      const priorBlocker = durabilityBlocker
+        ? {
+            code: durabilityBlocker.code,
+            since: durabilityBlocker.since,
+            detail: durabilityBlocker.detail
+          }
+        : null;
+      setDurabilityBlocker('STORE_FULL_STATE_POST_WRITE_UNCERTAIN', {
+        where: 'endFullStateTransaction',
+        commitError: postWriteUncertain.error,
+        disk: postWriteUncertain.disk || null,
+        classification: postWriteUncertain.classification || null,
+        retainedEvidenceKey: postWriteUncertain.retainedEvidenceKey || null,
+        reason: postWriteUncertain.reason || null,
+        recovery: !!postWriteUncertain.recovery,
+        legacyConversion: !!postWriteUncertain.legacyConversion,
+        priorBlocker: priorBlocker
+      });
+      // Deliberately DO NOT advance baseState / knownRevision /
+      // committedAt / baseWrapperRaw. rebuildOptimistic and notifyAll
+      // are gated below by _fullStateCommitSucceeded, so they will
+      // NOT fire on this branch (the flag remains false whenever
+      // commitFullStateWrapper reports post-write uncertainty).
+    } else if (endReadFailed) {
+      // PRV-0.5 Final Closure (INV-C): read failure ≠ absence.
+      setDurabilityBlocker('STORE_READ_FAILED', { where: 'endFullStateTransaction' });
+    } else if (rawNow === null) {
       // Anything cleared the STATE_KEY after our transaction body ran (or the
       // body never wrote it). If we previously accepted a wrapper, this is a
       // durability invariant break.
       if (baseWrapperRaw !== null) setDurabilityBlocker('STORE_STATE_CLEARED_EXTERNAL');
+    } else if (rawNow === baseWrapperRaw) {
+      // Disk raw is byte-equal to the Store's accepted baseline — no
+      // external adoption is being considered. Do NOT run the strict
+      // admission helper here: an already-accepted legacy-source raw
+      // (STORE_LEGACY_CONVERSION_PENDING) or the same-generation
+      // canonical raw simply hasn't moved, and a failed same-tab
+      // full-state commit (LEGACY_CONVERSION_SOURCE_INVALID, etc.)
+      // must not have its truthful blocker overwritten with
+      // STORE_CORRUPT_AUTHORITATIVE_STATE by settlement.
     } else {
-      const parsed = parseWrapperRaw(rawNow);
-      if (!parsed || parsed.corrupt) {
-        setDurabilityBlocker('STORE_CORRUPT_AUTHORITATIVE_STATE');
+      // PRV-0.5 Round-9 P2-01: detect same-revision divergent bytes as a
+      // COLLISION independently of inner admission validity. The
+      // predicate is defensively narrow — it fires only when the outer
+      // wrapper parses far enough to establish a valid, numeric revision
+      // that matches Store's known revision. Malformed JSON, missing
+      // version, or non-numeric revision do NOT fabricate a collision;
+      // those remain corruption/uncertainty and flow into the strict
+      // admission below.
+      try {
+        const preParse = parseWrapperRaw(rawNow);
+        if (preParse && !preParse.corrupt
+            && typeof preParse.version === 'number' && Number.isFinite(preParse.version)
+            && isValidRevision(preParse.revision)
+            && typeof knownRevision === 'number'
+            && preParse.revision === knownRevision) {
+          externalCollisionThisTx = true;
+          externalCollisionFacts = { revision: preParse.revision, where: 'endFullStateTransaction' };
+          emitError({ code: 'STORE_REVISION_COLLISION', revision: preParse.revision, where: 'endFullStateTransaction' });
+        }
+      } catch (e) { /* defensive: collision detection must not throw */ }
+
+      // PRV-0.5 Codex Round-7 P1-01 + P2-01: settlement admission goes
+      // through the SAME strict `_admitExternalWrapper` helper as the
+      // storage-event path. A partial v13 or v7 wrapper CANNOT be
+      // default-filled by migrateAndValidate and adopted as authority.
+      // A rejected candidate installs a truthful blocker; internal
+      // state is not advanced.
+      const admit = _admitExternalWrapper(rawNow);
+      if (!admit.ok) {
+        // Round-9 P2-01: if collision was already detected, the truthful
+        // blocker still records both facts. The settlement label
+        // composition below distinguishes "committed + refused-collision"
+        // (FULL_STATE_COMMITTED_THEN_EXTERNAL_COLLISION) from plain
+        // corruption (no collision facts).
+        setDurabilityBlocker(admit.blockerCode, {
+          where: externalCollisionThisTx ? 'endFullStateTransaction-collision' : 'endFullStateTransaction',
+          reason: admit.reason,
+          externalCollision: externalCollisionThisTx || undefined
+        });
       } else {
-        const m = migrateAndValidate(parsed);
-        if (!m.ok) {
-          setDurabilityBlocker('STORE_CORRUPT_AUTHORITATIVE_STATE');
-        } else if (parsed.revision < knownRevision) {
+        const parsed = admit.parsed;
+        if (parsed.revision < knownRevision) {
           // Something regressed the disk under us — fail closed.
           setDurabilityBlocker('STORE_REVISION_REGRESSION', { diskRevision: parsed.revision, knownRevision });
         } else if (parsed.revision > knownRevision || rawNow !== baseWrapperRaw) {
           // Newer valid wrapper (or equal-revision but different raw) — adopt.
-          baseState      = m.data;
+          // PRV-0.5 Codex Round-7 P2-01: an equal-revision but divergent-
+          // raw settlement must emit STORE_REVISION_COLLISION, matching
+          // the storage-event path. Silent adoption of divergent bytes
+          // at settlement without collision reporting was a drift.
+          const isEqualRevisionCollision = (parsed.revision === knownRevision && rawNow !== baseWrapperRaw);
+          if (_transitionAuth && _transitionAuth.sourceRawBytes !== rawNow) {
+            _consumeTransitionAuth();
+          }
+          // Capture adoption evidence BEFORE mutating internal state so
+          // the settlement completion block can rebuild optimistic public
+          // state and emit a convergence event using the transition details.
+          const _priorRevisionForAdoption = knownRevision;
+          baseState      = admit.data;
           knownRevision  = parsed.revision;
           committedAt    = parsed.committedAt;
           baseWrapperRaw = rawNow;
+          externalAdopted = {
+            priorRevision: _priorRevisionForAdoption,
+            adoptedRevision: parsed.revision,
+            adoptedCommittedAt: parsed.committedAt,
+            classification: admit.classification,
+            collision: isEqualRevisionCollision
+          };
+          // PRV-0.5 Round-9 P2-01: collision was already emitted in the
+          // pre-admit predicate above when applicable. Guard against a
+          // double emit — externalCollisionThisTx is set iff we already
+          // called emitError() for this exact revision.
+          if (isEqualRevisionCollision && !externalCollisionThisTx) {
+            emitError({ code: 'STORE_REVISION_COLLISION', revision: parsed.revision, where: 'endFullStateTransaction' });
+          }
+          // PRV-0.5 Codex Round-7 P1-02: source-bound blocker truth.
+          // When the newly adopted authority is AUTHORITATIVE_MIGRATED
+          // and Store previously held a source-bound blocker
+          // (STORE_CORRUPT_AUTHORITATIVE_STATE, STORE_STATE_CLEARED_EXTERNAL,
+          // STORE_REVISION_REGRESSION) describing the pre-adoption
+          // generation, that blocker is resolved by this generation and
+          // MUST be cleared so ordinary writes can resume. Blockers
+          // NOT-source-bound (STORE_FULL_STATE_POST_WRITE_UNCERTAIN,
+          // STORE_LEGACY_CONVERSION_PENDING, STORE_REVISION_EXHAUSTED,
+          // STORE_ORDINARY_DURABLE_VERIFY_FAILED, STORE_READ_FAILED)
+          // remain — external adoption doesn't prove those away.
+          // PRV-0.5 Round-9 §C: the source-bound-blocker clear rule is now
+          // triple-gated across every site: outer version === SCHEMA_VERSION
+          // AND strict source admission passed (implicit in admit.ok===true)
+          // AND classification === AUTHORITATIVE_MIGRATED. Combined with
+          // Round-9 P1-02's suspenders (historical outer sources are forced
+          // to VERIFIED_LEGACY_TRANSITION at admission time), the outer-
+          // version check is a belt: a historical raw cannot possibly
+          // reach admit.classification === 'AUTHORITATIVE_MIGRATED' any
+          // more, so the outer-version guard here is defense in depth
+          // proving the rule at every clearing site.
+          if (durabilityBlocker
+              && parsed.version === SCHEMA_VERSION
+              && admit.classification === 'AUTHORITATIVE_MIGRATED') {
+            const bc = durabilityBlocker.code;
+            if (bc === 'STORE_CORRUPT_AUTHORITATIVE_STATE'
+                || bc === 'STORE_STATE_CLEARED_EXTERNAL'
+                || bc === 'STORE_REVISION_REGRESSION'
+                || bc === 'STORE_LEGACY_CONVERSION_PENDING') {
+              durabilityBlocker = null;
+              try {
+                if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+                  window.dispatchEvent(new CustomEvent('lifeos:store-durability-cleared', { detail: { reason: 'external-adoption', priorBlocker: bc } }));
+                }
+              } catch (e) { /* ignore */ }
+            }
+          }
         }
       }
     }
-    rebuildOptimistic();
-    notifyAll();
+    // PRV-0.5 Codex-final Round-3 review (P1 listener semantics): on
+    // post-write uncertainty settlement, DO NOT run the ordinary
+    // success-publication path. Skip `rebuildOptimistic()` and
+    // `notifyAll()` so subscribers are NOT notified as if a
+    // successful state change landed — their contract is "the state
+    // moved to a new committed value", which is exactly false here.
+    // The failure/blocker signal is emitted separately below
+    // (setDurabilityBlocker already fired
+    // `lifeos:store-durability-blocked` + emitError from the
+    // uncertainty branch above; the freeze-end event is dispatched
+    // with an explicit `failure` marker so any listener that gates
+    // "settlement completed" on this event can distinguish the two
+    // outcomes).
+    if (postWriteUncertain) {
+      try {
+        if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+          window.dispatchEvent(new CustomEvent('lifeos:store-freeze-end', {
+            detail: {
+              failure: true,
+              commitError: postWriteUncertain.error,
+              durabilityBlocker: durabilityBlocker ? Object.assign({}, durabilityBlocker) : null
+            }
+          }));
+        }
+      } catch (e) { /* ignore */ }
+      // Ordinary CAS flush stays gated by `!durabilityBlocker` below;
+      // no need for an explicit refuse here.
+      return {
+        ok: false,
+        settlement: 'FULL_STATE_POST_WRITE_UNCERTAIN',
+        commitError: postWriteUncertain.error,
+        durabilityBlocker: durabilityBlocker ? Object.assign({}, durabilityBlocker) : null
+      };
+    }
+    // PRV-0.5 Round-3 review remediation: only fire the ordinary
+    // success-publication path (rebuildOptimistic + notifyAll) if
+    // commitFullStateWrapper actually landed a successful durable
+    // write during this transaction. Pre-write rejection or
+    // post-write uncertainty leaves `_fullStateCommitSucceeded ===
+    // false`, and subscribers must NOT be told a successful state
+    // change happened — the failure/blocker signal is on its own
+    // event stream (emitError + `lifeos:store-durability-blocked` +
+    // the freeze-end event with `detail.failure=true` below).
+    const committedThisTx = _fullStateCommitSucceeded;
+    _fullStateCommitSucceeded = false;
+    // PRV-0.5 Codex Round-7 P2-02: track local commit and external
+    // adoption as INDEPENDENT facts. Do NOT gate external adoption on
+    // `!committedThisTx` — a full-state commit that landed at revision
+    // N followed by another tab writing revision N+1 before this tab
+    // reached settlement is a real composition. In that case:
+    //   * committedThisTx is true  (our payload landed durably)
+    //   * externalAdopted !== null (settlement adopted the newer bytes)
+    //   * the final authority is the EXTERNAL bytes — not our committed
+    //     candidate — so `settlement:'FULL_STATE_COMMITTED'` alone would
+    //     be a lie.
+    // The three legal outcomes here:
+    //   * FULL_STATE_COMMITTED                        — local commit only
+    //   * FULL_STATE_EXTERNAL_ADOPTION                — external only
+    //   * FULL_STATE_COMMITTED_THEN_EXTERNAL_ADOPTION — both
+    // rebuildOptimistic() + notifyAll() fire if EITHER happened.
+    const externalAdoptionThisTx = externalAdopted !== null;
+    if (committedThisTx || externalAdoptionThisTx) {
+      rebuildOptimistic();
+      notifyAll();
+    }
+    if (externalAdoptionThisTx) {
+      try {
+        if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+          window.dispatchEvent(new CustomEvent('lifeos:store-external-adoption', {
+            detail: {
+              priorRevision: externalAdopted.priorRevision,
+              adoptedRevision: externalAdopted.adoptedRevision,
+              adoptedCommittedAt: externalAdopted.adoptedCommittedAt,
+              classification: externalAdopted.classification || null,
+              collision: !!externalAdopted.collision,
+              afterLocalCommit: committedThisTx
+            }
+          }));
+        }
+      } catch (e) { /* ignore */ }
+    }
     try {
       if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
         // Fire freeze-end AFTER settlement so listeners re-evaluating
-        // getDurabilityBlocker() see the final state.
-        window.dispatchEvent(new CustomEvent('lifeos:store-freeze-end', { detail: { durabilityBlocker: durabilityBlocker ? Object.assign({}, durabilityBlocker) : null } }));
+        // getDurabilityBlocker() see the final state. When commit
+        // did not succeed this transaction, mark the detail with
+        // `failure: true` so listeners can distinguish
+        // success-settled from failure-settled without inspecting
+        // the blocker code. `externalAdoption: true` is set when
+        // settlement adopted an external wrapper without a local
+        // commit — a distinct settlement outcome that is neither
+        // success nor failure.
+        window.dispatchEvent(new CustomEvent('lifeos:store-freeze-end', {
+          detail: {
+            failure: !committedThisTx && !externalAdoptionThisTx,
+            externalAdoption: externalAdoptionThisTx,
+            committed: committedThisTx,
+            durabilityBlocker: durabilityBlocker ? Object.assign({}, durabilityBlocker) : null
+          }
+        }));
       }
     } catch (e) { /* ignore */ }
     if (pendingOps.length > 0 && !conflict && !durabilityBlocker) scheduleFlush();
-    return { ok: true, durabilityBlocker: durabilityBlocker ? Object.assign({}, durabilityBlocker) : null };
+    // `ok` reflects whether endFullStateTransaction ran successfully
+    // (valid token, transaction was active) — NOT whether the
+    // transaction committed a state change. `settlement` names the
+    // final authority-transition outcome:
+    //   FULL_STATE_COMMITTED                        → local commit only.
+    //   FULL_STATE_EXTERNAL_ADOPTION                → no local commit; settlement
+    //                                                 adopted a newer valid
+    //                                                 external wrapper.
+    //   FULL_STATE_COMMITTED_THEN_EXTERNAL_ADOPTION → both landed: local commit
+    //                                                 succeeded, then another tab's
+    //                                                 newer wrapper superseded it
+    //                                                 and settlement adopted that.
+    //                                                 Final authority is EXTERNAL.
+    //   FULL_STATE_NOT_COMMITTED                    → nothing committed and no
+    //                                                 external adoption.
+    //   FULL_STATE_POST_WRITE_UNCERTAIN             → uncertainty branch (early
+    //                                                 return above).
+    // Independent booleans (`commit` + `externalAdoption`) accompany the
+    // string so listeners can react to either fact without string parsing.
+    // PRV-0.5 Round-9 P2-01: settlement label composition adds two
+    // collision labels documenting "settlement observed same-revision
+    // divergent durable bytes and did NOT adopt them" as a distinct
+    // outcome. Ordering: adoption facts take precedence over collision
+    // facts because adoption implies the external bytes were valid and
+    // superseded the local commit (R8 P2-01 preserved). Collision
+    // labels fire only when admit refused the divergent bytes — no
+    // adoption happened, but the collision fact must not be silent.
+    //   FULL_STATE_COMMITTED_THEN_EXTERNAL_COLLISION → local commit landed;
+    //                                                  settlement observed
+    //                                                  same-revision divergent
+    //                                                  invalid bytes; those
+    //                                                  bytes were NOT adopted.
+    //   FULL_STATE_EXTERNAL_COLLISION                → no local commit; same
+    //                                                  observation.
+    // The collision emission (STORE_REVISION_COLLISION) is independent of
+    // the label — it fires before strict admission (see the pre-admit
+    // predicate above). The label documents the composed final outcome.
+    const externalAdoptionOnlyCollision = externalCollisionThisTx && !externalAdoptionThisTx;
+    let settlementLabel;
+    if (committedThisTx && externalAdoptionThisTx) settlementLabel = 'FULL_STATE_COMMITTED_THEN_EXTERNAL_ADOPTION';
+    else if (committedThisTx && externalAdoptionOnlyCollision) settlementLabel = 'FULL_STATE_COMMITTED_THEN_EXTERNAL_COLLISION';
+    else if (committedThisTx) settlementLabel = 'FULL_STATE_COMMITTED';
+    else if (externalAdoptionThisTx) settlementLabel = 'FULL_STATE_EXTERNAL_ADOPTION';
+    else if (externalAdoptionOnlyCollision) settlementLabel = 'FULL_STATE_EXTERNAL_COLLISION';
+    else settlementLabel = 'FULL_STATE_NOT_COMMITTED';
+    return {
+      ok: true,
+      settlement: settlementLabel,
+      commit: committedThisTx,
+      externalAdoption: externalAdoptionThisTx ? {
+        priorRevision: externalAdopted.priorRevision,
+        adoptedRevision: externalAdopted.adoptedRevision,
+        adoptedCommittedAt: externalAdopted.adoptedCommittedAt,
+        classification: externalAdopted.classification || null,
+        collision: !!externalAdopted.collision,
+        afterLocalCommit: committedThisTx
+      } : null,
+      externalCollision: externalCollisionThisTx ? {
+        revision: externalCollisionFacts && externalCollisionFacts.revision,
+        adopted: externalAdoptionThisTx,
+        afterLocalCommit: committedThisTx,
+        where: externalCollisionFacts && externalCollisionFacts.where
+      } : null,
+      durabilityBlocker: durabilityBlocker ? Object.assign({}, durabilityBlocker) : null
+    };
   }
   // Commit a full-state candidate (import / snapshot / reset) inside the
   // coordinator. Token guard enforces freeze; latest validated disk revision
   // + 1 is the ONLY revision source; Math.max shortcuts are forbidden.
-  function commitFullStateWrapper(token, candidateData, reason) {
+  //
+  // PRV-0.5 R6 (Codex Round-5 P1-2 + P1-3):
+  //   - `opts.recovery === true` puts this commit in recovery mode: a
+  //     corrupt authoritative disk read no longer refuses; the corrupt
+  //     raw bytes are quarantined into a distinct localStorage key
+  //     `dune_state_v4_quarantine_<epoch-ms>` as evidence, and the
+  //     commit proceeds using `max(knownRevision, 0) + 1` for
+  //     monotonicity (never trusting the corrupt revision). This is the
+  //     ONLY path that can replace corrupt authority; ordinary
+  //     Store.set/update flushes and ordinary (non-recovery) full-state
+  //     commits still refuse.
+  //   - The lowest destructive boundary now enforces the canonical
+  //     authority contract via `evaluateCandidateData(cloned)` under the
+  //     coordinator. Any candidate that lacks canonical marker / records
+  //     is rejected BEFORE the write and the blocker is NOT cleared.
+  //   - Post-write verification re-parses the committed payload via the
+  //     evaluator; if the persisted result does not evaluate as
+  //     AUTHORITATIVE_MIGRATED the commit reports failure and leaves
+  //     the previous blocker intact.
+  function commitFullStateWrapper(token, candidateData, reason, opts) {
     if (!activeFullStateTransaction) return Promise.resolve({ ok: false, error: 'FULL_STATE_TRANSACTION_NOT_ACTIVE' });
     if (!fullStateTxToken || token !== fullStateTxToken) return Promise.resolve({ ok: false, error: 'FULL_STATE_TX_TOKEN_MISMATCH' });
+    const recoveryMode = !!(opts && opts.recovery === true);
+    const legacyConversionMode = !!(opts && opts.legacyConversion === true);
+    // PRV-0.5 Pre-Push Amendment (BINDING-1): NO LOCK = FAIL CLOSED.
+    // Both destructive-mode commits (recovery + legacy conversion)
+    // require the cross-tab Web Lock. If navigator.locks is
+    // unavailable in this environment, refuse — do NOT fall back to
+    // the best-effort same-tab-only serializer for a destructive
+    // primary write.
+    if (recoveryMode || legacyConversionMode) {
+      // PRV-0.5 Pre-Push Amendment (BINDING-1): re-evaluate lock
+      // availability at commit time (not just module init). A test
+      // or environment that removes navigator.locks after Store
+      // construction must also refuse — this is a real fail-closed
+      // path, not a static capability tag. `_testForceNoLock`
+      // exists because Chromium's `navigator.locks` is a
+      // non-configurable native property and cannot be `delete`d;
+      // the test hook lets adversarial suites simulate a no-lock
+      // environment.
+      const dynamicLockAvailable = !_testForceNoLockFlag && !!(typeof navigator !== 'undefined' && navigator.locks && typeof navigator.locks.request === 'function');
+      if (!dynamicLockAvailable) {
+        return Promise.resolve({ ok: false, error: 'STORE_LOCK_UNAVAILABLE',
+          reason: 'no-web-locks-support', mode: recoveryMode ? 'recovery' : 'legacy-conversion' });
+      }
+    }
+    // PRV-0.5 R7 (Codex Round-6 P1-2, INV-2, INV-3, INV-12): if the
+    // caller declares recovery mode, an active recovery auth MUST
+    // exist AND its sourceRawBytes MUST byte-match the disk raw the
+    // Store observes under the destructive lock. A stale recovery
+    // prepared for a corrupt generation the disk no longer holds
+    // (another tab already recovered, or the raw was replaced) fails
+    // closed — the newer healthy state is not overwritten.
     return withCoordinator(function () {
-      // Re-read disk under lock. Corrupt disk = fail closed.
+      // PRV-0.5 Final Closure (INV-C, R7-P1-03): primary-read exception
+      // is NEVER absence. Fail closed rather than proceed to
+      // quarantine/write as if disk were empty.
       let rawNow;
-      try { rawNow = localStorage.getItem(STATE_KEY); } catch (e) { rawNow = null; }
+      let rawReadFailed = false;
+      try { rawNow = localStorage.getItem(STATE_KEY); }
+      catch (e) { rawReadFailed = true; rawNow = null; }
+      if (rawReadFailed) {
+        setDurabilityBlocker('STORE_READ_FAILED', { where: 'commitFullStateWrapper' });
+        return { ok: false, error: 'STORE_READ_FAILED' };
+      }
+      // R7 P1-2: recovery-mode source authorisation check happens
+      // BEFORE any quarantine / write. Non-recovery commits enforce
+      // "disk parseable" (unchanged from R6).
+      //
+      // PRV-0.5 Final Closure (INV-E, R7-P1-02): recovery mode also
+      // enforces blocker-class match under the destructive lock. An
+      // auth issued for STORE_REVISION_REGRESSION does not authorise
+      // recovery under a later STORE_CORRUPT_AUTHORITATIVE_STATE
+      // blocker (or vice versa) — the class labels the source
+      // condition the auth's user consented to replace.
+      if (recoveryMode) {
+        const authCheck = _hasValidTransitionAuthForCurrentDisk('recovery');
+        if (!authCheck.ok) {
+          return { ok: false, error: 'RECOVERY_AUTH_INVALID', reason: authCheck.reason, disk: rawNow === null ? 'absent' : 'present' };
+        }
+        if (_transitionAuth
+            && _transitionAuth.blockerClassAtIssue
+            && (!durabilityBlocker || durabilityBlocker.code !== _transitionAuth.blockerClassAtIssue)) {
+          return { ok: false, error: 'RECOVERY_AUTH_BLOCKER_CHANGED',
+                   authBlocker: _transitionAuth.blockerClassAtIssue,
+                   currentBlocker: durabilityBlocker && durabilityBlocker.code };
+        }
+      } else if (legacyConversionMode) {
+        // PRV-0.5 Pre-Push Amendment §2 + §8 (atomic legacy conversion):
+        // legacy conversion requires a valid legacy transition auth
+        // that byte-matches the current disk raw (identity check
+        // under the exclusive lock). The auth is issued by
+        // initialLoad from the exact legacy raw wrapper the Store
+        // observed at boot; disk substitution between boot and
+        // conversion invalidates it.
+        const authCheck = _hasValidTransitionAuthForCurrentDisk('legacy');
+        if (!authCheck.ok) {
+          return { ok: false, error: 'LEGACY_CONVERSION_AUTH_INVALID',
+                   reason: authCheck.reason,
+                   disk: rawNow === null ? 'absent' : 'present' };
+        }
+        // Additionally re-validate the historical source against the
+        // frozen matrix under lock — a v13 raw that failed validation
+        // between boot and conversion (impossible via legitimate
+        // paths, but the check is cheap) fails closed.
+        const parsed = rawNow !== null ? parseWrapperRaw(rawNow) : null;
+        if (!parsed || parsed.corrupt) {
+          return { ok: false, error: 'LEGACY_CONVERSION_SOURCE_UNPARSEABLE',
+                   reason: parsed && parsed.reason };
+        }
+        if (parsed.version >= SCHEMA_VERSION) {
+          return { ok: false, error: 'LEGACY_CONVERSION_SOURCE_NOT_LEGACY',
+                   version: parsed.version };
+        }
+        const srcCheck = validateLegacySourceRequiredFields(parsed.data, parsed.version);
+        if (!srcCheck.ok) {
+          return { ok: false, error: 'LEGACY_CONVERSION_SOURCE_INVALID',
+                   reason: srcCheck.reason, version: parsed.version };
+        }
+      } else {
+        // R6-compat: non-recovery mode still refuses corrupt disk.
+        if (rawNow !== null) {
+          const parsedGuard = parseWrapperRaw(rawNow);
+          if (!parsedGuard || parsedGuard.corrupt) {
+            setDurabilityBlocker('STORE_CORRUPT_AUTHORITATIVE_STATE');
+            return { ok: false, error: 'STORE_CORRUPT_AUTHORITATIVE_STATE' };
+          }
+        }
+      }
+      // Recovery-mode disk may now be parseable (revision-regression /
+      // unsupported-future / etc. blockers). Compute the disk
+      // revision from whatever parseWrapperRaw returns; for corrupt
+      // wrappers it stays 0. Monotonic advance below still uses
+      // max(diskRevision, knownRevision, knownRevisionAtIssue).
       let diskRevision = 0;
       if (rawNow !== null) {
         const parsed = parseWrapperRaw(rawNow);
-        if (!parsed || parsed.corrupt) {
-          setDurabilityBlocker('STORE_CORRUPT_AUTHORITATIVE_STATE');
-          return { ok: false, error: 'STORE_CORRUPT_AUTHORITATIVE_STATE' };
-        }
-        diskRevision = parsed.revision;
+        diskRevision = parsed && !parsed.corrupt && typeof parsed.revision === 'number' ? parsed.revision : 0;
       }
       let cloned;
       try { cloned = clonePersistable(candidateData); } catch (e) { return { ok: false, error: 'STORE_UNPERSISTABLE' }; }
+      // PRV-0.5 Round-6 (Claude-authored, P1-A + P1-B): validate the
+      // COMPLETE original current-schema shape BEFORE any
+      // normalization/default-fill runs. commitFullState is the
+      // lowest destructive boundary for every public write path
+      // (Reset, Restore, Import inline hydration, direct full-state
+      // replacement); running validateFullStateCanonical here rejects
+      // missing `logbook`, missing BHT emitted paths, and missing
+      // telemetry fields at the origin rather than letting
+      // normalizeLogbookDomain fabricate an empty envelope or letting
+      // migrateUp/default-fill silently repair the source before it
+      // becomes durable authority. The single-field logbook check
+      // that R7-P1-04 introduced is a subset of this rule and is
+      // subsumed.
+      const originalFullEval = validateFullStateCanonical(cloned);
+      if (!originalFullEval.ok) {
+        return {
+          ok: false, error: 'FULL_STATE_CANONICAL_INCOMPLETE',
+          missing: originalFullEval.missing, reason: originalFullEval.reason
+        };
+      }
       normalizeLogbookDomain(cloned);
       if (!validate(cloned)) return { ok: false, error: 'FULL_STATE_INVALID' };
-      // Latest validated disk revision + 1 — no Math.max, no knownRevision shortcut.
-      if (diskRevision >= Number.MAX_SAFE_INTEGER) return { ok: false, error: 'STORE_REVISION_EXHAUSTED' };
-      const nextRevision = diskRevision + 1;
+      // R6 P1-3: canonical marker/records shape.
+      const evalCand = evaluateCandidateData(cloned);
+      if (!evalCand.canonical) {
+        return {
+          ok: false, error: 'FULL_STATE_CANDIDATE_NONCANONICAL',
+          classification: evalCand.classification, reasons: evalCand.reasons
+        };
+      }
+      // PRV-0.5 Final Closure (INV-G, R7-P1-07): ordinary full-state
+      // commit accepts ONLY AUTHORITATIVE_MIGRATED at pre-write. A
+      // VERIFIED_LEGACY_TRANSITION (marker.status='unmigrated') would
+      // pass the R6 canonical check, write disk, and then fail
+      // post-classification — leaving the primary mutated but the
+      // operation reporting failure. All three legitimate callers
+      // (Reset via defaultState(), restoreSnapshot rewriting marker
+      // to 'migrated', processImport via inline hydration marker
+      // rewrite) already produce AUTHORITATIVE_MIGRATED; any caller
+      // that supplies an unmigrated candidate must instead use an
+      // explicit legacy-migration path with its own transition auth.
+      if (evalCand.classification !== 'AUTHORITATIVE_MIGRATED') {
+        return {
+          ok: false, error: 'FULL_STATE_CANDIDATE_NOT_MIGRATED',
+          classification: evalCand.classification, reasons: evalCand.reasons
+        };
+      }
+      // R7 P1-3, INV-4: complete canonical full-state schema. Missing
+      // required top-level domains (bht, career, reviews, ideas,
+      // logbook envelope, etc.) fail before mutation.
+      const fullEval = validateFullStateCanonical(cloned);
+      if (!fullEval.ok) {
+        return {
+          ok: false, error: 'FULL_STATE_CANONICAL_INCOMPLETE',
+          missing: fullEval.missing, reason: fullEval.reason
+        };
+      }
+      // PRV-0.5 Codex Round-6 P1-01: revision exhaustion MUST be
+      // evaluated against the COMPLETE accepted monotonic baseline —
+      // the durable disk revision, Store's `knownRevision`, AND the
+      // revision-at-issue captured on any active recovery / legacy-
+      // transition auth — NOT durable disk revision alone. If Store
+      // already accepted a wrapper at Number.MAX_SAFE_INTEGER and disk
+      // then regressed to a lower value, a diskRevision-only guard
+      // computes `monotonicBaseline + 1 === 9007199254740992`, which
+      // is not a safe integer and therefore cannot be a legal
+      // authoritative revision. The check runs BEFORE any quarantine
+      // allocation and BEFORE any primary write, so on exhaustion:
+      // primary bytes are byte-exact preserved, no quarantine key is
+      // allocated, no snapshot is written, no success publication
+      // fires. Reset, Snapshot Restore, processImport-recovery and
+      // legacy conversion all reach this branch (single guard covers
+      // every recovery family).
+      const _exhaustionBaseline = Math.max(
+        diskRevision,
+        typeof knownRevision === 'number' ? knownRevision : 0,
+        _transitionAuth && typeof _transitionAuth.knownRevisionAtIssue === 'number' ? _transitionAuth.knownRevisionAtIssue : 0
+      );
+      if (_exhaustionBaseline >= Number.MAX_SAFE_INTEGER) {
+        return {
+          ok: false,
+          error: 'STORE_REVISION_EXHAUSTED',
+          baseline: _exhaustionBaseline,
+          diskRevision: diskRevision,
+          knownRevision: typeof knownRevision === 'number' ? knownRevision : null,
+          authRevisionAtIssue: _transitionAuth && typeof _transitionAuth.knownRevisionAtIssue === 'number' ? _transitionAuth.knownRevisionAtIssue : null
+        };
+      }
+      // R7 P1-4, INV-5: quarantine BEFORE destructive replacement of
+      // corrupt authority, WITH mandatory reread + byte-match
+      // verification. Only proceed to primary write if quarantine
+      // durably matches source.
+      //
+      // PRV-0.5 Final Closure (INV-H + P2-01): quarantine key allocation
+      // now checks absence and retries on collision (up to 8 attempts);
+      // if a unique key cannot be established, we abort BEFORE any
+      // primary mutation. Once a verified quarantine copy exists,
+      // ALL subsequent failure paths retain it — no cleanup on
+      // uncertainty (removeItem calls previously at lines 2624,
+      // 2638, 2642, 2651, 2656, 2667 removed). Cleanup on success
+      // also does not happen: retention is documented policy and the
+      // key is exposed via Store.listQuarantineKeys() for
+      // tests/diagnostics; user-facing UI can be added in a follow-up
+      // without changing the retention contract.
+      let quarantineKey = null;
+      if (recoveryMode && rawNow !== null) {
+        const alloc = _allocateQuarantineKey();
+        if (!alloc.ok) return { ok: false, error: 'RECOVERY_QUARANTINE_KEY_UNAVAILABLE', reason: alloc.reason };
+        const qKey = alloc.key;
+        try { localStorage.setItem(qKey, rawNow); }
+        catch (qe) {
+          return { ok: false, error: 'RECOVERY_QUARANTINE_WRITE_FAILED', detail: qe && qe.message };
+        }
+        let qRead;
+        try { qRead = localStorage.getItem(qKey); } catch (qre) { qRead = null; }
+        if (qRead !== rawNow) {
+          // Verification failed — do NOT delete: the write may have
+          // partially landed and represents genuine failure evidence.
+          // INV-H: "never delete on uncertainty".
+          return { ok: false, error: 'RECOVERY_QUARANTINE_VERIFY_FAILED', retainedEvidenceKey: qKey };
+        }
+        quarantineKey = qKey;
+      }
+      // R7 INV-3: immediately before primary write, re-read disk and
+      // confirm the source generation the auth was issued for is
+      // still on disk. This forecloses the concurrent-race window
+      // between quarantine-verify and primary-write.
+      if (recoveryMode) {
+        let rawCheckRaw;
+        try { rawCheckRaw = localStorage.getItem(STATE_KEY); } catch (e) { rawCheckRaw = null; }
+        if (_transitionAuth && _transitionAuth.absent === true) {
+          if (rawCheckRaw !== null) {
+            return { ok: false, error: 'RECOVERY_SOURCE_CHANGED_UNDER_LOCK', reason: 'disk-no-longer-absent', retainedEvidenceKey: quarantineKey };
+          }
+        } else if (_transitionAuth && rawCheckRaw !== _transitionAuth.sourceRawBytes) {
+          return { ok: false, error: 'RECOVERY_SOURCE_CHANGED_UNDER_LOCK', reason: 'source-generation-changed', retainedEvidenceKey: quarantineKey };
+        }
+      }
+      // PRV-0.5 Final Closure (INV-D, R7-P1-02): monotonic revision.
+      // Recovery must advance past BOTH the current disk revision AND
+      // Store's knownRevision — so a stale-revision disk cannot let
+      // a recovery replay an earlier number, and a
+      // regression-blocker recovery mints strictly greater than the
+      // last accepted revision the Store observed.
+      //
+      // PRV-0.5 Codex Round-6 P1-01: baseline is the same value the
+      // exhaustion guard above already computed as `_exhaustionBaseline`
+      // (single source of truth so the two computations cannot drift).
+      // `_exhaustionBaseline + 1` is guaranteed a safe integer because
+      // the guard rejected `_exhaustionBaseline === MAX_SAFE_INTEGER`.
+      const monotonicBaseline = _exhaustionBaseline;
+      const nextRevision = monotonicBaseline + 1;
       const committedAtNow = nowISO();
       const wrapper = { version: SCHEMA_VERSION, revision: nextRevision, committedAt: committedAtNow, data: cloned };
       let payload;
-      try { payload = JSON.stringify(wrapper); } catch (e) { return { ok: false, error: 'STORE_SERIALIZE_FAILED' }; }
-      try { localStorage.setItem(STATE_KEY, payload); } catch (e) { return { ok: false, error: 'STORE_QUOTA' }; }
+      try { payload = JSON.stringify(wrapper); } catch (e) {
+        return { ok: false, error: 'STORE_SERIALIZE_FAILED', retainedEvidenceKey: quarantineKey };
+      }
+      try { localStorage.setItem(STATE_KEY, payload); }
+      catch (e) {
+        return { ok: false, error: 'STORE_QUOTA', detail: e && e.message, retainedEvidenceKey: quarantineKey };
+      }
+      // R7 P1-5, INV-6: DURABLE verification — read back what is
+      // ACTUALLY persisted at STATE_KEY and require an exact
+      // byte-match with `payload`. Catches: silent-no-op writes,
+      // writes that landed different bytes, writes that went
+      // elsewhere. Only after this proof do we advance memory.
+      let durableRaw;
+      try { durableRaw = localStorage.getItem(STATE_KEY); } catch (e) { durableRaw = null; }
+      if (durableRaw !== payload) {
+        // PRV-0.5 Codex-final P1-01: primary mutation was attempted;
+        // the durable reread did not match the intended payload. Flag
+        // post-write uncertainty so endFullStateTransaction refuses
+        // to adopt the divergent bytes as authority.
+        const diskKind = durableRaw === null ? 'absent' : (durableRaw === rawNow ? 'unchanged-source' : 'divergent-bytes');
+        _fullStatePostWriteUncertain = {
+          error: 'FULL_STATE_DURABLE_VERIFY_FAILED',
+          disk: diskKind,
+          retainedEvidenceKey: quarantineKey,
+          reason: reason || 'full-state',
+          recovery: recoveryMode,
+          legacyConversion: !!legacyConversionMode
+        };
+        return {
+          ok: false, error: 'FULL_STATE_DURABLE_VERIFY_FAILED',
+          disk: diskKind,
+          retainedEvidenceKey: quarantineKey
+        };
+      }
+      // Re-parse the durable read (not just the payload we constructed)
+      // and re-classify — belt-and-suspenders for schema conformance.
+      const verifyParsed = parseWrapperRaw(durableRaw);
+      // PRV-0.5 Round-4 review remediation: `_testForcePostWriteEvalFailureFlag`
+      // deterministically drives the classifier's non-canonical branch
+      // so the R4-P1-01d probe reaches FULL_STATE_POST_WRITE_VERIFICATION_FAILED
+      // exactly. Production never sets this flag.
+      const verifyEval = _testForcePostWriteEvalFailureFlag
+        ? { canonical: false, classification: 'TEST_FORCED_NON_CANONICAL' }
+        : (verifyParsed && !verifyParsed.corrupt
+          ? evaluateCandidateData(verifyParsed.data)
+          : { canonical: false, classification: 'PARSE_FAILED' });
+      if (!verifyEval.canonical || verifyEval.classification !== 'AUTHORITATIVE_MIGRATED') {
+        // PRV-0.5 Codex-final P1-01: primary mutation was attempted;
+        // durable reread parses but does not classify as AUTHORITATIVE_MIGRATED.
+        // Flag post-write uncertainty; endFullStateTransaction must not
+        // adopt the divergent bytes as authority.
+        _fullStatePostWriteUncertain = {
+          error: 'FULL_STATE_POST_WRITE_VERIFICATION_FAILED',
+          classification: verifyEval.classification,
+          retainedEvidenceKey: quarantineKey,
+          reason: reason || 'full-state',
+          recovery: recoveryMode,
+          legacyConversion: !!legacyConversionMode
+        };
+        return {
+          ok: false, error: 'FULL_STATE_POST_WRITE_VERIFICATION_FAILED',
+          classification: verifyEval.classification,
+          retainedEvidenceKey: quarantineKey
+        };
+      }
       { const _snap = pushSnapshot(payload); if (!_snap.ok) emitError({ code: 'STORE_SNAPSHOT_DEGRADED', revision: nextRevision, error: String((_snap.error && _snap.error.message) || _snap.error) }); }
       baseState      = cloned;
       knownRevision  = nextRevision;
@@ -1538,12 +3676,132 @@
       baseWrapperRaw = payload;
       pendingOps     = [];
       conflict       = null;
-      durabilityBlocker = null; // an approved full-state transaction clears the blocker
-      return { ok: true, revision: nextRevision, committedAt: committedAtNow, reason: reason || 'full-state' };
+      durabilityBlocker = null;
+      _consumeTransitionAuth();
+      // PRV-0.5 Round-3 review remediation: authorise the ordinary
+      // success-publication path in endFullStateTransaction.
+      _fullStateCommitSucceeded = true;
+      return {
+        ok: true,
+        revision: nextRevision,
+        committedAt: committedAtNow,
+        reason: reason || 'full-state',
+        recovery: recoveryMode,
+        quarantineKey: quarantineKey
+      };
     });
   }
 
   // ── STORAGE EVENTS ───────────────────────────────
+  // PRV-0.5 Codex Round-7 P1-01 remediation: ONE strict admission rule
+  // for any externally observed persisted wrapper that may become
+  // public / internal / durable / backup-eligible authority. Storage-
+  // event adoption, `endFullStateTransaction` settlement, and the
+  // ordinary CAS pre-write external reread all route through this
+  // helper so no permissive migration path can default-fill an
+  // invalid original source and hand back what looks like verified
+  // authority. Mirrors the `evaluateCandidateWrapper` rule surface
+  // (parse → version classification → source-shape validation BEFORE
+  // migrateUp → migrateUp → canonical inner classification) and
+  // returns the durability-blocker code that the caller must install
+  // on rejection. Accepts BOTH AUTHORITATIVE_MIGRATED and
+  // VERIFIED_LEGACY_TRANSITION as admissible external authority; every
+  // other classification is refused with `STORE_CORRUPT_AUTHORITATIVE_STATE`.
+  // PRV-0.5 Round-9 P1-01 (strict boot + external admission share one
+  // gate). Every persisted-authority admission — boot, storage event,
+  // settlement, external reread — routes through this pair of helpers so
+  // there is exactly one source-shape policy across the whole surface.
+  //
+  //   _strictSourceAdmit(parsed)  — pure source-shape gate. No migrateUp.
+  //   _admitFromParsed(parsed)    — full pipeline: source gate → migrateUp
+  //                                 → normalize → validate → classify
+  //                                 (outer-version-controls-provenance).
+  //   _admitExternalWrapper(raw)  — parseWrapperRaw + _admitFromParsed.
+  //   _admitBootWrapper           — alias of _admitExternalWrapper. Single
+  //                                 source of truth; no "boot has a laxer
+  //                                 policy" branch exists in this codebase.
+  function _strictSourceAdmit(parsed) {
+    if (!parsed) {
+      return { ok: false, blockerCode: 'STORE_CORRUPT_AUTHORITATIVE_STATE', reason: 'null-parsed' };
+    }
+    if (parsed.corrupt) {
+      return { ok: false, blockerCode: 'STORE_CORRUPT_AUTHORITATIVE_STATE', reason: 'wrapper-corrupt:' + (parsed.reason || 'unknown') };
+    }
+    if (typeof parsed.version !== 'number' || !Number.isFinite(parsed.version)) {
+      return { ok: false, blockerCode: 'STORE_CORRUPT_AUTHORITATIVE_STATE', reason: 'version-missing' };
+    }
+    if (parsed.version > SCHEMA_VERSION) {
+      return { ok: false, blockerCode: 'STORE_CORRUPT_AUTHORITATIVE_STATE', reason: 'unsupported-future-schema-v' + parsed.version };
+    }
+    if (parsed.version < SCHEMA_VERSION) {
+      // Preserve the R8 admission reason contract: both v0-v7 (unsupported)
+      // and v8-v13 partial (missing required fields) route through the
+      // same `validateLegacySourceRequiredFields` returning `legacy-source-*`
+      // reasons. The historical validator itself returns
+      // `version-unsupported` for v < 8, so the "legacy-source-version-
+      // unsupported-v7" style reason is preserved unchanged for tests and
+      // for the storage-event admission blocker detail.
+      const src = validateLegacySourceRequiredFields(parsed.data, parsed.version);
+      if (!src || !src.ok) {
+        return { ok: false, blockerCode: 'STORE_CORRUPT_AUTHORITATIVE_STATE', reason: 'legacy-source-' + ((src && src.reason) || 'invalid') };
+      }
+    } else {
+      // parsed.version === SCHEMA_VERSION
+      const src = validateFullStateCanonical(parsed.data);
+      if (!src.ok) {
+        return { ok: false, blockerCode: 'STORE_CORRUPT_AUTHORITATIVE_STATE', reason: 'current-source-' + src.reason };
+      }
+    }
+    return { ok: true, parsed: parsed };
+  }
+  function _admitFromParsed(parsed) {
+    const gate = _strictSourceAdmit(parsed);
+    if (!gate.ok) return gate;
+    let migrated;
+    try {
+      migrated = (parsed.version === SCHEMA_VERSION && parsed.data)
+        ? parsed.data
+        : migrateUp(parsed.data || {}, parsed.version || 0);
+      normalizeLogbookDomain(migrated);
+    } catch (e) {
+      return { ok: false, blockerCode: 'STORE_CORRUPT_AUTHORITATIVE_STATE', reason: 'migrateUp-threw:' + (e && e.message) };
+    }
+    if (!validate(migrated)) {
+      return { ok: false, blockerCode: 'STORE_CORRUPT_AUTHORITATIVE_STATE', reason: 'validate-failed' };
+    }
+    const evalData = evaluateCandidateData(migrated);
+    // PRV-0.5 Round-9 P1-02 (suspenders): outer source version controls
+    // provenance. A historical outer wrapper (v8..v13) is admitted only
+    // under VERIFIED_LEGACY_TRANSITION semantics regardless of what the
+    // inner data's own migration marker claims. Combined with the
+    // migrateUp belt that strips the marker on historical migration,
+    // this closes the "outer v13 carrying inner v14 migrated marker
+    // gets classified as AUTHORITATIVE_MIGRATED" path Codex reproduced.
+    let classification;
+    if (parsed.version < SCHEMA_VERSION) {
+      classification = 'VERIFIED_LEGACY_TRANSITION';
+    } else {
+      if (evalData.classification !== 'AUTHORITATIVE_MIGRATED' && evalData.classification !== 'VERIFIED_LEGACY_TRANSITION') {
+        return { ok: false, blockerCode: 'STORE_CORRUPT_AUTHORITATIVE_STATE', reason: 'inner-' + evalData.classification };
+      }
+      classification = evalData.classification;
+    }
+    return { ok: true, parsed: parsed, data: migrated, classification: classification };
+  }
+  function _admitExternalWrapper(rawWrapper) {
+    if (rawWrapper === null || rawWrapper === undefined) {
+      return { ok: false, blockerCode: 'STORE_CORRUPT_AUTHORITATIVE_STATE', reason: 'null-raw' };
+    }
+    const parsed = parseWrapperRaw(rawWrapper);
+    if (!parsed) {
+      return { ok: false, blockerCode: 'STORE_CORRUPT_AUTHORITATIVE_STATE', reason: 'null-parse' };
+    }
+    return _admitFromParsed(parsed);
+  }
+  // PRV-0.5 Round-9 P1-01: boot admission is definitionally identical to
+  // external admission. The alias makes the "single validation policy"
+  // invariant impossible to violate by drift.
+  const _admitBootWrapper = _admitExternalWrapper;
   function onStorage(e) {
     if (!e || e.key !== STATE_KEY) return;
     if (activeFullStateTransaction) {
@@ -1559,12 +3817,50 @@
       return;
     }
     if (rawNow === baseWrapperRaw) return;
-    const parsed = parseWrapperRaw(rawNow);
-    if (!parsed || parsed.corrupt) { setDurabilityBlocker('STORE_CORRUPT_AUTHORITATIVE_STATE'); return; }
-    const m = migrateAndValidate(parsed);
-    if (!m.ok) { setDurabilityBlocker('STORE_CORRUPT_AUTHORITATIVE_STATE'); return; }
+    // PRV-0.5 Final Closure (INV-A, R7-P1-01): any disk-change to bytes
+    // that do NOT match the current transition auth's sourceRawBytes
+    // invalidates that auth immediately — even if the new bytes are
+    // later rejected as inadmissible authority. The disk generation
+    // the auth was granted for no longer exists.
+    if (_transitionAuth && _transitionAuth.sourceRawBytes !== rawNow) {
+      _consumeTransitionAuth();
+    }
+    // PRV-0.5 Round-9 P2-01: collision-before-admission at the storage-
+    // event entry point. When the incoming rawNow parses to the same
+    // revision as knownRevision AND differs from baseWrapperRaw (guarded
+    // at line 3756 above), collision truth is emitted BEFORE strict
+    // admission. Malformed/non-numeric revision falls through to
+    // corruption via admit, not a fabricated collision.
+    let onStorageEntryCollision = false;
+    try {
+      const preParse = parseWrapperRaw(rawNow);
+      if (preParse && !preParse.corrupt
+          && typeof preParse.version === 'number' && Number.isFinite(preParse.version)
+          && isValidRevision(preParse.revision)
+          && typeof knownRevision === 'number'
+          && preParse.revision === knownRevision) {
+        emitError({ code: 'STORE_REVISION_COLLISION', revision: preParse.revision });
+        onStorageEntryCollision = true;
+      }
+    } catch (e) { /* defensive: collision detection must not throw */ }
+    // PRV-0.5 Codex Round-7 P1-01: route storage-event admission through
+    // the strict `_admitExternalWrapper` helper. Rejected candidates
+    // (unsupported v0-v7, partial v13 missing required BHT/telemetry
+    // fields, malformed v14, future schema, versionless) install a
+    // truthful STORE_CORRUPT_AUTHORITATIVE_STATE blocker instead of
+    // being default-filled by migrateAndValidate and adopted.
+    const admit = _admitExternalWrapper(rawNow);
+    if (!admit.ok) {
+      setDurabilityBlocker(admit.blockerCode, {
+        where: onStorageEntryCollision ? 'onStorage-collision' : 'onStorage',
+        reason: admit.reason,
+        externalCollision: onStorageEntryCollision || undefined
+      });
+      return;
+    }
+    const parsed = admit.parsed;
     if (parsed.revision > knownRevision) {
-      adoptExternal(m.data, parsed, rawNow);
+      adoptExternal(admit.data, parsed, rawNow);
       return;
     }
     if (parsed.revision === knownRevision) {
@@ -1575,13 +3871,38 @@
       try { diskRaw = localStorage.getItem(STATE_KEY); } catch (err) { diskRaw = null; }
       if (diskRaw === baseWrapperRaw) return;
       if (diskRaw === null) { setDurabilityBlocker('STORE_STATE_CLEARED_EXTERNAL'); return; }
-      const dparsed = parseWrapperRaw(diskRaw);
-      if (!dparsed || dparsed.corrupt) { setDurabilityBlocker('STORE_CORRUPT_AUTHORITATIVE_STATE'); return; }
-      const dm = migrateAndValidate(dparsed);
-      if (!dm.ok) { setDurabilityBlocker('STORE_CORRUPT_AUTHORITATIVE_STATE'); return; }
+      // PRV-0.5 Round-9 P2-01: collision truth survives inner admission
+      // failure. Emit STORE_REVISION_COLLISION BEFORE strict admission
+      // whenever the disk raw parses cleanly to the same revision Store
+      // holds. Malformed/non-numeric revision falls through to strict
+      // admission and is treated as corruption, not as a fabricated
+      // collision — the §D amendment invariant.
+      let preEmitCollision = false;
+      try {
+        const preParse = parseWrapperRaw(diskRaw);
+        if (preParse && !preParse.corrupt
+            && typeof preParse.version === 'number' && Number.isFinite(preParse.version)
+            && isValidRevision(preParse.revision)
+            && preParse.revision === knownRevision) {
+          emitError({ code: 'STORE_REVISION_COLLISION', revision: preParse.revision });
+          preEmitCollision = true;
+        }
+      } catch (err) { /* defensive: collision detection must not throw */ }
+      const admit2 = _admitExternalWrapper(diskRaw);
+      if (!admit2.ok) {
+        setDurabilityBlocker(admit2.blockerCode, {
+          where: preEmitCollision ? 'onStorage-equal-rev-collision' : 'onStorage-equal-rev-reread',
+          reason: admit2.reason,
+          externalCollision: preEmitCollision || undefined
+        });
+        return;
+      }
+      const dparsed = admit2.parsed;
       if (dparsed.revision >= knownRevision) {
-        adoptExternal(dm.data, dparsed, diskRaw);
-        if (dparsed.revision === knownRevision) emitError({ code: 'STORE_REVISION_COLLISION', revision: dparsed.revision });
+        adoptExternal(admit2.data, dparsed, diskRaw);
+        if (dparsed.revision === knownRevision && !preEmitCollision) {
+          emitError({ code: 'STORE_REVISION_COLLISION', revision: dparsed.revision });
+        }
       } else {
         setDurabilityBlocker('STORE_REVISION_REGRESSION', { diskRevision: dparsed.revision, knownRevision });
       }
@@ -1591,10 +3912,56 @@
     setDurabilityBlocker('STORE_REVISION_REGRESSION', { diskRevision: parsed.revision, knownRevision });
   }
   function adoptExternal(data, parsed, rawWrapper) {
+    // PRV-0.5 Final Closure (INV-A, R7-P1-01): storage-event driven
+    // adoption of external bytes invalidates any transition auth
+    // bound to a different source generation.
+    if (_transitionAuth && _transitionAuth.sourceRawBytes !== rawWrapper) {
+      _consumeTransitionAuth();
+    }
     baseState      = data;
     knownRevision  = parsed.revision;
     committedAt    = parsed.committedAt;
     baseWrapperRaw = rawWrapper;
+    // PRV-0.5 Codex Round-7 P1-02: source-bound blocker truth after
+    // cross-tab recovery. When another tab writes a valid AUTHORITATIVE_MIGRATED
+    // wrapper (typically via Reset or a completed legacy conversion)
+    // and this tab adopts it via the storage-event path, any
+    // source-bound blocker THIS tab was carrying is resolved by the
+    // adoption because the source generation the blocker was bound to
+    // no longer exists on disk. Clear only source-bound blockers:
+    //   * STORE_CORRUPT_AUTHORITATIVE_STATE   — old bytes gone.
+    //   * STORE_STATE_CLEARED_EXTERNAL        — a valid wrapper is back.
+    //   * STORE_REVISION_REGRESSION           — disk moved forward.
+    //   * STORE_LEGACY_CONVERSION_PENDING     — cross-tab conversion won.
+    // Do NOT clear:
+    //   * STORE_FULL_STATE_POST_WRITE_UNCERTAIN — describes THIS tab's
+    //     uncertain write, not the source generation.
+    //   * STORE_REVISION_EXHAUSTED              — bound to accepted
+    //     monotonic baseline, not a source generation.
+    //   * STORE_ORDINARY_DURABLE_VERIFY_FAILED   — describes THIS tab's
+    //     ordinary CAS attempt.
+    //   * STORE_READ_FAILED                     — describes a read
+    //     failure event, not a source generation.
+    // Only fires when the newly adopted authority actually classifies
+    // as AUTHORITATIVE_MIGRATED (not VERIFIED_LEGACY_TRANSITION — a
+    // legacy source is a transition, not a settled resolution).
+    if (durabilityBlocker && parsed.version === SCHEMA_VERSION) {
+      const inner = evaluateCandidateData(data);
+      if (inner.classification === 'AUTHORITATIVE_MIGRATED') {
+        const bc = durabilityBlocker.code;
+        if (bc === 'STORE_CORRUPT_AUTHORITATIVE_STATE'
+            || bc === 'STORE_STATE_CLEARED_EXTERNAL'
+            || bc === 'STORE_REVISION_REGRESSION'
+            || bc === 'STORE_LEGACY_CONVERSION_PENDING') {
+          durabilityBlocker = null;
+          try {
+            if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+              window.dispatchEvent(new CustomEvent('lifeos:store-durability-cleared', { detail: { reason: 'external-adoption', priorBlocker: bc } }));
+            }
+          } catch (e) { /* ignore */ }
+        }
+      }
+    }
     clearTimeout(saveTimer); saveTimer = null;
     const r = strictReplay(baseState, pendingOps);
     if (r.conflict) {
@@ -1780,6 +4147,100 @@
     },
     normalizeLogbookDomain,
     validateData: validate,
+    // PRV-0.5 R4 (Codex Round-3 P1-A): expose the SAME wrapper-parse and
+    // revision-validity rules the Store applies. app.js hydration MUST use
+    // these to judge persisted-wrapper authority instead of hand-rolling
+    // a shallower validator. A wrapper the Store would reject at
+    // parseWrapperRaw/initialLoad must NEVER be trusted as authoritative
+    // by the migration fast path (Codex R3 defect: revision=-1 and
+    // version=13 with schema-14 inner data both fast-pathed as migrated).
+    parseWrapper: function (raw) {
+      return parseWrapperRaw(raw);
+    },
+    isValidRevision,
+    // PRV-0.5 R5 (ADR-015 addendum #4): the ONE Store-owned authority
+    // evaluator all consumers must route through. See the block-comment
+    // above evaluatePersistedAuthority in this file for the six-class
+    // contract and each consumer's decision rule.
+    evaluatePersistedAuthority: function (raw) { return evaluatePersistedAuthority(raw); },
+    evaluateCandidateWrapper: function (input) { return evaluateCandidateWrapper(input); },
+    evaluateCandidateData: function (data) { return evaluateCandidateData(data); },
+    validateLegacySourceRequiredFields: validateLegacySourceRequiredFields,
+    // PRV-0.5 Codex-final P1-04: expose the snapshot wrapper shape
+    // gate and the full snapshot validator so tests can adversarially
+    // assert v14 revision enforcement without relying on the internal
+    // restoreSnapshot side effects.
+    isValidSnapshotWrapperShape: isValidSnapshotWrapperShape,
+    validateSnapshotWrapperFull: validateSnapshotWrapperFull,
+    // PRV-0.5 Round-6 (Claude-authored): expose the v14 canonical
+    // full-state validator so production-path regression tests can
+    // assert missing-domain / missing-BHT-emitted-path / missing-
+    // telemetry-field rejection without duplicating the internal
+    // rule table.
+    validateFullStateCanonical: validateFullStateCanonical,
+    // PRV-0.5 Final Closure (INV-I): expose the version-indexed
+    // historical requirements matrix so tests / diagnostics can assert
+    // the exact per-version emission expectations without duplicating
+    // the table.
+    getHistoricalRequirements: getHistoricalRequirements,
+    // PRV-0.5 R6 (Codex Round-5 P1-1): read-only check whether Store
+    // currently holds the transient legacy-transition authority. Only
+    // hydration should honour a `VERIFIED_LEGACY_TRANSITION` seed when
+    // this returns true.
+    // PRV-0.5 R7: source-bound legacy-transition auth. Returns true
+    // only when an auth exists for the EXACT current disk raw bytes
+    // — not a boolean the Store flipped in the past.
+    canAuthoriseLegacySeed: function () { return canAuthoriseLegacySeedForCurrentDisk(); },
+    // PRV-0.5 R7 (Codex Round-6 P1-2, INV-2): issue a recovery auth
+    // for the current corrupt-disk source generation. Callers
+    // (restoreSnapshot / reset / processImport recovery path) invoke
+    // this before commitFullStateWrapper{recovery:true}. The auth
+    // binds to the exact corrupt raw bytes currently on disk. A stale
+    // auth (disk already recovered by another tab) fails the
+    // pre-commit source-identity check under the destructive lock.
+    prepareRecoveryAuth: function () { return _issueRecoveryAuthFromCurrentDisk(); },
+    // Read-only diagnostics for tests / UI.
+    _currentTransitionAuth: function () { return _transitionAuth ? Object.assign({}, _transitionAuth) : null; },
+    // Async completion handle for the most recent `reset()` call —
+    // resolves to the actual full-state commit result (P1-2 truthful
+    // async result).
+    _lastResetSettled: function () { return _lastResetSettled; },
+    // PRV-0.5 Final Closure (INV-H): enumerate every quarantine key
+    // currently in localStorage. Retention policy is "always keep
+    // once verified"; enumeration lets tests and diagnostics inspect
+    // accumulated recovery evidence. Order is browser-dependent
+    // (localStorage insertion), so consumers must not depend on
+    // ordering for identity checks — the caller filters by key
+    // suffix / getItem to select individual entries.
+    listQuarantineKeys: function () { return _listQuarantineKeys(); },
+    // PRV-0.5 Codex Round-6 P2-03: test-only fault switches are
+    // conditionally attached below. Production runtime (no
+    // `window.__LIFEOS_TEST_ENV__` marker) never sees these setters
+    // on `window.Store`, so an XSS payload, rogue extension, or an
+    // unrelated bug in another script cannot call
+    // `Store._testForceNoLock(true)` (which would disable the
+    // destructive Web Lock check) or
+    // `Store._testForcePostWriteEvalFailure(true)` (which would
+    // deterministically drive the post-write authority-classification
+    // failure branch). Playwright specs that exercise these branches
+    // set the marker via `page.addInitScript` BEFORE navigation, so
+    // Store observes the marker at construction time and attaches the
+    // setters. The setter names themselves remain unchanged so
+    // existing tests continue to work once the marker is set.
+    ...((typeof window !== 'undefined' && window.__LIFEOS_TEST_ENV__ === true) ? {
+      _testForceNoLock: function (flag) { _testForceNoLockFlag = flag === true; },
+      _testForcePostWriteEvalFailure: function (flag) { _testForcePostWriteEvalFailureFlag = flag === true; }
+    } : {}),
+    // Raised for tests / documentation of the canonical marker contract.
+    MARKER_STATUS: { MIGRATED: MARKER_STATUS_MIGRATED, UNMIGRATED: MARKER_STATUS_UNMIGRATED },
+    REQUIRED_RECORD_DOMAINS: REQUIRED_RECORD_DOMAINS.slice(),
+    isSupportedLegacySourceVersion,
+    // Read the Store's currently accepted disk revision (baseline for
+    // regression detection). Used by the hydration fast path to reject a
+    // persisted wrapper whose revision has regressed relative to what
+    // the Store already accepted — even if the wrapper's inner shape
+    // otherwise looks canonical.
+    currentKnownRevision: function () { return knownRevision; },
     snapshots: () => {
       try { return JSON.parse(localStorage.getItem(SNAPSHOTS_KEY) || '[]'); } catch (e) { return []; }
     },
@@ -1788,6 +4249,15 @@
     // fire the commit through the coordinator, settle on completion. The
     // returned boolean reports whether the transaction was accepted for
     // dispatch (mirrors legacy semantics); durability lands under the lock.
+    // PRV-0.5 R6 (Codex Round-5 P1-2): recovery-mode full-state commits
+    // for restoreSnapshot/reset. Both surface a `settled` promise so
+    // callers can `await` the actual asynchronous durable outcome — not
+    // just the dispatch acceptance the pre-R6 API returned. When boot
+    // detected corrupt authority, the recovery-mode commit quarantines
+    // the corrupt raw bytes and atomically replaces disk with the
+    // validated candidate; the durability blocker is cleared only after
+    // post-write evaluator verification. On failure, blocker + evidence
+    // stay intact and `settled` reports the exact error.
     restoreSnapshot: function (i, opts) {
       opts = opts || {};
       let snap;
@@ -1798,16 +4268,35 @@
       if (!snap) return { ok: false, error: 'SNAPSHOT_NOT_FOUND' };
       let parsed;
       try { parsed = JSON.parse(snap.payload); } catch (e) { return { ok: false, error: 'SNAPSHOT_SOURCE_WRAPPER_INVALID' }; }
-      // Full validation: wrapper structure AND data must pass the same
-      // gate the live Store applies. Rejection here means no state
-      // mutation, no full-state transaction opened, no new wrapper
-      // minted from bad source.
       const v = validateSnapshotWrapperFull(parsed);
-      if (!v.ok) return { ok: false, error: 'SNAPSHOT_SOURCE_WRAPPER_INVALID' };
+      if (!v.ok) return { ok: false, error: 'SNAPSHOT_SOURCE_WRAPPER_INVALID', reason: v.reason };
       const data = v.data;
+      // PRV-0.5 R6 (Codex Round-5 P1-2): snapshot restore is an
+      // approved recovery event by construction. The migrated
+      // candidate's marker MUST land as `status='migrated'` on disk so
+      // reload does not re-enter the recovery-required loop. A v13
+      // source's migrateUp-generated `unmigrated` marker is rewritten
+      // here to a canonical migrated marker with `reason='snapshot-
+      // restore'` — the user's explicit choice of THIS generation as
+      // authoritative supersedes further legacy seeding.
+      if (!data.meta || typeof data.meta !== 'object') data.meta = {};
+      data.meta.recordsMigration = {
+        status: MARKER_STATUS_MIGRATED,
+        schemaVersion: SCHEMA_VERSION,
+        reason: 'snapshot-restore'
+      };
+      // PRV-0.5 R7: issue a recovery auth for the current corrupt
+      // source generation (if any). Non-corrupt commits skip the
+      // recovery-auth path.
+      let restoreRecoveryMode = false;
+      if (durabilityBlocker) {
+        const authRes = _issueRecoveryAuthFromCurrentDisk();
+        if (!authRes.ok) return { ok: false, error: 'RESTORE_RECOVERY_AUTH_FAILED', reason: authRes.error };
+        restoreRecoveryMode = true;
+      }
       const gate = beginFullStateTransaction({ force: !!opts.force, reason: 'snapshot' });
       if (!gate.ok) return { ok: false, error: gate.error };
-      commitFullStateWrapper(gate.token, data, 'snapshot').then(res => {
+      const settled = commitFullStateWrapper(gate.token, data, 'snapshot', { recovery: restoreRecoveryMode }).then(res => {
         try {
           if (res && res.ok) {
             const frozen = deepFreezePersistable(clonePersistable(baseState));
@@ -1816,14 +4305,27 @@
             }
           }
         } finally { endFullStateTransaction(gate.token); }
-      }, () => { endFullStateTransaction(gate.token); });
-      return { ok: true };
+        return res;
+      }, (err) => { endFullStateTransaction(gate.token); return { ok: false, error: 'SNAPSHOT_COMMIT_REJECTED', detail: err && err.message }; });
+      return { ok: true, settled: settled };
     },
     reset: function (opts) {
       opts = opts || {};
+      // PRV-0.5 R7: if a corrupt-authority blocker is active, issue a
+      // recovery auth bound to the current corrupt source. Otherwise
+      // reset is a normal full-state commit.
+      let resetRecoveryMode = false;
+      if (durabilityBlocker) {
+        const authRes = _issueRecoveryAuthFromCurrentDisk();
+        if (!authRes.ok) {
+          _lastResetSettled = Promise.resolve({ ok: false, error: 'RESET_RECOVERY_AUTH_FAILED', reason: authRes.error });
+          return false;
+        }
+        resetRecoveryMode = true;
+      }
       const gate = beginFullStateTransaction({ force: !!opts.force, reason: 'reset' });
       if (!gate.ok) return false;
-      commitFullStateWrapper(gate.token, defaultState(), 'reset').then(res => {
+      const settled = commitFullStateWrapper(gate.token, defaultState(), 'reset', { recovery: resetRecoveryMode }).then(res => {
         try {
           if (res && res.ok) {
             const snap = deepFreezePersistable(clonePersistable(baseState));
@@ -1832,7 +4334,13 @@
             }
           }
         } finally { endFullStateTransaction(gate.token); }
-      }, () => { endFullStateTransaction(gate.token); });
+        return res;
+      }, (err) => { endFullStateTransaction(gate.token); return { ok: false, error: 'RESET_COMMIT_REJECTED', detail: err && err.message }; });
+      // Legacy return contract: reset() returned a boolean. Preserve
+      // that for callers that don't need to await, and attach settled
+      // as a static property so callers that DO need to await can pick
+      // it up via `Store._lastResetSettled`.
+      _lastResetSettled = settled;
       return true;
     },
     // Full-state transaction primitives — for import/snapshot/reset callers.

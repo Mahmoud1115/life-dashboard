@@ -604,6 +604,22 @@
 
       <div class="backup-divider"></div>
 
+      <!-- PRV-0.5 Final Closure (INV-K, R7-P2-02): recovery actions
+           the boot-recovery banner advertises must be VISIBLE,
+           keyboard-reachable, and confirmation-gated. -->
+      <div class="backup-section" id="recovery-section" data-testid="recovery-section">
+        <div class="backup-section-title">🛟 Recover from corrupt storage</div>
+        <p class="backup-hint" style="margin:6px 0 10px">Use these when a banner appears reporting invalid storage authority. Each action is confirmation-gated and reports its actual settled result — no silent success.</p>
+        <div class="backup-btns">
+          <button class="lb-btn lb-btn-view" id="recovery-restore-snapshot" data-testid="recovery-restore-snapshot" onclick="recoveryRestoreSnapshot()">💾 Restore latest snapshot</button>
+          <button class="lb-btn lb-btn-view" id="recovery-import-backup"    data-testid="recovery-import-backup"    onclick="triggerImportFile()">⬆ Import backup file</button>
+          <button class="lb-btn lb-btn-add"  id="recovery-reset-lifeos"     data-testid="recovery-reset-lifeos"     onclick="recoveryResetLifeOS()">♻ Reset LIFE OS</button>
+        </div>
+        <p class="backup-hint" style="margin-top:10px">Reset replaces your data with a fresh default. Snapshot restore rolls back to the most recent good state. Backup import replaces your data with the contents of the file you pick.</p>
+      </div>
+
+      <div class="backup-divider"></div>
+
       <div class="backup-section">
         <div class="backup-section-title">☁ GitHub Gist Sync</div>
         <div id="gist-token-section">
@@ -694,7 +710,30 @@
     }
     function paintBlocker(code) {
       if (!freeze || !freezeMsg) return;
-      freezeMsg.textContent = 'Saving is blocked (' + code + '). Please export a backup before making changes.';
+      // PRV-0.5 R6 (Codex Round-5 P2-2): recovery-required guidance
+      // replaces the old "export a backup" text — normal backup export
+      // is refused while authority is corrupt/stale. The user's safe
+      // actions are: restore a snapshot, import a valid backup, or
+      // reset. Recovery evidence (quarantine) is a separate export.
+      var isRecovery = code === 'STORE_CORRUPT_AUTHORITATIVE_STATE'
+                    || code === 'STORE_REVISION_REGRESSION'
+                    || code === 'STORE_STATE_CLEARED_EXTERNAL';
+      // PRV-0.5 Round-6 (Claude-authored, P2): post-write uncertainty
+      // is a distinct recovery state — the primary bytes may or may
+      // not have taken. Give the user truthful guidance: normal
+      // saving is blocked, no in-app repair is possible, and the
+      // three explicit recovery paths (Restore snapshot / Import
+      // backup / Reset LIFE OS) are the only safe next actions. All
+      // three controls are already keyboard-reachable in the
+      // recovery section (data-testid="recovery-section").
+      var isPostWriteUncertain = code === 'STORE_FULL_STATE_POST_WRITE_UNCERTAIN';
+      if (isRecovery) {
+        freezeMsg.textContent = 'Storage authority is invalid (' + code + '). Normal backup export is refused. Recover via Snapshot restore, Backup import, or Reset — open the Backup panel.';
+      } else if (isPostWriteUncertain) {
+        freezeMsg.textContent = 'Durable storage could not be verified after the last write (' + code + '). Normal saving is blocked. Recover via Restore latest snapshot, Import backup file, or Reset LIFE OS — open the Backup panel.';
+      } else {
+        freezeMsg.textContent = 'Saving is blocked (' + code + ').';
+      }
       freeze.hidden = false;
       freeze.setAttribute('aria-hidden', 'false');
     }
@@ -721,6 +760,18 @@
     }
     if (useThis)  useThis.addEventListener('click', function () { try { window.Store.resolveConflict('use-this-tab'); } catch (e) {} hideConflict(); });
     if (useSaved) useSaved.addEventListener('click', function () { try { window.Store.resolveConflict('use-saved-version'); } catch (e) {} hideConflict(); });
+    // PRV-0.5 R6 (Codex Round-5 P2-2): initial paint. If Store's
+    // initialLoad set a durability blocker at boot (e.g. corrupt raw
+    // disk detected before any listener was wired) the banner would
+    // otherwise stay hidden until the next event fires. Paint the
+    // current state on DOMContentLoaded so the user sees the recovery
+    // guidance immediately.
+    (function initialPaint() {
+      try {
+        var blocker = currentBlocker();
+        if (blocker) paintBlocker(blocker.code || 'STORE_DURABILITY_BLOCKED');
+      } catch (e) {}
+    })();
     window.addEventListener('lifeos:store-conflict',           function (e) { var p = (e && e.detail && e.detail.path) || ''; showConflict(p); });
     window.addEventListener('lifeos:store-conflict-resolved',  hideConflict);
     window.addEventListener('lifeos:store-freeze-begin',       function (e) { var r = (e && e.detail && e.detail.reason) || 'full-state'; repaintFreezeState(true, r); });
@@ -762,7 +813,8 @@
   </div>
 </nav>
 
-<script src="data.js?v=phase3h"></script>
+<script src="_migration-legacy-records.js?v=prv05"></script>
+<script src="data.js?v=prv05"></script>
 <script src="core.js?v=phase5d"></script>
 <script src="bht.js?v=phase4a"></script>
 <script src="app.js?v=gistsync1"></script>

@@ -40,7 +40,7 @@ test('T-two-page-A — unrelated paths merge; neither tab erases the other', asy
   await A.evaluate(() => window.Store.flushNow());
   await B.evaluate(() => window.Store.flushNow());
   const disk = await A.evaluate(() => JSON.parse(localStorage.getItem('dune_state_v4')));
-  expect(disk.version).toBe(13);
+  expect(disk.version).toBe(14);
   expect(disk.data.goals.__b0_tpA__).toBe('from-A');
   expect(disk.data.goals.__b0_tpB__).toBe('from-B');
   await A.close(); await B.close();

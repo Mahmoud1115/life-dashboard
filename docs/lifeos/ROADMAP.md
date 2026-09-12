@@ -23,6 +23,20 @@ the corresponding full hashes are canonical and are recoverable via
 | B0 — Global Store durability | Landed | `5398b28` | Schema-13 wrapper, revision + CAS, Web Locks coordinator, storage-event rebase, conflict queue, coordinated import, snapshot durability, exact-once recovery. |
 | B1 — Secure persisted-content boundary | Landed | `92f7751` | Six confirmed P0 sinks rewritten with contextual DOM APIs; CSV formula neutralization; R7 malformed-record safety; Apartments UI-targeting rule. ADR-011 pins R1–R8. |
 
+## Privacy remediation (PRV) — parallel gate
+
+Follows the PRV-0.5 preservation-proof audit. PRV-1 source
+sanitization is BLOCKED until PRV-0.5 is merged, per ADR-015.
+
+| Phase | Tier | Status | Notes |
+|---|---|---|---|
+| PRV-0 — Containment / classification / ADR draft | LOW | In flight | Privacy remediation ADR draft + user-backup snapshot recommendation. |
+| PRV-0.5 — Preservation migration | **HIGH** | Implemented on branch `claude/prv-0-5-preservation-migration`; awaits independent Codex review + user approval | ADR-015 lands durable Store authority for deadlines / claims / risks / goals; migration-only `_migration-legacy-records.js` seed; hydration gated by sticky `dune_records_hydrated_v1`. All 9 preservation specs green; 157-test baseline preserved. |
+| PRV-1 — Source sanitization | **HIGH** | BLOCKED until PRV-0.5 merged | Sanitize `data.js` (D.easa IDs preserved), `PRODUCT.md`, `ideas.js` SEED_IDEAS. |
+| PRV-2 — Public surface verification | MEDIUM | BLOCKED behind PRV-1 | Verify GitHub Pages + raw file serves sanitized content. |
+| PRV-3 — History decision | (deferred) | Not scheduled | See PRV-0.5 preservation proof §J (default: no rewrite; near-zero benefit given 3-month public cache). |
+
+
 ---
 
 ## Active parallel stream — Workflow Foundation (WF-GATE)

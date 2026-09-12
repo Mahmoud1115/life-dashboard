@@ -10,6 +10,449 @@ const LS = {
 };
 
 /* ═══════════════════════════════════════════
+   PRV-0.5 Round 2 — Preservation hydration (ADR-015 addendum #1).
+
+   Migration authority now lives INSIDE the coordinated wrapper as
+   `state.meta.recordsMigration = { status, at, ... }` (schema 14).
+   The previous out-of-band Gen-1 sticky flag `dune_records_hydrated_v1`
+   has been removed — it could survive a durability failure (flag set
+   in localStorage while records.* absent from the wrapper) and permanently
+   skip migration in later tabs.
+
+   Semantics after the schema bump:
+
+     - `defaultState()` (fresh browser + Reset) → status: 'migrated', records: {} (all empty).
+       Cold-boot fresh browsers and post-Reset states are already-migrated
+       with empty records; hydration is a no-op. Legacy personal records
+       CANNOT resurrect from Reset.
+
+     - `migrateUp` on a v13-or-earlier wrapper → status: 'unmigrated',
+       records: { …empty arrays }. Hydration in this file seeds records
+       from LEGACY_RECORDS (with per-id override merge from any surviving
+       Gen-1 keys) and, ONLY AFTER durable persistence is verified,
+       flips the marker to 'migrated'.
+
+     - Import of a pre-PRV backup via `processImport()` → the coordinated
+       transaction re-runs migrateUp on the imported wrapper, so the
+       committed state carries status='unmigrated'. Convergence to
+       `migrated` lands via the scheduled `location.reload()` at the
+       end of `processImport()`, which re-runs boot-time hydration
+       under the `lifeos-prv05-migrate` Web Lock. NOTE: production
+       `commitFullStateWrapper()` does NOT fire ordinary Store.onSave
+       listeners for the committed wrapper (only `restoreSnapshot()`
+       and `reset()` explicitly fan out onSave from a full-state
+       commit), so the reload — not an `onSave` re-invocation — is
+       the authoritative convergence path for import.
+
+   Durability contract:
+
+       enqueue records.* + meta.recordsMigration-intent
+             ↓
+       await onSave (the wrapper commit lands)
+             ↓
+       re-read dune_state_v4 from localStorage
+             ↓
+       verify all 4 domains are persisted AND status flipped to 'migrated'
+             ↓
+       report ok:true — otherwise the marker stays 'unmigrated' and
+       retry is possible on next boot / next onSave.
+
+   Concurrency: hydration serializes internally via `hydrationInFlight`
+   so a boot-time invocation and an onSave-triggered re-invocation
+   cannot race. Store's own Web-Locks coordinator serializes wrapper
+   commits across tabs.
+   ═══════════════════════════════════════════ */
+
+const MIGRATION_MIGRATED = 'migrated';
+const MIGRATION_UNMIGRATED = 'unmigrated';
+const PRV05_MIGRATE_LOCK = 'lifeos-prv05-migrate';
+
+// PRV-0.5 R5 (Codex Round-4 P1-1..P1-5 + P2): every authority decision
+// now routes through the ONE Store-owned evaluator
+// `Store.evaluatePersistedAuthority` (see core.js block comment above
+// `evaluatePersistedAuthority`). No app.js-local wrapper predicate
+// exists any more — Codex Round-4 traced the R4 defects to parallel
+// core.js and app.js predicates diverging under adversarial input, so
+// R5 removes the duplication.
+//
+// Thin authority-facade helpers preserved for tests that read them
+// directly (previously `window._readPersistedRecordsWrapper`,
+// `window._isSchema14CanonicalMigratedShape`,
+// `window._isSchema14CanonicalDestructiveShape`). All three now
+// delegate to the Store evaluator so their meaning cannot drift.
+function _readPersistedWrapper() {
+  const evalRes = (window.Store && typeof window.Store.evaluatePersistedAuthority === 'function')
+    ? window.Store.evaluatePersistedAuthority()
+    : { classification: 'ABSENT', data: null, wrapper: null };
+  if (evalRes.classification === 'ABSENT') return { ok: false, reason: 'absent', eval: evalRes };
+  if (!evalRes.canonical) return { ok: false, reason: evalRes.classification, eval: evalRes };
+  if (!evalRes.data || typeof evalRes.data !== 'object' || Array.isArray(evalRes.data)) {
+    return { ok: false, reason: 'data-shape-invalid', eval: evalRes };
+  }
+  return {
+    ok: true,
+    wrapper: evalRes.wrapper,
+    data: evalRes.data,
+    version: evalRes.wrapper && evalRes.wrapper.version,
+    revision: evalRes.wrapper && evalRes.wrapper.revision,
+    eval: evalRes
+  };
+}
+// PRV-0.5 R5: schema-14 canonical shape check delegates to Store's
+// evaluateCandidateData. Retained for test-harness visibility only.
+function isSchema14CanonicalMigratedShape(data) {
+  if (!(window.Store && typeof window.Store.evaluateCandidateData === 'function')) return false;
+  const inner = window.Store.evaluateCandidateData(data);
+  return inner.canonical && inner.classification === 'AUTHORITATIVE_MIGRATED';
+}
+// PRV-0.5 R5: destructive-boundary canonical check now accepts either
+// AUTHORITATIVE_MIGRATED or VERIFIED_LEGACY_TRANSITION (the two
+// canonical schema-14 candidate classes). MALFORMED_CURRENT_SCHEMA is
+// rejected — that includes the R3-style missing/bogus marker, missing
+// records, missing domain, and R5-style unmigrated-without-provenance
+// or wrong marker.schemaVersion.
+function isSchema14CanonicalDestructiveShape(data) {
+  if (!(window.Store && typeof window.Store.evaluateCandidateData === 'function')) return false;
+  const inner = window.Store.evaluateCandidateData(data);
+  return inner.canonical && (
+    inner.classification === 'AUTHORITATIVE_MIGRATED' ||
+    inner.classification === 'VERIFIED_LEGACY_TRANSITION'
+  );
+}
+window._isSchema14CanonicalMigratedShape = isSchema14CanonicalMigratedShape;
+window._isSchema14CanonicalDestructiveShape = isSchema14CanonicalDestructiveShape;
+window._readPersistedRecordsWrapper = _readPersistedWrapper;
+
+function _buildHydratedRecords(seed, goalsOv, claimsOv) {
+  return {
+    deadlines: Array.isArray(seed.deadlines) ? seed.deadlines.map(o => Object.assign({}, o)) : [],
+    claims: Array.isArray(seed.claims) ? seed.claims.map(c => {
+      const o = (c && c.id && claimsOv[c.id]) || {};
+      return Object.assign({}, c, {
+        confidence: o.confidence || c.confidence,
+        lastChecked: o.lastChecked || c.lastChecked
+      });
+    }) : [],
+    risks: Array.isArray(seed.risks) ? seed.risks.map(r => Object.assign({}, r, {
+      score: (Number(r && r.prob) || 0) * (Number(r && r.impact) || 0)
+    })) : [],
+    goals: Array.isArray(seed.goals) ? seed.goals.map(g => {
+      const o = (g && g.id && goalsOv[g.id]) || {};
+      const pct = (typeof o.progress === 'number') ? o.progress : g.progress;
+      const status = o.status || g.status;
+      return Object.assign({}, g, { progress: pct, status: status });
+    }) : []
+  };
+}
+
+let _hydrationInFlight = null;
+
+async function hydratePreservationRecordsOnce() {
+  if (_hydrationInFlight) return _hydrationInFlight;
+  _hydrationInFlight = (async () => {
+    try { return await _hydratePreservationRecordsOnceImpl(); }
+    finally { _hydrationInFlight = null; }
+  })();
+  return _hydrationInFlight;
+}
+
+async function _hydratePreservationRecordsOnceImpl() {
+  if (!window.Store || typeof window.Store.get !== 'function' || typeof window.Store.set !== 'function' || typeof window.Store.onSave !== 'function') {
+    return { ok: false, reason: 'no-store' };
+  }
+  if (!window.LEGACY_RECORDS) return { ok: false, reason: 'no-seed' };
+
+  // PRV-0.5 R3: serialize hydration across tabs via Web Locks so two
+  // tabs booting the same v13 wrapper simultaneously cannot both
+  // enqueue distinct-timestamp marker ops and leave the losing tab
+  // conflict-blocked (Codex P1-3). Falls back to same-tab-only
+  // dedupe (`_hydrationInFlight`) when navigator.locks is absent.
+  if (typeof navigator !== 'undefined' && navigator.locks && typeof navigator.locks.request === 'function') {
+    return await navigator.locks.request(PRV05_MIGRATE_LOCK, { mode: 'exclusive' }, async () => {
+      return await _hydrateUnderLock();
+    });
+  }
+  return await _hydrateUnderLock();
+}
+
+async function _hydrateUnderLock() {
+  const domains = ['deadlines', 'claims', 'risks', 'goals'];
+  if (!(window.Store && typeof window.Store.evaluatePersistedAuthority === 'function')) {
+    return { ok: false, reason: 'no-store-evaluator' };
+  }
+
+  // PRV-0.5 R6 (Codex Round-5 P1-4): the classification switch below is
+  // exhaustive — every evaluator classification has exactly one action,
+  // and there is NO fallthrough to legacy seeding. The final `default`
+  // branch fails closed. Combined with R6's evaluator changes:
+  //   - AUTHORITATIVE_MIGRATED with divergent bytes / blocker /
+  //     higher-revision mismatch is DEMOTED at the evaluator to
+  //     CORRUPT_STALE_COLLIDING, so it never reaches hydration with
+  //     `acceptFastPathMigrated:false`.
+  //   - VERIFIED_LEGACY_TRANSITION on a schema-14 raw wrapper is
+  //     DEMOTED at the evaluator to MALFORMED_CURRENT_SCHEMA unless
+  //     Store.canAuthoriseLegacySeed() is true. Marker text alone
+  //     cannot self-authorise seeding.
+  // Legacy seeding is therefore reachable from exactly ONE code path:
+  // classification === VERIFIED_LEGACY_TRANSITION AND
+  // Store.canAuthoriseLegacySeed() === true.
+  const persistedEval = window.Store.evaluatePersistedAuthority();
+
+  const classification = persistedEval.classification;
+
+  // 1. AUTHORITATIVE_MIGRATED — normal fast-path skip on accept.
+  if (classification === 'AUTHORITATIVE_MIGRATED') {
+    if (persistedEval.acceptFastPathMigrated === true) {
+      try {
+        const diskRecs = persistedEval.data && persistedEval.data.records;
+        for (const d of domains) {
+          const arr = diskRecs && diskRecs[d];
+          if (Array.isArray(arr)) window.Store.set('records.' + d, arr);
+        }
+        if (persistedEval.marker) window.Store.set('meta.recordsMigration', persistedEval.marker);
+      } catch (e) { /* best-effort reconcile */ }
+      return { ok: true, skipped: 'already-migrated', marker: persistedEval.marker, classification: classification };
+    }
+    // Defensive: with R6 evaluator changes this branch is unreachable
+    // (evaluator demotes to CORRUPT_STALE_COLLIDING). Kept as a
+    // fail-closed handler so an exhaustive switch cannot fall through
+    // to legacy seed on a future evaluator refactor.
+    return {
+      ok: false,
+      reason: 'recovery-required',
+      classification: classification,
+      subclassification: 'AUTHORITATIVE_MIGRATED_NOT_ACCEPTED',
+      blocker: persistedEval.blocker || null,
+      evalReasons: persistedEval.reasons
+    };
+  }
+
+  // 2. VERIFIED_LEGACY_TRANSITION — the ONLY legacy-seed-authorising
+  // classification. Requires BOTH the evaluator's `seedLegacy:true`
+  // (no blocker) AND Store.canAuthoriseLegacySeed() (transaction-scoped
+  // legacy-transition capability observed this boot).
+  if (classification === 'VERIFIED_LEGACY_TRANSITION') {
+    // PRV-0.5 Pre-Push Amendment §2 (atomic legacy conversion):
+    // STORE_LEGACY_CONVERSION_PENDING is the EXPECTED blocker
+    // when a legacy raw is on disk at boot — atomic conversion
+    // is precisely what clears it. Any OTHER blocker still gates.
+    const blk = persistedEval.blocker;
+    const blockerIsLegacyPending = blk && blk.code === 'STORE_LEGACY_CONVERSION_PENDING';
+    if (!blockerIsLegacyPending && persistedEval.seedLegacy !== true) {
+      return {
+        ok: false,
+        reason: 'recovery-required',
+        classification: classification,
+        blocker: blk || null
+      };
+    }
+    if (typeof window.Store.canAuthoriseLegacySeed === 'function'
+        && !window.Store.canAuthoriseLegacySeed()) {
+      return {
+        ok: false,
+        reason: 'recovery-required',
+        classification: classification,
+        subclassification: 'LEGACY_SEED_NOT_AUTHORISED_BY_STORE'
+      };
+    }
+    // Fall through to the seed block below.
+  }
+  // 3. ABSENT — fresh cold boot. In-memory defaultState is
+  //    AUTHORITATIVE_MIGRATED. No seed. If in-memory somehow shows a
+  //    canonical unmigrated shape (v13 wrapper migrated up in memory
+  //    but not yet committed to disk), authorise seeding ONLY when
+  //    Store.canAuthoriseLegacySeed() is true.
+  else if (classification === 'ABSENT') {
+    try {
+      const inMemMarker = window.Store.get('meta.recordsMigration');
+      const inMemData = {
+        meta: { recordsMigration: inMemMarker },
+        records: {
+          deadlines: window.Store.get('records.deadlines'),
+          claims: window.Store.get('records.claims'),
+          risks: window.Store.get('records.risks'),
+          goals: window.Store.get('records.goals')
+        }
+      };
+      const inMemEval = window.Store.evaluateCandidateData(inMemData);
+      if (inMemEval.canonical && inMemEval.classification === 'AUTHORITATIVE_MIGRATED') {
+        return { ok: true, skipped: 'default-state-migrated', marker: inMemMarker, classification: 'AUTHORITATIVE_MIGRATED' };
+      }
+      if (inMemEval.canonical && inMemEval.classification === 'VERIFIED_LEGACY_TRANSITION'
+          && typeof window.Store.canAuthoriseLegacySeed === 'function'
+          && window.Store.canAuthoriseLegacySeed()) {
+        // Fall through to the seed block below.
+      } else {
+        return {
+          ok: false, reason: 'recovery-required', classification: 'ABSENT',
+          inMemClassification: inMemEval.classification
+        };
+      }
+    } catch (e) {
+      return { ok: false, reason: 'recovery-required', classification: 'ABSENT', error: String(e) };
+    }
+  }
+  // 4. READ_FAILED — durable primary read threw. Never treat as
+  //    a fresh cold boot; do not seed defaults; require recovery.
+  //    PRV-0.5 Round-10 (Codex Round-9 P2-01): the evaluator surfaces
+  //    the throw distinctly from ABSENT, and hydration must fail
+  //    closed with the READ_FAILED classification carried through.
+  else if (classification === 'READ_FAILED') {
+    return {
+      ok: false,
+      reason: 'recovery-required',
+      classification: 'READ_FAILED',
+      blocker: persistedEval.blocker || null,
+      readError: persistedEval.readError || null,
+      evalReasons: persistedEval.reasons
+    };
+  }
+  // 5. Recovery-required states — MALFORMED / CORRUPT / FUTURE /
+  //    WRAPPER_VERSION_ABSENT / LEGACY_SOURCE_INVALID.
+  else if (classification === 'MALFORMED_CURRENT_SCHEMA'
+        || classification === 'CORRUPT_STALE_COLLIDING'
+        || classification === 'UNSUPPORTED_FUTURE_SCHEMA'
+        || classification === 'WRAPPER_VERSION_ABSENT'
+        || classification === 'LEGACY_SOURCE_INVALID') {
+    return {
+      ok: false,
+      reason: 'recovery-required',
+      classification: classification,
+      blocker: persistedEval.blocker || null,
+      evalReasons: persistedEval.reasons
+    };
+  }
+  // 6. Unknown classification — fail closed.
+  else {
+    return {
+      ok: false, reason: 'recovery-required', classification: classification || 'UNKNOWN',
+      evalReasons: persistedEval.reasons
+    };
+  }
+
+  // ── Atomic legacy conversion ──────────────────────────────────
+  // PRV-0.5 Pre-Push Amendment (Stage-1 amendment §2 / BINDING-1..3):
+  // supported legacy conversion is now a SINGLE full-state
+  // transaction. Ordinary Store writes are frozen for the duration.
+  // Inside the coordinator lock: reread source, verify identity,
+  // migrate in memory, validate current, single write, durable
+  // reread, verify authority. There is no "durable current-schema
+  // unmigrated + ordinary writes enabled" intermediate state and no
+  // rebind architecture.
+  let goalsOv = {};
+  try { const v = localStorage.getItem('dune_goals_v1'); if (v) goalsOv = JSON.parse(v) || {}; } catch (e) {}
+  let claimsOv = {};
+  try { const v = localStorage.getItem('dune_claims_v1'); if (v) claimsOv = JSON.parse(v) || {}; } catch (e) {}
+  if (!window.LEGACY_RECORDS) return { ok: false, reason: 'no-seed' };
+  const legacySeed = _buildHydratedRecords(window.LEGACY_RECORDS, goalsOv, claimsOv);
+
+  // Snapshot the in-memory state Store already migrated from the
+  // legacy source. This is byte-derived from the same raw source the
+  // Store observed at initialLoad; the coordinator lock inside
+  // commitFullStateWrapper rereads the disk raw and enforces
+  // source-identity match against the legacy auth's sourceRawBytes.
+  const inMemAll = window.Store.get() || {};
+  const candidate = Object.assign({}, inMemAll);
+  candidate.records = { deadlines: null, claims: null, risks: null, goals: null };
+  for (const d of domains) {
+    const cur = inMemAll.records && inMemAll.records[d];
+    candidate.records[d] = (Array.isArray(cur) && cur.length > 0) ? cur : legacySeed[d];
+  }
+  candidate.meta = Object.assign({}, inMemAll.meta || {});
+  candidate.meta.recordsMigration = {
+    status: MIGRATION_MIGRATED,
+    schemaVersion: window.Store.SCHEMA_VERSION,
+    reason: 'atomic-legacy-conversion'
+  };
+
+  const gate = window.Store.beginFullStateTransaction({ force: true, reason: 'legacy-conversion' });
+  if (!gate || !gate.ok) {
+    return { ok: false, reason: 'freeze-refused', error: gate && gate.error };
+  }
+  const token = gate.token;
+  let commitRes;
+  try {
+    commitRes = await window.Store.commitFullStateWrapper(token, candidate, 'legacy-conversion', { legacyConversion: true });
+  } finally {
+    try { window.Store.endFullStateTransaction(token); } catch (e) {}
+  }
+  if (!commitRes || !commitRes.ok) {
+    // Map commit-level error codes to the outer reason strings that
+    // existing PRV tests (R2/R3) assert against, while preserving
+    // the underlying error/classification for diagnostics.
+    const err = commitRes && commitRes.error;
+    let mappedReason = 'atomic-conversion-failed';
+    if (err === 'STORE_QUOTA') mappedReason = 'set-failed';
+    else if (err === 'FULL_STATE_DURABLE_VERIFY_FAILED'
+          || err === 'FULL_STATE_POST_WRITE_VERIFICATION_FAILED'
+          || err === 'STORE_ORDINARY_DURABLE_VERIFY_FAILED')
+      mappedReason = 'durability-verification-failed';
+    return {
+      ok: false,
+      reason: mappedReason,
+      error: err,
+      detail: commitRes && (commitRes.reason || commitRes.classification) || null
+    };
+  }
+  // Post-commit sanity: persisted authority now classifies as
+  // AUTHORITATIVE_MIGRATED. commitFullStateWrapper already asserted
+  // this via its post-write reread; re-checking here is
+  // belt-and-suspenders for the outer caller's contract.
+  const verifiedEval = window.Store.evaluatePersistedAuthority();
+  if (verifiedEval.classification !== 'AUTHORITATIVE_MIGRATED') {
+    return {
+      ok: false,
+      reason: 'durability-verification-failed',
+      persisted: {
+        classification: verifiedEval.classification,
+        marker: verifiedEval.marker || null,
+        wrapperVersion: verifiedEval.wrapper && verifiedEval.wrapper.version,
+        reasons: verifiedEval.reasons
+      }
+    };
+  }
+  return {
+    ok: true,
+    hydrated: true,
+    persistedVersion: verifiedEval.wrapper && verifiedEval.wrapper.version,
+    committedAt: verifiedEval.wrapper && verifiedEval.wrapper.committedAt
+  };
+}
+
+window.hydratePreservationRecordsOnce = hydratePreservationRecordsOnce;
+
+// Boot invocation + import/reset-aware re-invocation.
+// Register the onSave listener BEFORE the first invocation so we cannot
+// miss a save that flips status to 'unmigrated' during import.
+//
+// Tests that inject Store.set / durability failures can suspend the
+// auto-retry to prevent races with their own hydration invocations by
+// setting `window.__prv05HydrationAutoRetryEnabled = false`. Production
+// runs never touch this global; the default `undefined !== false` keeps
+// the listener enabled.
+if (window.Store && typeof window.Store.onSave === 'function') {
+  window.Store.onSave((snap) => {
+    try {
+      if (window.__prv05HydrationAutoRetryEnabled === false) return;
+      const m = snap && snap.meta && snap.meta.recordsMigration;
+      if (m && m.status === MIGRATION_UNMIGRATED) {
+        // Fire-and-forget; hydration is self-serializing via _hydrationInFlight.
+        hydratePreservationRecordsOnce().catch(() => {});
+      }
+    } catch (e) { /* onSave listeners must not throw */ }
+  });
+  // PRV-0.5 R6: tests that install Store.set / durability injections
+  // BEFORE boot-time hydration runs can suppress the automatic boot
+  // invocation by setting `window.__prv05DisableBootHydration = true`
+  // in an `addInitScript`. Production runs never touch this global.
+  if (window.__prv05DisableBootHydration !== true) {
+    hydratePreservationRecordsOnce().catch((e) => {
+      try { console.warn('[PRV-0.5 R2 hydrate] boot init exception', e); } catch (_) {}
+    });
+  }
+}
+
+/* ═══════════════════════════════════════════
    LOGBOOK — Phase A canonical mirror (see docs/lifeos/ARCHITECTURE.md)
    Legacy Tracker (dune_logbook_v1) + Builder (dune_logbook_entries_v1)
    remain authoritative. This module reconciles both into the versioned
@@ -940,15 +1383,26 @@ if(window.Store){
    PROGRESS TRACKER
    ═══════════════════════════════════════════ */
 (function(){
-  const STORE='dune_goals_v1';
+  // PRV-0.5: goals identity + per-user state now live under Store path
+  // `records.goals` (ADR-015). The legacy per-id override key
+  // `dune_goals_v1` is no longer written — hydration merged any prior
+  // overrides into records.goals exactly once, then the flag is set.
   let curFilter='all';
-  function getStored(){return LS.get(STORE,{});}
   function saveGoal(id,pct,status){
-    const d=getStored();
-    if(!d[id]) d[id]={};
-    if(pct!==undefined) d[id].progress=pct;
-    if(status!==undefined) d[id].status=status;
-    LS.set(STORE,d);
+    if(!window.Store || typeof window.Store.get!=='function' || typeof window.Store.set!=='function') return;
+    const cur = window.Store.get('records.goals');
+    if(!Array.isArray(cur)) return;
+    let mutated = false;
+    const next = cur.map(g => {
+      if(!g || g.id !== id) return g;
+      mutated = true;
+      const patch = {};
+      if(pct !== undefined) patch.progress = pct;
+      if(status !== undefined) patch.status = status;
+      return Object.assign({}, g, patch);
+    });
+    if(!mutated) return;
+    window.Store.set('records.goals', next);
   }
   function statusLabel(s){
     return {active:'Active',planned:'Planned',done:'Done',blocked:'Blocked'}[s]||s;
@@ -979,15 +1433,16 @@ if(window.Store){
   }
   function renderGoals(filter){
     curFilter=filter||curFilter;
-    const stored=getStored();
     const container=document.getElementById('goals-list');
     if(!container) return;
+    // PRV-0.5: goals authority is Store `records.goals`; D.goals is a
+    // read-only accessor that proxies to Store. No per-id override
+    // merge (removed with dune_goals_v1 writer).
     const filtered=D.goals.filter(g=>curFilter==='all'||g.cat===curFilter);
     const liveBlock=(curFilter==='all'||curFilter==='finance')?liveGoalsHTML():'';
     container.innerHTML=liveBlock+filtered.map(g=>{
-      const s=stored[g.id]||{};
-      const pct=s.progress!==undefined?s.progress:g.progress;
-      const status=s.status||g.status;
+      const pct=g.progress;
+      const status=g.status;
       const dotClass={active:'gs-active',planned:'gs-planned',done:'gs-done',blocked:'gs-blocked'}[status]||'gs-planned';
       const deadlineStr=g.deadline?'Due: '+g.deadline:'No fixed deadline';
       const catClass='gt-'+g.cat;
@@ -1589,14 +2044,15 @@ function renderATACoverage(entries){
     clFilter=filter||clFilter;
     const container=document.getElementById('claims-list');
     if(!container) return;
-    const stored=LS.get('dune_claims_v1',{});
+    // PRV-0.5: claims authority is Store `records.claims`; D.claims is
+    // a read-only accessor that proxies to Store. No per-id override
+    // merge (removed with dune_claims_v1 writer).
     let items=D.claims;
     if(clFilter!=='all') items=items.filter(c=>c.cat===clFilter||c.confidence===clFilter);
     container.innerHTML=items.map(c=>{
-      const s=stored[c.id]||{};
-      const conf=s.confidence||c.confidence;
+      const conf=c.confidence;
       const isPrivate=c.private?' data-private="true"':'';
-      const lastCheck=s.lastChecked||c.lastChecked;
+      const lastCheck=c.lastChecked;
       return '<div class="claim-card conf-'+conf+'"'+isPrivate+'>'+
         '<div class="claim-header">'+
           '<span class="claim-conf-badge">'+conf+'</span>'+
@@ -1625,18 +2081,26 @@ function renderATACoverage(entries){
     if(btn) btn.classList.add('active');
     renderClaims(f);
   };
+  // PRV-0.5: claim writers go to Store `records.claims` (ADR-015).
+  function patchClaim(id, patch){
+    if(!window.Store || typeof window.Store.get!=='function' || typeof window.Store.set!=='function') return;
+    const cur = window.Store.get('records.claims');
+    if(!Array.isArray(cur)) return;
+    let mutated = false;
+    const next = cur.map(c => {
+      if(!c || c.id !== id) return c;
+      mutated = true;
+      return Object.assign({}, c, patch);
+    });
+    if(!mutated) return;
+    window.Store.set('records.claims', next);
+  }
   window.updateClaimConf=function(id,conf){
-    const d=LS.get('dune_claims_v1',{});
-    if(!d[id])d[id]={};
-    d[id].confidence=conf;
-    LS.set('dune_claims_v1',d);
+    patchClaim(id, { confidence: conf });
     renderClaims();
   };
   window.markClaimChecked=function(id){
-    const d=LS.get('dune_claims_v1',{});
-    if(!d[id])d[id]={};
-    d[id].lastChecked=new Date().toISOString().split('T')[0];
-    LS.set('dune_claims_v1',d);
+    patchClaim(id, { lastChecked: new Date().toISOString().split('T')[0] });
     renderClaims();
   };
   document.addEventListener('DOMContentLoaded',()=>renderClaims());
@@ -1727,6 +2191,52 @@ function getAllBackupData(){
   });
   return out;
 }
+// PRV-0.5 R5 (Codex Round-4 P1-4): normal backup MUST NOT export a
+// primary wrapper whose Store-owned authority is invalid (corrupt /
+// stale / malformed / future / active durability blocker). Returns
+// { acceptForBackup, classification, blocker, reasons } derived from
+// Store.evaluatePersistedAuthority — the SAME evaluator hydration and
+// import consult. A refused export can be captured as recovery
+// evidence via exportRecoveryEvidence(); it is never packaged as a
+// normal restorable backup.
+function evaluateBackupAuthority(){
+  if(!(window.Store && typeof window.Store.evaluatePersistedAuthority === 'function')){
+    return { acceptForBackup: false, classification: 'STORE_UNAVAILABLE', blocker: null, reasons: ['no-evaluator'] };
+  }
+  const ev = window.Store.evaluatePersistedAuthority();
+  return {
+    acceptForBackup: ev.acceptForBackup === true,
+    classification: ev.classification,
+    blocker: ev.blocker || null,
+    reasons: ev.reasons || []
+  };
+}
+window._evaluateBackupAuthority = evaluateBackupAuthority;
+// PRV-0.5 R5: quarantine export path. A wrapper whose authority is
+// invalid is preserved as evidence but is NEVER labelled as a normal
+// backup. The quarantine envelope carries an explicit `quarantined:true`
+// marker and cannot be imported by processImport (which routes through
+// evaluateCandidateWrapper and refuses non-canonical schema-14).
+function buildQuarantineEnvelope(reason){
+  const data = getAllBackupData();
+  return {
+    version: '2026.1-quarantine',
+    exported_at: new Date().toISOString(),
+    quarantined: true,
+    reason: reason || 'invalid-authority',
+    data
+  };
+}
+window.exportRecoveryEvidence = function(){
+  const auth = evaluateBackupAuthority();
+  const envelope = buildQuarantineEnvelope(auth.classification);
+  const blob = new Blob([JSON.stringify(envelope,null,2)],{type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'dune-recovery-evidence-'+new Date().toISOString().slice(0,10)+'.json';
+  a.click(); URL.revokeObjectURL(url);
+  showBackupToast('⚠ Recovery evidence exported (NOT a normal backup)');
+};
 function bumpChangeCount(){
   const c=(parseInt(localStorage.getItem('dune_change_count_v1')||'0'))+1;
   localStorage.setItem('dune_change_count_v1',c);
@@ -1774,6 +2284,15 @@ window.closeBackupPanel=function(){
   if(panel) panel.style.display='none';
 };
 window.exportBackup=function(){
+  // PRV-0.5 R5 (Codex Round-4 P1-4): refuse to export an invalid
+  // primary authority. Use exportRecoveryEvidence() when the user
+  // deliberately wants to capture the invalid wrapper as evidence for
+  // recovery workflows.
+  const auth=evaluateBackupAuthority();
+  if(!auth.acceptForBackup){
+    showBackupToast('⚠ Cannot export backup — primary storage is not authoritative ('+auth.classification+'). Use recovery evidence export.');
+    return;
+  }
   const data=getAllBackupData();
   const backup={version:'2026.1',exported_at:new Date().toISOString(),data};
   const blob=new Blob([JSON.stringify(backup,null,2)],{type:'application/json'});
@@ -1789,6 +2308,11 @@ window.exportBackup=function(){
   showBackupToast('✓ Backup downloaded');
 };
 window.copyBackupToClipboard=async function(){
+  const auth=evaluateBackupAuthority();
+  if(!auth.acceptForBackup){
+    showBackupToast('⚠ Cannot copy backup — primary storage is not authoritative ('+auth.classification+').');
+    return;
+  }
   const data=getAllBackupData();
   const json=JSON.stringify({version:'2026.1',exported_at:new Date().toISOString(),data},null,2);
   try{
@@ -1806,6 +2330,63 @@ window.importFromClipboard=async function(){
 };
 window.triggerImportFile=function(){
   document.getElementById('backup-file-input').click();
+};
+
+// PRV-0.5 Final Closure (INV-K, R7-P2-02): visible, keyboard-
+// reachable, confirmation-gated recovery actions. Both handlers
+// route through the Store's settled-promise APIs and surface the
+// TRUTHFUL result via showBackupToast (no silent success).
+window.recoveryRestoreSnapshot=async function(){
+  if(!window.Store||typeof window.Store.restoreSnapshot!=='function'){
+    showBackupToast('⚠ Snapshot restore unavailable');return false;
+  }
+  const snaps=(typeof window.Store.snapshots==='function')?window.Store.snapshots():[];
+  if(!snaps||snaps.length===0){
+    showBackupToast('⚠ No snapshot to restore');return false;
+  }
+  const confirmed=confirm('Restore the latest snapshot?\n\nThis replaces your current data with the most recent good save. Your current data is not preserved automatically — export a backup first if you need it.');
+  if(!confirmed) return false;
+  const disp=window.Store.restoreSnapshot(0,{force:true});
+  if(!disp||!disp.ok){
+    showBackupToast('⚠ Snapshot restore rejected: '+((disp&&disp.error)||'unknown'));
+    return false;
+  }
+  try{
+    const settled=await disp.settled;
+    if(settled&&settled.ok){
+      showBackupToast('✓ Snapshot restored (revision '+settled.revision+')');
+      return true;
+    }
+    showBackupToast('⚠ Snapshot restore failed: '+((settled&&settled.error)||'unknown'));
+    return false;
+  }catch(e){
+    showBackupToast('⚠ Snapshot restore threw: '+(e&&e.message||'unknown'));
+    return false;
+  }
+};
+window.recoveryResetLifeOS=async function(){
+  if(!window.Store||typeof window.Store.reset!=='function'){
+    showBackupToast('⚠ Reset unavailable');return false;
+  }
+  const confirmed=confirm('Reset LIFE OS?\n\nThis replaces all your data with a fresh default and cannot be undone. Export a backup first if you might want any of your current data back.');
+  if(!confirmed) return false;
+  const dispatched=window.Store.reset({force:true});
+  if(!dispatched){
+    showBackupToast('⚠ Reset dispatch rejected');
+    return false;
+  }
+  try{
+    const settled=(typeof window.Store._lastResetSettled==='function')?await window.Store._lastResetSettled():null;
+    if(settled&&settled.ok){
+      showBackupToast('✓ LIFE OS reset (revision '+settled.revision+')');
+      return true;
+    }
+    showBackupToast('⚠ Reset failed: '+((settled&&settled.error)||'unknown'));
+    return false;
+  }catch(e){
+    showBackupToast('⚠ Reset threw: '+(e&&e.message||'unknown'));
+    return false;
+  }
 };
 window.handleImportFile=function(input){
   const file=input.files[0];
@@ -1952,33 +2533,107 @@ async function processImport(text,options){
         }
       }
 
-      // 2. Derive candidate data. Legacy-only backups (no dune_state_v4) use
-      //    the pure Store.deriveStateFromLegacy(reader) reading ONLY from the
-      //    just-staged auxiliary keys.
+      // 2. Derive candidate data. PRV-0.5 R5 (Codex Round-4): route the
+      //    ENTIRE source-wrapper authority decision through
+      //    Store.evaluateCandidateWrapper — single source of truth. It
+      //    rejects future versions (P1-5), invalid revisions, and any
+      //    schema-14 wrapper whose canonical marker/records shape or
+      //    provenance is malformed (P1-1, P1-B, P2). Legacy-only
+      //    backups (no dune_state_v4) still derive from staged
+      //    auxiliary keys.
       let candidate;
+      let importedFromLegacySource=false;
+      let sourceWrapperVersion=null;
       if(STATE_KEY_NAME in backup.data){
         const wrapperOrBare=backup.data[STATE_KEY_NAME];
-        // Reject malformed schema-13 source wrappers up front.
-        if(wrapperOrBare && typeof wrapperOrBare === 'object' && wrapperOrBare.version === 13){
-          const rev=wrapperOrBare.revision;
-          if(!(typeof rev==='number' && Number.isFinite(rev) && Number.isInteger(rev) && rev>=0 && rev<=Number.MAX_SAFE_INTEGER)){
-            throw new Error('IMPORT_SOURCE_WRAPPER_INVALID_REVISION');
-          }
+        const srcEval=window.Store.evaluateCandidateWrapper(wrapperOrBare);
+        if(srcEval.classification==='UNSUPPORTED_FUTURE_SCHEMA'){
+          throw new Error('IMPORT_UNSUPPORTED_FUTURE_SCHEMA');
         }
-        const ver=(wrapperOrBare&&typeof wrapperOrBare.version==='number')?wrapperOrBare.version:0;
-        const rawData=(wrapperOrBare&&'data' in wrapperOrBare)?wrapperOrBare.data:wrapperOrBare;
-        candidate=window.Store.migrateData(rawData,ver);
+        if(srcEval.classification==='CORRUPT_STALE_COLLIDING'){
+          throw new Error('IMPORT_SOURCE_WRAPPER_INVALID_REVISION');
+        }
+        if(!srcEval.canonical){
+          throw new Error('IMPORT_SCHEMA14_CANONICAL_SHAPE_INVALID');
+        }
+        candidate=srcEval.data;
+        sourceWrapperVersion=srcEval.wrapperVersion;
+        // PRV-0.5 R6 (Codex Round-5 P1-1): a genuine outer legacy
+        // wrapper (`version < SCHEMA_VERSION`) is an observed
+        // supported transition — this is the ONLY class of import
+        // that authorises `LEGACY_RECORDS` seeding. Marker text on a
+        // schema-14 source wrapper is NOT proof.
+        importedFromLegacySource = typeof sourceWrapperVersion === 'number'
+          && sourceWrapperVersion < window.Store.SCHEMA_VERSION;
       } else {
         const stagedReader=(k)=>{ try{ return JSON.parse(localStorage.getItem(k)||'null'); }catch(e){ return null; } };
         candidate=window.Store.deriveStateFromLegacy(stagedReader);
+        // Legacy-only backup: derivation is itself an observed legacy
+        // transition — records were reconstructed from the auxiliary
+        // Gen-1 keys and the preservation seed should apply INLINE
+        // (not via a post-reload hydration re-authorisation).
+        importedFromLegacySource=true;
       }
       if(typeof window.Store.normalizeLogbookDomain==='function') window.Store.normalizeLogbookDomain(candidate);
       if(typeof window.Store.validateData==='function' && !window.Store.validateData(candidate)){
         throw new Error('IMPORT_VALIDATION_FAILED');
       }
 
-      // 3. Commit under coordinator — writes STATE_KEY LAST as schema-13.
-      const res=await window.Store.commitFullStateWrapper(token,candidate,'import');
+      // PRV-0.5 R6 (Codex Round-5 P1-1): when the source was a genuine
+      // outer legacy wrapper, inline the LEGACY_RECORDS seed into the
+      // candidate BEFORE commit so the committed wrapper carries
+      // `status='migrated'` + populated records atomically. This
+      // eliminates the schema-14 + status='unmigrated' intermediate
+      // state that a post-reload hydration would otherwise be asked
+      // to complete — closing the forgery attack that supplied a
+      // schema-14 wrapper with self-attested `unmigrated` provenance.
+      if (importedFromLegacySource && window.LEGACY_RECORDS && typeof _buildHydratedRecords === 'function') {
+        try {
+          let goalsOv={}; try{ const v=localStorage.getItem('dune_goals_v1'); if(v) goalsOv=JSON.parse(v)||{}; }catch(e){}
+          let claimsOv={}; try{ const v=localStorage.getItem('dune_claims_v1'); if(v) claimsOv=JSON.parse(v)||{}; }catch(e){}
+          const seeded=_buildHydratedRecords(window.LEGACY_RECORDS, goalsOv, claimsOv);
+          if (!candidate.records || typeof candidate.records !== 'object') candidate.records={};
+          for (const d of ['deadlines','claims','risks','goals']) {
+            const cur=Array.isArray(candidate.records[d]) ? candidate.records[d] : null;
+            candidate.records[d] = (cur && cur.length > 0) ? cur : seeded[d];
+          }
+          if (!candidate.meta || typeof candidate.meta !== 'object') candidate.meta={};
+          candidate.meta.recordsMigration = {
+            status: MIGRATION_MIGRATED,
+            schemaVersion: window.Store.SCHEMA_VERSION,
+            reason: 'import-inline-hydration'
+          };
+        } catch (seedErr) {
+          throw new Error('IMPORT_INLINE_SEED_FAILED');
+        }
+      }
+
+      // Candidate MUST pass the destructive-boundary canonical check
+      // AFTER any inline seeding.
+      const candEval=window.Store.evaluateCandidateData(candidate);
+      if(!candEval.canonical){
+        throw new Error('IMPORT_SCHEMA14_CANONICAL_SHAPE_INVALID');
+      }
+
+      // 3. Commit under coordinator — writes STATE_KEY LAST as schema-14.
+      // PRV-0.5 R7 (Codex Round-6 P1-2): recovery mode is chosen ONLY
+      // when Store currently has an active durability blocker. In
+      // that case, issue a source-bound recovery auth for the current
+      // corrupt disk generation BEFORE calling commit. Ordinary
+      // healthy-disk imports go through the non-recovery path — they
+      // cannot bypass the R6 corrupt-disk refusal for healthy state.
+      let importRecoveryMode=false;
+      const blockerBeforeImport = (typeof window.Store.getDurabilityBlocker === 'function') ? window.Store.getDurabilityBlocker() : null;
+      if(blockerBeforeImport){
+        if(typeof window.Store.prepareRecoveryAuth==='function'){
+          const authRes=window.Store.prepareRecoveryAuth();
+          if(!authRes || !authRes.ok){
+            throw new Error('IMPORT_RECOVERY_AUTH_FAILED');
+          }
+          importRecoveryMode=true;
+        }
+      }
+      const res=await window.Store.commitFullStateWrapper(token,candidate,'import',{recovery:importRecoveryMode});
       if(!res||!res.ok){ throw new Error(res&&res.error?res.error:'COMMIT_FAILED'); }
       applied.push(STATE_KEY_NAME);
       succeeded=true;
@@ -1998,6 +2653,8 @@ async function processImport(text,options){
     if(topErr && topErr.message==='CAPSULE_WRITE_FAILED'){ toastMsg='⚠ Could not save pre-import backup — aborting'; }
     else if(topErr && topErr.message==='RAWBEFORE_READ_FAILED'){ toastMsg='⚠ Cannot read current storage — aborting'; }
     else if(topErr && topErr.message==='IMPORT_SOURCE_WRAPPER_INVALID_REVISION'){ toastMsg='⚠ Backup source wrapper has an invalid revision — aborting'; }
+    else if(topErr && topErr.message==='IMPORT_UNSUPPORTED_FUTURE_SCHEMA'){ toastMsg='⚠ Backup is from a newer schema version — aborting'; }
+    else if(topErr && topErr.message==='IMPORT_SCHEMA14_CANONICAL_SHAPE_INVALID'){ toastMsg='⚠ Backup is malformed (missing records or migration marker) — aborting'; }
     else if(rollbackFailures.length){ toastMsg='⚠ Restore failed and rollback incomplete: '+rollbackFailures.join(', '); }
     else{ toastMsg='⚠ Restore failed — '+((topErr&&topErr.message)||'unknown'); }
   }finally{
@@ -2184,6 +2841,13 @@ window.saveToGist=async function(isRetry){
     }
 
     setGistStatus('Saving…');
+    // PRV-0.5 R5: gist backup MUST refuse invalid primary authority.
+    const authGist=evaluateBackupAuthority();
+    if(!authGist.acceptForBackup){
+      setGistStatus('⚠ Cannot save — primary storage is not authoritative ('+authGist.classification+')','error');
+      showBackupToast('⚠ Cannot save to Gist — primary storage is not authoritative');
+      return;
+    }
     const data=getAllBackupData();
     const backup={version:'2026.1',exported_at:new Date().toISOString(),data};
     const content=JSON.stringify(backup,null,2);
