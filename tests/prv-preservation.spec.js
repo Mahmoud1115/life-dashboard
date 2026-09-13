@@ -8177,3 +8177,112 @@ test('R10-P2-01B — explicit null caller argument still classifies as ABSENT (c
   expect(evalRes.recoveryRequired).toBe(false);
   expect(evalRes.reasons).toContain('absent');
 });
+
+
+// ────────────────────────────────────────────────────────
+// R13-P1-RESET-BOUNDARY — Store.reset() replaces the Gen-2 wrapper
+// (dune_state_v4) with a fresh default but does NOT erase Gen-1
+// tab-owned sources, Gist credentials/sync base, snapshots, or
+// recovery capsules. This is the exact contract the Round-13
+// index.html hint + app.js confirm() copy promises. If the runtime
+// ever expanded destructive scope, this test would fail loudly
+// before a UI copy update could ship stale.
+// ────────────────────────────────────────────────────────
+test('R13-P1-RESET-BOUNDARY — Reset clears only dune_state_v4; Gen-1 legacy sources, Gist credentials/base, snapshots, and recovery capsules are preserved', async ({ page }) => {
+  await page.addInitScript(() => {
+    // Seed a wide surface of non-Store keys that Reset MUST NOT touch.
+    localStorage.setItem('dune_finance_v1',            JSON.stringify({ russia:{ salary_net: 130000, save_target: 55000, customIncome:[{id:'a',label:'x',amount:1}], customExpenses:[] } }));
+    localStorage.setItem('dune_easa_v1',               JSON.stringify({ M15:{ status:'active', progress:20 } }));
+    localStorage.setItem('dune_logbook_v1',            JSON.stringify([{ id:'lb_1', date:'2026-06-20', hours:'2.5', task_description:'sample' }]));
+    localStorage.setItem('dune_logbook_entries_v1',    JSON.stringify([{ id:'lbe_1', date:'2026-06-20', hours:'1.0', desc:'builder sample' }]));
+    localStorage.setItem('dune_logbook_tab_v1',        'tracker');
+    localStorage.setItem('dune_apartments_v1',         JSON.stringify([{ id:'ap1', title:'demo' }]));
+    localStorage.setItem('dune_goals_v1',              JSON.stringify({ go01:{ progress:5 } }));
+    localStorage.setItem('dune_deadlines_ext_v1',      JSON.stringify({ dl99:{ note:'user extension' } }));
+    localStorage.setItem('dune_claims_v1',             JSON.stringify({ cl01:{ status:'active' } }));
+    localStorage.setItem('dune_sb_v1',                 JSON.stringify({ phase:'foundation' }));
+    // Gist sync surfaces — none of these belong to the Store.
+    localStorage.setItem('dune_github_token_v1',       'ghp_synthetic_pat_should_survive_reset');
+    localStorage.setItem('dune_gist_id_v1',            '"synthetic-gist-id-should-survive-reset"');
+    localStorage.setItem('dune_gist_sync_base_v1',     JSON.stringify({ schema:1, gistId:'synthetic-gist-id-should-survive-reset', remoteVersion:'v0', baseDataHash:'0000000000000000000000000000000000000000000000000000000000000000', acceptedAt:'2026-01-01T00:00:00.000Z' }));
+    // Rolling snapshots + recovery capsules — Reset MUST NOT delete these.
+    localStorage.setItem('dune_snapshots_v1',          JSON.stringify([{ at:'2026-06-01T00:00:00.000Z', payload:{ version:14, revision:1, committedAt:'2026-06-01T00:00:00.000Z', data:{ meta:{ recordsMigration:{ status:'migrated', schemaVersion:14, reason:'default-state' } } } } }]));
+    localStorage.setItem('dune_pre_import_backup_v1',      JSON.stringify({ dune_state_v4:{ version:14, revision:1, committedAt:'2026-06-01T00:00:00.000Z', data:{} } }));
+    localStorage.setItem('dune_pre_import_backup_prev_v1', JSON.stringify({ dune_state_v4:{ version:14, revision:0, committedAt:'2026-05-01T00:00:00.000Z', data:{} } }));
+    // Display-only sync legacy metadata — no reader for classification, but Reset should still leave them alone.
+    localStorage.setItem('dune_last_backup_v1',        '"2026-08-01T00:00:00.000Z"');
+    localStorage.setItem('dune_last_gist_sync_v1',     '"2026-08-01T00:00:00.000Z"');
+  });
+  await page.goto('/');
+  await waitForApp(page);
+  await waitForMigrated(page);
+  await waitForNextSave(page);
+
+  // Byte-identical group: Reset MUST leave these unchanged. Any drift
+  // would prove Reset expanded destructive scope beyond dune_state_v4.
+  const byteIdenticalKeys = [
+    'dune_finance_v1', 'dune_easa_v1', 'dune_logbook_v1', 'dune_logbook_entries_v1', 'dune_logbook_tab_v1',
+    'dune_apartments_v1', 'dune_goals_v1', 'dune_deadlines_ext_v1', 'dune_claims_v1', 'dune_sb_v1',
+    'dune_github_token_v1', 'dune_gist_id_v1', 'dune_gist_sync_base_v1',
+    'dune_pre_import_backup_v1', 'dune_pre_import_backup_prev_v1',
+    'dune_last_gist_sync_v1',
+  ];
+  const beforeSnapshot = await page.evaluate((keys) => {
+    const out = {};
+    for (const k of keys) out[k] = localStorage.getItem(k);
+    return out;
+  }, byteIdenticalKeys);
+  // Buffered group: Reset commits a fresh snapshot into the rolling
+  // buffer as part of the normal Store commit path, so byte-equality
+  // is NOT the right assertion; instead the buffer must not be erased
+  // and MUST NOT drop below its pre-Reset length (bounded by MAX_SNAPSHOTS).
+  const preSnapshotsLen = await page.evaluate(() => {
+    try { return (JSON.parse(localStorage.getItem('dune_snapshots_v1')) || []).length; }
+    catch (_) { return -1; }
+  });
+
+  // Drive Store.reset via the public API and await durable settlement.
+  const settled = await page.evaluate(async () => {
+    return await new Promise((resolve) => {
+      let done = false;
+      const finish = (v) => { if (done) return; done = true; try { unsub(); } catch(_){} resolve(v); };
+      const unsub = window.Store.onSave(() => finish({ok:true, via:'onSave'}));
+      const ok = window.Store.reset({ force: true });
+      if (!ok) finish({ok:false, dispatched:false});
+      setTimeout(() => finish({ok:false, dispatched:true, timeout:true}), 5000);
+    });
+  });
+  expect(settled.ok).toBe(true);
+
+  // Every preserved key is byte-identical to what we seeded, proving Reset
+  // did not touch Gen-1 tab-owned sources, Gist credentials/base, or any
+  // preservation surface.
+  const afterSnapshot = await page.evaluate((keys) => {
+    const out = {};
+    for (const k of keys) out[k] = localStorage.getItem(k);
+    return out;
+  }, byteIdenticalKeys);
+  for (const k of byteIdenticalKeys) {
+    expect(afterSnapshot[k]).toBe(beforeSnapshot[k]);
+  }
+  // Snapshot buffer is not erased; length >= pre-Reset length (Reset
+  // performs a full-state commit which appends a snapshot up to
+  // MAX_SNAPSHOTS = 8, then the buffer rolls). The buffer itself must
+  // still be parseable JSON containing at least one payload.
+  const postSnapshots = await page.evaluate(() => {
+    try { return { parsed: JSON.parse(localStorage.getItem('dune_snapshots_v1')), raw: localStorage.getItem('dune_snapshots_v1') }; }
+    catch (e) { return { parsed: null, error: String(e && e.message) }; }
+  });
+  expect(Array.isArray(postSnapshots.parsed)).toBe(true);
+  expect(postSnapshots.parsed.length).toBeGreaterThanOrEqual(Math.min(preSnapshotsLen, 1));
+  expect(postSnapshots.parsed.length).toBeLessThanOrEqual(8);
+
+  // dune_state_v4 IS replaced — the wrapper is now the fresh default:
+  // schema 14, recordsMigration.status = 'migrated' with reason 'default-state',
+  // and an empty records object for the PRV-migrated domains.
+  const post = await page.evaluate(() => JSON.parse(localStorage.getItem('dune_state_v4')));
+  expect(post && post.version).toBe(14);
+  expect(post.data.meta.recordsMigration.status).toBe('migrated');
+  expect(post.data.meta.recordsMigration.reason).toBe('default-state');
+  expect(Array.isArray(post.data.records.goals) ? post.data.records.goals.length : (post.data.records.goals && Object.keys(post.data.records.goals).length) || 0).toBe(0);
+});

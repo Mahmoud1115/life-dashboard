@@ -2368,7 +2368,7 @@ window.recoveryResetLifeOS=async function(){
   if(!window.Store||typeof window.Store.reset!=='function'){
     showBackupToast('⚠ Reset unavailable');return false;
   }
-  const confirmed=confirm('Reset LIFE OS?\n\nThis replaces all your data with a fresh default and cannot be undone. Export a backup first if you might want any of your current data back.');
+  const confirmed=confirm('Reset LIFE OS structured state?\n\nThis replaces the Store\'s structured records (dune_state_v4 — BHT, Career, About, Today, Reviews, Decisions, Ideas, Timeline, Goals/Deadlines/Claims/Risks) with a fresh default. Legacy tab-owned sources (EASA, Apartments, Logbook Tracker + Builder, Money-Russia) are NOT erased. Gist credentials, sync base, snapshots, and recovery capsules are also preserved. Cannot be undone for the parts it does clear. Export a backup first if you might want any of the affected data back.');
   if(!confirmed) return false;
   const dispatched=window.Store.reset({force:true});
   if(!dispatched){
