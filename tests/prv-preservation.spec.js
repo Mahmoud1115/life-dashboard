@@ -8206,7 +8206,14 @@ test('R13-P1-RESET-BOUNDARY — Reset clears only dune_state_v4; Gen-1 legacy so
     localStorage.setItem('dune_gist_id_v1',            '"synthetic-gist-id-should-survive-reset"');
     localStorage.setItem('dune_gist_sync_base_v1',     JSON.stringify({ schema:1, gistId:'synthetic-gist-id-should-survive-reset', remoteVersion:'v0', baseDataHash:'0000000000000000000000000000000000000000000000000000000000000000', acceptedAt:'2026-01-01T00:00:00.000Z' }));
     // Rolling snapshots + recovery capsules — Reset MUST NOT delete these.
-    localStorage.setItem('dune_snapshots_v1',          JSON.stringify([{ at:'2026-06-01T00:00:00.000Z', payload:{ version:14, revision:1, committedAt:'2026-06-01T00:00:00.000Z', data:{ meta:{ recordsMigration:{ status:'migrated', schemaVersion:14, reason:'default-state' } } } } }]));
+    // Pre-seed three DISTINCTIVE snapshots. Real Store snapshots serialize
+    // `payload` as the raw wrapper string, so we mirror that shape here; the
+    // R14 strengthened assertion inspects the buffer byte-for-byte.
+    localStorage.setItem('dune_snapshots_v1', JSON.stringify([
+      { at:'2026-06-01T00:00:00.000Z', payload:'R14-PRESEED-SNAPSHOT-A' },
+      { at:'2026-05-01T00:00:00.000Z', payload:'R14-PRESEED-SNAPSHOT-B' },
+      { at:'2026-04-01T00:00:00.000Z', payload:'R14-PRESEED-SNAPSHOT-C' }
+    ]));
     localStorage.setItem('dune_pre_import_backup_v1',      JSON.stringify({ dune_state_v4:{ version:14, revision:1, committedAt:'2026-06-01T00:00:00.000Z', data:{} } }));
     localStorage.setItem('dune_pre_import_backup_prev_v1', JSON.stringify({ dune_state_v4:{ version:14, revision:0, committedAt:'2026-05-01T00:00:00.000Z', data:{} } }));
     // Display-only sync legacy metadata — no reader for classification, but Reset should still leave them alone.
@@ -8236,10 +8243,18 @@ test('R13-P1-RESET-BOUNDARY — Reset clears only dune_state_v4; Gen-1 legacy so
   // buffer as part of the normal Store commit path, so byte-equality
   // is NOT the right assertion; instead the buffer must not be erased
   // and MUST NOT drop below its pre-Reset length (bounded by MAX_SNAPSHOTS).
-  const preSnapshotsLen = await page.evaluate(() => {
-    try { return (JSON.parse(localStorage.getItem('dune_snapshots_v1')) || []).length; }
-    catch (_) { return -1; }
+  // Capture the FULL snapshot buffer right before Reset. The R13-P1 pre-seed
+  // may have been augmented (and reordered) by initial page-load activity —
+  // Store commits happen during hydration and each unshifts a new snapshot.
+  // We assert the strengthened contract against THIS exact buffer, not the
+  // synthetic pre-seed alone, so the test proves the actual runtime
+  // preservation guarantee under real conditions.
+  const preBuffer = await page.evaluate(() => {
+    try { return JSON.parse(localStorage.getItem('dune_snapshots_v1')); }
+    catch (_) { return null; }
   });
+  expect(Array.isArray(preBuffer)).toBe(true);
+  const preLen = preBuffer.length;
 
   // Drive Store.reset via the public API and await durable settlement.
   const settled = await page.evaluate(async () => {
@@ -8265,17 +8280,48 @@ test('R13-P1-RESET-BOUNDARY — Reset clears only dune_state_v4; Gen-1 legacy so
   for (const k of byteIdenticalKeys) {
     expect(afterSnapshot[k]).toBe(beforeSnapshot[k]);
   }
-  // Snapshot buffer is not erased; length >= pre-Reset length (Reset
-  // performs a full-state commit which appends a snapshot up to
-  // MAX_SNAPSHOTS = 8, then the buffer rolls). The buffer itself must
-  // still be parseable JSON containing at least one payload.
-  const postSnapshots = await page.evaluate(() => {
-    try { return { parsed: JSON.parse(localStorage.getItem('dune_snapshots_v1')), raw: localStorage.getItem('dune_snapshots_v1') }; }
-    catch (e) { return { parsed: null, error: String(e && e.message) }; }
+  // R14 strengthened snapshot assertion (Codex R13-CX-P3 finding).
+  // The runtime prepends new snapshots at index 0 via `snaps.unshift(...)`
+  // and evicts the oldest generation via `pop()` when the buffer exceeds
+  // MAX_SNAPSHOTS = 8. So Reset MUST:
+  //   - place the fresh reset snapshot at index 0 (its parsed wrapper has
+  //     recordsMigration.reason === 'default-state' — proof of a real
+  //     Reset commit, not accidental pre-seed retention);
+  //   - preserve every prior buffer entry byte-for-byte at position (i+1)
+  //     up to the MAX_SNAPSHOTS-1 window (the last old entry may be evicted
+  //     when preLen was already 8).
+  // This is strictly stronger than "length >= 1" — a regression that dropped
+  // prior snapshots and left only the new one would fail here because
+  // preserved[j] would no longer byte-match preBuffer[j].
+  const postBuffer = await page.evaluate(() => {
+    try { return JSON.parse(localStorage.getItem('dune_snapshots_v1')); }
+    catch (_) { return null; }
   });
-  expect(Array.isArray(postSnapshots.parsed)).toBe(true);
-  expect(postSnapshots.parsed.length).toBeGreaterThanOrEqual(Math.min(preSnapshotsLen, 1));
-  expect(postSnapshots.parsed.length).toBeLessThanOrEqual(8);
+  expect(Array.isArray(postBuffer)).toBe(true);
+  // Buffer stayed a parseable array within the documented MAX_SNAPSHOTS bound.
+  expect(postBuffer.length).toBeLessThanOrEqual(8);
+  // Length = min(preLen + 1, 8). If preLen < 8, buffer grew by one; if the
+  // pre-Reset buffer was already at cap, one Reset snapshot enters and the
+  // oldest is evicted, so the length stays at 8.
+  expect(postBuffer.length).toBe(Math.min(preLen + 1, 8));
+  // Index 0 = the fresh Reset snapshot. Its `payload` is the serialized
+  // wrapper string produced by commitFullStateWrapper — parseable and
+  // marked as 'default-state'.
+  const head = postBuffer[0];
+  expect(typeof head.at).toBe('string');
+  expect(typeof head.payload).toBe('string');
+  const headWrapper = JSON.parse(head.payload);
+  expect(headWrapper && headWrapper.version).toBe(14);
+  expect(headWrapper.data.meta.recordsMigration.status).toBe('migrated');
+  expect(headWrapper.data.meta.recordsMigration.reason).toBe('default-state');
+  // Every prior buffer entry survives byte-for-byte at position (i+1),
+  // up to the MAX_SNAPSHOTS-1 window (the last entry evicted only when
+  // preLen was already at cap).
+  const preservedWindow = Math.min(preLen, 8 - 1);
+  for (let i = 0; i < preservedWindow; i++) {
+    expect(postBuffer[i + 1].at).toBe(preBuffer[i].at);
+    expect(postBuffer[i + 1].payload).toBe(preBuffer[i].payload);
+  }
 
   // dune_state_v4 IS replaced — the wrapper is now the fresh default:
   // schema 14, recordsMigration.status = 'migrated' with reason 'default-state',

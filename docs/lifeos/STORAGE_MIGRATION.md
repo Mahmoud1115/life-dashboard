@@ -125,7 +125,7 @@ Whenever both Gen-1 and Gen-2 sources exist for the same domain during a migrati
 - **Which source is authoritative for the transition period?** Exactly one may be. The other is either a passive mirror or fully removed.
 - **How is drift detected?** If the two are dual-written (e.g., during the pre-removal proving period), what mechanism catches the case where they diverge? A validation check on load, a periodic reconciliation, or a console warning on mismatch — one of these must exist, not "trust that the bridge always fires."
 - **What happens on partial failure?** The Gen-2 Store's 300ms debounced autosave and Gen-1's synchronous `localStorage.setItem` have different failure modes (browser offline, quota exceeded, save interrupted). The proposal must state which source wins on a partial failure and why.
-- **Existing `bridgeFinance()` behavior** is a live example of a mirror bridge — read it (grep) before designing new ones. Note it is a *mirror* (Gen-2 writes flow to Gen-1), not a canonical-source flip.
+- **Existing `bridgeFinance()` behavior** is a live example of a mirror bridge — read it (grep) before designing new ones. Note it is a *one-way Gen-1 → Gen-2 shadow* (`dune_finance_v1.russia` is the write-authoritative Gen-1 source; `bridgeFinance()` at `app.js:4080` reads Gen-1 and writes into `state.money` under Store; no code path writes from Store back into Gen-1), not a canonical-source flip.
 
 Silent divergence between two storage sources is a data-loss bug that surfaces months later. Explicit divergence handling is non-negotiable for any dual-write phase.
 
