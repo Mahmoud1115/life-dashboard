@@ -787,10 +787,22 @@ test('T-import-deferred-storage-event — storage event during import is deferre
     const _st = window.setTimeout;
     window.setTimeout = (fn, d) => (d && d >= 1000) ? 0 : _st(fn, d);
     // Kick off an import that will actually commit successfully.
+    // PRV-0.5 Pre-Push R2 / BINDING-3-A: legacy v11 wrappers must
+    // carry the full defaultState-shape emission of commit 8a1e374;
+    // a minimal `{money, qatarVisit}` seed is UNPROVEN under the
+    // strict matrix and would be rejected by evaluateCandidateWrapper.
+    const _fullLegacyV11 = {
+      money: { salary_net: 314, expenses: {}, usd_rate: 88, save_target: 55000 },
+      qatarVisit: {}, career: {}, easa: {}, about: {}, sbTasks: {}, goals: {},
+      bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: "fallback", ollamaUrl: "http://localhost:11434", model: "" }, meta: {} }, telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 },
+      todayFocus: [], timeline: [], reviews: [], decisions: [], ideas: [], apartments: [], logbook: [],
+      // PRV-0.5 Codex-final P1-03: v8..v13 emitted `meta`.
+      meta: { version: 11, createdAt: '2026-06-19T00:00:00Z', lastUpdated: '2026-06-19T00:00:00Z' }
+    };
     const backup = {
       version: '2026.1', exported_at: '2026-08-25T00:00:00Z',
       data: {
-        dune_state_v4: { version: 11, data: { money: { salary_net: 314 }, qatarVisit: {} } },
+        dune_state_v4: { version: 11, data: _fullLegacyV11 },
         dune_apartments_v1: [{ id: 'im1' }]
       }
     };
@@ -1146,8 +1158,10 @@ test('T-snapshot-source-invalid-data-explicit — restoreSnapshot rejects schema
       await window.Store.flushNow();
       const baselineRev = window.Store.wrapperMeta().revision;
       const baselineVal = window.Store.get('goals.__b0_snapdatainv__');
-      // Structurally valid schema-13 wrapper, but data fails Store.validate.
-      const wrapper = { version: 13, revision: 5, committedAt: '2026-08-25T00:00:00Z', data: bad };
+      // Structurally valid current-schema wrapper, but data fails
+      // Store.validate. Uses SCHEMA_VERSION directly so the test binds
+      // to the current schema version (was hardcoded 13 pre-PRV-0.5-R2).
+      const wrapper = { version: window.Store.SCHEMA_VERSION, revision: 5, committedAt: '2026-08-25T00:00:00Z', data: bad };
       const list = JSON.parse(localStorage.getItem('dune_snapshots_v1') || '[]');
       list.unshift({ at: new Date().toISOString(), payload: JSON.stringify(wrapper) });
       localStorage.setItem('dune_snapshots_v1', JSON.stringify(list));
@@ -1180,7 +1194,13 @@ test('T-snapshot-source-invalid-data-recovery — load-time recovery skips data-
       version: 13, revision: 42, committedAt: '2026-08-25T00:00:00Z',
       data: {
         money: { salary_net: 24680, expenses: { rent: 1, food: 1, transport: 1, utilities: 1, phone: 1, family_transfer: 0, other: 1, mai: 0 }, usd_rate: 88, save_target: 55000 },
-        qatarVisit: { from_airport: 'SVO', to_airport: 'DOH', travel_month: '', flights: 0, hotel: 0, food: 0, transport: 0, misc: 0, emergency: 0, saved: 0, notes: '' }
+        qatarVisit: { from_airport: 'SVO', to_airport: 'DOH', travel_month: '', flights: 0, hotel: 0, food: 0, transport: 0, misc: 0, emergency: 0, saved: 0, notes: '' },
+        todayFocus: ['','',''], goals: {}, career: { started: '', licenses: [], milestones: [] }, easa: {},
+        logbook: [], reviews: [], decisions: [], timeline: [],
+        about: { version: 2, createdAt: '', lastUpdated: '', strengths: [], lessons: [], vision: '', values: [], reminders: [] },
+        apartments: [], sbTasks: {},
+        bht: { habits: [], entries: [], snapshots: [], lifeEvents: [], vocab: { triggers: [], coping: [], moods: [] }, ai: { provider: 'fallback', ollamaUrl: '', model: '' }, meta: {} },
+        telemetry: { accumulatedFatigue: 0, weeklyShiftHours: 0, focusReserve: 100 }, ideas: []
       }
     };
     localStorage.setItem('dune_snapshots_v1', JSON.stringify([
