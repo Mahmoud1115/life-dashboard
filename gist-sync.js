@@ -627,8 +627,8 @@
     const token = pre.token;
     const gistId = safeGet(GIST_ID_KEY, '');
     if (!gistId){
-      setStatus('No connected backup yet. Use Bootstrap/Connect to establish one.', 'warn');
-      toast('⚠ Not connected to a backup — connect first');
+      setStatus('No connected backup yet. Use Create First Backup, or Bootstrap/Connect to reuse an existing one.', 'warn');
+      toast('⚠ Not connected to a backup — create or bootstrap first');
       return { ok:false, reason:'no-connected-gist' };
     }
     setStatus('Checking the connected backup…');
@@ -759,8 +759,8 @@
     const token = pre.token;
     const gistId = safeGet(GIST_ID_KEY, '');
     if (!gistId){
-      setStatus('No connected backup yet. Use Bootstrap/Connect to establish one.', 'warn');
-      toast('⚠ Not connected to a backup — connect first');
+      setStatus('No connected backup yet. Use Create First Backup, or Bootstrap/Connect to reuse an existing one.', 'warn');
+      toast('⚠ Not connected to a backup — create or bootstrap first');
       return { ok:false, reason:'no-connected-gist' };
     }
     setStatus('Checking the connected backup…');
@@ -1076,6 +1076,141 @@
     } catch(_){ return null; }
   }
 
+  // POST a new private Gist. Response is NOT trusted alone — caller must
+  // re-fetch and semantically acknowledge before persisting the ID or a base.
+  async function createBackupGistOnce(token, backupObject){
+    if (!_fetch) throw new Error('FETCH_UNAVAILABLE');
+    const content = JSON.stringify(backupObject, null, 2);
+    const res = await _fetch('https://api.github.com/gists', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Accept': 'application/vnd.github+json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        description: GIST_BACKUP_DESCRIPTION,
+        public: false,
+        files: { [BACKUP_FILE]: { content } }
+      })
+    });
+    if (!res.ok){
+      const err = new Error('GIST_CREATE_FAILED');
+      err.status = res.status;
+      try { const body = await res.json(); if (body && body.message) err.message = body.message; } catch(_){}
+      throw err;
+    }
+    let created;
+    try { created = await res.json(); }
+    catch(e){ const err = new Error('GIST_CREATE_RESPONSE_MALFORMED'); err.status = res.status; throw err; }
+    if (!created || !isValidIdentifier(created.id, 256)){
+      const err = new Error('GIST_CREATE_NO_ID'); err.status = res.status; throw err;
+    }
+    return { newGistId: created.id };
+  }
+
+  // First-backup creation: discovery-guarded, POST-once, then acknowledge
+  // via a fresh exact-Gist GET before any local trust state is written.
+  // Never called automatically on page load; only via explicit user intent.
+  async function createFirstBackup(options){
+    options = options || {};
+    const pre = await preflightSyncEnvironment();
+    if (!pre.ok) return { ok:false, reason: pre.reason };
+    const token = pre.token;
+
+    const existingId = safeGet(GIST_ID_KEY, '');
+    if (existingId){
+      setStatus('A connected backup already exists (' + existingId.slice(0,12) + '…). Create-first refused; use Save or Bootstrap.', 'warn');
+      return { ok:false, reason:'already-connected' };
+    }
+
+    setStatus('Checking whether a backup Gist already exists for this token…');
+    let gists;
+    try { gists = await findBackupGistsForBootstrap(token); }
+    catch(e){
+      setStatus('⚠ Cannot verify existing backups (' + (e.message || 'error') + ') — create refused.', 'error');
+      return { ok:false, reason:'list-failed', error:e.message };
+    }
+    if (gists && gists.length){
+      setStatus('An existing backup Gist was discovered (' + gists[0].id.slice(0,12) + '…). Create-first refused; use Bootstrap/Connect to reuse it.', 'warn');
+      toast('⚠ Existing backup discovered — Bootstrap instead');
+      try { window.dispatchEvent(new CustomEvent('lifeos:gist-existing-backup-discoverable', { detail:{ gistId: gists[0].id } })); } catch(_){}
+      return { ok:false, reason:'existing-backup-discoverable', discoveredGistId: gists[0].id };
+    }
+
+    let localData, localHash;
+    try {
+      localData = await captureLocalBackup();
+      localHash = await backupDataHash(localData);
+    } catch(e){
+      setStatus('⚠ Cannot capture local backup: ' + (e.message || e), 'error');
+      return { ok:false, reason:e.code || 'local-hash-failed', error:e.message };
+    }
+
+    const proceed = options.confirmed === true
+      || (typeof window.confirm === 'function' && window.confirm(
+        'Create the first private Gist backup for LIFE OS?\n\nA new private Gist will be created with this device\'s current backup data. Nothing is overwritten. You can cancel.'
+      ));
+    if (!proceed){
+      setStatus('Create first backup cancelled — no Gist was created.', 'warn');
+      return { ok:false, reason:'cancelled-by-user' };
+    }
+
+    const backup = { version: BACKUP_WRAPPER_VERSION, exported_at: _now(), data: localData };
+    let created;
+    try { created = await createBackupGistOnce(token, backup); }
+    catch(e){
+      setStatus('⚠ Backup Gist could not be created (' + (e.message || 'error') + '). Nothing local changed.', 'error');
+      return { ok:false, reason: (e.status === 401 || e.status === 403) ? 'unauthorized' : 'create-failed', error:e.message, status:e.status };
+    }
+    const newGistId = created.newGistId;
+
+    let ack;
+    try { ack = await fetchConnectedGist(token, newGistId); }
+    catch(e){
+      setStatus('⚠ Backup Gist was created but could not be re-read for acknowledgement — sync uncertain. Local data preserved.', 'error');
+      toast('⚠ Backup created but unacknowledged — retry');
+      try { window.dispatchEvent(new CustomEvent('lifeos:gist-first-backup-unacknowledged', { detail:{ createdGistId: newGistId, reason:'ack-fetch-failed' } })); } catch(_){}
+      return { ok:false, reason:'ack-fetch-failed', createdGistId:newGistId, error:e.message };
+    }
+    if (ack.remoteHash !== localHash){
+      setStatus('⚠ Created backup content does not match local — sync uncertain. Local data preserved.', 'error');
+      toast('⚠ Backup created but content mismatch');
+      try { window.dispatchEvent(new CustomEvent('lifeos:gist-first-backup-unacknowledged', { detail:{ createdGistId: newGistId, reason:'ack-hash-mismatch' } })); } catch(_){}
+      return { ok:false, reason:'ack-hash-mismatch', createdGistId:newGistId, ack };
+    }
+
+    let postLocal;
+    try { postLocal = window.getAllBackupData(); }
+    catch(e){
+      setStatus('⚠ Cannot re-read local backup for post-create verification. Sync uncertain.', 'error');
+      return { ok:false, reason:'post-local-read-failed', createdGistId:newGistId, error:e.message };
+    }
+    if (canonicalStringify(semanticBackupData(postLocal)) !== canonicalStringify(semanticBackupData(localData))){
+      setStatus('⚠ Local data changed during backup creation — the created Gist reflects an earlier state. Local preserved; retry.', 'warn');
+      try { window.dispatchEvent(new CustomEvent('lifeos:gist-first-backup-unacknowledged', { detail:{ createdGistId: newGistId, reason:'local-changed-during-creation' } })); } catch(_){}
+      return { ok:false, reason:'local-changed-during-creation', createdGistId:newGistId };
+    }
+
+    const idWrite = writeConnectedGistId(newGistId);
+    if (!idWrite.ok){
+      setStatus('⚠ Backup created but the connected ID could not be persisted (' + idWrite.reason + '). Sync uncertain.', 'error');
+      return { ok:false, reason:idWrite.reason, createdGistId:newGistId, detail:idWrite };
+    }
+    const w = writeSyncBase({ gistId:newGistId, remoteVersion: ack.revision, baseDataHash: localHash });
+    if (!w.ok){
+      setStatus('Backup created and connected, but sync base could not be confirmed (' + w.reason + ').', 'warn');
+      return { ok:false, reason:'unacknowledged', createdGistId:newGistId, detail:w };
+    }
+    safeSet(LAST_SYNC_KEY, new Date().toISOString());
+    safeSet(LAST_BACKUP_KEY, new Date().toISOString());
+    safeSet(CHANGE_COUNT_KEY, '0');
+    refreshUI();
+    setStatus('✓ First backup Gist created and acknowledged.', 'ok');
+    toast('✓ First backup created');
+    return { ok:true, kind:'created-first-backup', gistId:newGistId, base:w.base };
+  }
+
   // Bootstrap / reconnect: intentional discovery. Only path that may retarget
   // the connected gist. Not called by the ordinary Save/Load buttons.
   async function bootstrapOrReconnect(intent){
@@ -1260,9 +1395,9 @@
     readConnectedGistId, hasStoredToken,
     classifyState, rotatePreLoadCapsule,
     // network
-    fetchConnectedGist, patchConnectedGist, findBackupGistsForBootstrap,
+    fetchConnectedGist, patchConnectedGist, findBackupGistsForBootstrap, createBackupGistOnce,
     // orchestrators
-    saveConnected, loadConnected, bootstrapOrReconnect,
+    saveConnected, loadConnected, bootstrapOrReconnect, createFirstBackup,
     resolveBootstrapUseLocal, resolveBootstrapLoadRemote, restorePreLoadRecovery,
     // conflict resolvers (§A1 / §A2)
     resolveConflictKeepLocal, resolveConflictLoadRemote,
@@ -1292,6 +1427,7 @@
   window.saveToGist = function(){ return saveConnected(); };
   window.loadFromGist = function(){ return loadConnected(); };
   window.gistBootstrap = function(){ return bootstrapOrReconnect('reconnect'); };
+  window.gistCreateFirstBackup = function(){ return createFirstBackup(); };
   window.gistBootstrapUseLocal = function(){ return resolveBootstrapUseLocal(); };
   window.gistBootstrapLoadRemote = function(){ return resolveBootstrapLoadRemote(); };
   window.restorePreLoadRecovery = function(which){ return restorePreLoadRecovery(which); };
