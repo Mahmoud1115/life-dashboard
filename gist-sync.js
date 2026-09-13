@@ -333,8 +333,7 @@
 
   // ── network helpers ──────────────────────────────────────────────────────
   async function fetchConnectedGist(token, gistId){
-    if (!_fetch) throw new Error('FETCH_UNAVAILABLE');
-    const res = await _fetch('https://api.github.com/gists/' + encodeURIComponent(gistId), {
+    const res = await authenticatedGitHubFetch('https://api.github.com/gists/' + encodeURIComponent(gistId), {
       headers: { 'Authorization': 'Bearer ' + token, 'Accept': 'application/vnd.github+json' }
     });
     if (!res.ok){
@@ -386,9 +385,8 @@
   }
 
   async function patchConnectedGist(token, gistId, backupObject){
-    if (!_fetch) throw new Error('FETCH_UNAVAILABLE');
     const content = JSON.stringify(backupObject, null, 2);
-    const res = await _fetch('https://api.github.com/gists/' + encodeURIComponent(gistId), {
+    const res = await authenticatedGitHubFetch('https://api.github.com/gists/' + encodeURIComponent(gistId), {
       method: 'PATCH',
       headers: {
         'Authorization': 'Bearer ' + token,
@@ -410,7 +408,7 @@
     return { ok:true };
   }
 
-  // Strict GitHub `Link` header parser (R3 §3-C).
+  // Strict GitHub `Link` header parser (R3 §3-C + R4 P1-A).
   //
   // Returns one of:
   //   { state:'ABSENT' }                          — no Link header at all
@@ -420,17 +418,28 @@
   //                                                  not be safely parsed; must
   //                                                  fail closed at the caller
   //
-  // Fail-closed cases:
-  //   - nonempty header that produces zero link entries;
-  //   - any link entry whose <URI-Reference> cannot be extracted;
-  //   - duplicate `rel="next"` (even if URLs are identical — we treat any
-  //     duplicated `next` relation as ambiguous provider metadata);
-  //   - multiple `rel` values on a single link entry (per RFC 8288 a link
-  //     value MAY declare multiple space-separated rels; we accept as long
-  //     as we saw a syntactically valid entry).
+  // R4 P1-A fail-closed cases (in addition to R3):
+  //   - unterminated quoted string;
+  //   - empty list members between commas;
+  //   - empty parameter names;
+  //   - empty rel value;
+  //   - a link entry whose rel tokens contain BOTH "next" AND any other
+  //     rel target (ambiguous next relation);
+  //   - unbalanced angle brackets.
   function parseLinkHeader(header){
     if (typeof header !== 'string' || header.length === 0) return { state:'ABSENT' };
-    // Split link values on commas that are NOT inside quoted strings.
+    // First scan for unterminated quotes at the outermost level.
+    {
+      let inQ = false, esc = false;
+      for (let i = 0; i < header.length; i++){
+        const ch = header[i];
+        if (esc){ esc = false; continue; }
+        if (ch === '\\' && inQ){ esc = true; continue; }
+        if (ch === '"') inQ = !inQ;
+      }
+      if (inQ) return { state:'MALFORMED', reason:'unterminated-quote' };
+    }
+    // Split link values on commas outside quoted strings.
     const parts = [];
     let cur = ''; let inQuote = false; let escape = false;
     for (let i = 0; i < header.length; i++){
@@ -438,28 +447,33 @@
       if (escape){ cur += ch; escape = false; continue; }
       if (ch === '\\' && inQuote){ escape = true; cur += ch; continue; }
       if (ch === '"'){ inQuote = !inQuote; cur += ch; continue; }
-      if (ch === ',' && !inQuote){ parts.push(cur.trim()); cur = ''; continue; }
+      if (ch === ',' && !inQuote){ parts.push(cur); cur = ''; continue; }
       cur += ch;
     }
-    if (cur.trim() !== '' || parts.length === 0) parts.push(cur.trim());
-    // Reject an empty split — should never happen after the length check.
-    if (parts.length === 0) return { state:'MALFORMED', reason:'empty-split' };
+    parts.push(cur);
+    // R4 P1-A: any empty list member (trimmed) is malformed.
+    for (const p of parts){
+      if (p.trim() === '') return { state:'MALFORMED', reason:'empty-list-member' };
+    }
     let nextUrl = null;
     let sawEntry = false;
-    for (const raw of parts){
-      if (!raw) continue;
-      // Each link value: <URI-Reference>; param=value; ...
+    for (const rawEntry of parts){
+      const raw = rawEntry.trim();
+      // R4 P1-A: check angle-bracket balance in this entry before regex match.
+      const openCount = (raw.match(/</g) || []).length;
+      const closeCount = (raw.match(/>/g) || []).length;
+      if (openCount !== 1 || closeCount !== 1){
+        return { state:'MALFORMED', reason:'angle-bracket-unbalanced' };
+      }
       // URI-Reference must be angle-bracket enclosed and non-empty.
       const uriMatch = raw.match(/^<([^>]*)>\s*(?:;\s*(.*))?$/);
       if (!uriMatch) return { state:'MALFORMED', reason:'bad-link-value' };
       const uri = uriMatch[1];
       if (!uri) return { state:'MALFORMED', reason:'empty-uri' };
       const paramsRaw = uriMatch[2] || '';
-      // Parse params — semicolon-separated key=value, with quoted values
-      // permitted. RFC 8288 permits multiple params; we only need `rel`.
       const rels = [];
+      let sawRel = false;
       if (paramsRaw.trim() !== ''){
-        // Split params on ';' outside quoted strings.
         const pList = [];
         let pcur = ''; let pQuote = false; let pEsc = false;
         for (let i = 0; i < paramsRaw.length; i++){
@@ -467,27 +481,42 @@
           if (pEsc){ pcur += ch; pEsc = false; continue; }
           if (ch === '\\' && pQuote){ pEsc = true; pcur += ch; continue; }
           if (ch === '"'){ pQuote = !pQuote; pcur += ch; continue; }
-          if (ch === ';' && !pQuote){ pList.push(pcur.trim()); pcur=''; continue; }
+          if (ch === ';' && !pQuote){ pList.push(pcur); pcur=''; continue; }
           pcur += ch;
         }
-        if (pcur.trim() !== '') pList.push(pcur.trim());
+        pList.push(pcur);
+        // R4 P1-A: any empty param slot between semicolons is malformed.
+        for (const pv of pList){
+          if (pv.trim() === '') return { state:'MALFORMED', reason:'empty-parameter' };
+        }
         for (const kv of pList){
-          if (!kv) continue;
-          const eq = kv.indexOf('=');
+          const trimmed = kv.trim();
+          const eq = trimmed.indexOf('=');
           if (eq === -1) return { state:'MALFORMED', reason:'param-without-value' };
-          const key = kv.slice(0, eq).trim().toLowerCase();
-          let val = kv.slice(eq + 1).trim();
+          const key = trimmed.slice(0, eq).trim().toLowerCase();
+          if (key === '') return { state:'MALFORMED', reason:'empty-parameter-name' };
+          let val = trimmed.slice(eq + 1).trim();
           if (val.startsWith('"') && val.endsWith('"') && val.length >= 2){
             val = val.slice(1, -1);
           }
           if (key === 'rel'){
-            // rel may hold multiple space-separated tokens per RFC 8288.
+            if (sawRel){
+              return { state:'MALFORMED', reason:'duplicate-rel-param' };
+            }
+            sawRel = true;
+            if (val.trim() === '') return { state:'MALFORMED', reason:'empty-rel-value' };
             for (const r of val.split(/\s+/)) if (r) rels.push(r.toLowerCase());
+            if (rels.length === 0) return { state:'MALFORMED', reason:'empty-rel-value' };
           }
         }
       }
       sawEntry = true;
       if (rels.includes('next')){
+        // R4 P1-A: rel="next X" (multiple space-separated tokens including next)
+        // is ambiguous — treat as malformed rather than silently accepting.
+        if (rels.length > 1){
+          return { state:'MALFORMED', reason:'rel-next-with-other-tokens' };
+        }
         if (nextUrl !== null){
           return { state:'MALFORMED', reason:'duplicate-next' };
         }
@@ -542,7 +571,7 @@
       visited.add(canonicalUrl);
       if (pages >= maxPages) return { ok:false, reason:'pagination-cap-exceeded', pages };
       let res;
-      try { res = await _fetch(canonicalUrl, { headers: { 'Authorization': 'Bearer ' + token, 'Accept': 'application/vnd.github+json' } }); }
+      try { res = await authenticatedGitHubFetch(canonicalUrl, { headers: { 'Authorization': 'Bearer ' + token, 'Accept': 'application/vnd.github+json' } }); }
       catch(e){ return { ok:false, reason:'page-fetch-throw', pages, atUrl:canonicalUrl, error:String(e && e.message || e) }; }
       if (!res.ok) return { ok:false, reason:'page-fetch-failed', pages, atUrl:canonicalUrl, status:res.status };
       let body;
@@ -575,6 +604,77 @@
       url = parsed.next;
     }
     return { ok:true, pages, gists: all };
+  }
+
+  // R4 P1-B: authenticated-request URL allowlist.
+  // Accepts:
+  //   - https://api.github.com/gists              (list/create)
+  //   - https://api.github.com/gists/<id>         (get/patch a single Gist,
+  //                                                where <id> matches the same
+  //                                                identifier rules as
+  //                                                isValidIdentifier)
+  // Rejects on: wrong scheme, wrong host, embedded credentials, any
+  // pathname outside the allowed set, any fragment.
+  function assertAllowedAuthenticatedUrl(raw){
+    if (typeof raw !== 'string' || raw.length === 0){
+      return { ok:false, reason:'url-empty' };
+    }
+    let parsed;
+    try { parsed = new URL(raw); }
+    catch(_){ return { ok:false, reason:'url-parse-failed' }; }
+    if (parsed.protocol !== 'https:') return { ok:false, reason:'wrong-scheme' };
+    if (parsed.host !== 'api.github.com') return { ok:false, reason:'wrong-host' };
+    if (parsed.username || parsed.password) return { ok:false, reason:'credentials-in-url' };
+    if (parsed.hash && parsed.hash.length > 0) return { ok:false, reason:'has-fragment' };
+    // Accept exact /gists path.
+    if (parsed.pathname === '/gists') return { ok:true, url: parsed.href };
+    // Accept /gists/<id>
+    const m = parsed.pathname.match(/^\/gists\/([^\/]+)$/);
+    if (m){
+      const id = decodeURIComponent(m[1]);
+      if (!isValidIdentifier(id, 256)) return { ok:false, reason:'invalid-gist-id-in-path' };
+      return { ok:true, url: parsed.href };
+    }
+    return { ok:false, reason:'wrong-path' };
+  }
+
+  // R4 P1-B: single primitive for every authenticated GitHub API call.
+  //   1. Validate the target URL against the allowlist BEFORE any request.
+  //   2. Merge `redirect: 'error'` into the fetch options so the browser
+  //      refuses to automatically follow a 3xx to any destination the
+  //      allowlist has not vetted. Because `redirect: 'error'` rejects the
+  //      fetch promise BEFORE the redirect target is contacted, the bearer
+  //      credential never leaves the initial vetted origin.
+  //   3. Throw a labeled error on rejection so callers surface it truthfully.
+  async function authenticatedGitHubFetch(rawUrl, options){
+    if (!_fetch) throw new Error('FETCH_UNAVAILABLE');
+    const guard = assertAllowedAuthenticatedUrl(rawUrl);
+    if (!guard.ok){
+      const err = new Error('AUTH_URL_REJECTED:' + guard.reason);
+      err.reason = guard.reason;
+      throw err;
+    }
+    const merged = Object.assign({}, options || {}, { redirect: 'error' });
+    // Guard against a caller accidentally passing redirect:'follow' — the
+    // Object.assign above already overrides, but assert defensively.
+    if (merged.redirect !== 'error'){
+      throw new Error('AUTH_REDIRECT_OPT_TAMPERED');
+    }
+    let res;
+    try { res = await _fetch(guard.url, merged); }
+    catch(e){
+      // Native fetch throws a TypeError when redirect:'error' encounters a
+      // 3xx. Label it so callers can distinguish.
+      const msg = String(e && e.message || e);
+      if (/redirect|Failed to fetch/i.test(msg)){
+        const err = new Error('AUTH_REDIRECT_REFUSED');
+        err.cause = e;
+        err.original = msg;
+        throw err;
+      }
+      throw e;
+    }
+    return res;
   }
 
   // Public discovery — paginated. Fails closed on any pagination error;
@@ -1333,9 +1433,8 @@
   // POST a new private Gist. Response is NOT trusted alone — caller must
   // re-fetch and semantically acknowledge before persisting the ID or a base.
   async function createBackupGistOnce(token, backupObject){
-    if (!_fetch) throw new Error('FETCH_UNAVAILABLE');
     const content = JSON.stringify(backupObject, null, 2);
-    const res = await _fetch('https://api.github.com/gists', {
+    const res = await authenticatedGitHubFetch('https://api.github.com/gists', {
       method: 'POST',
       headers: {
         'Authorization': 'Bearer ' + token,
@@ -1911,7 +2010,7 @@
     // network
     fetchConnectedGist, patchConnectedGist, findBackupGistsForBootstrap, createBackupGistOnce,
     // discovery internals (tests)
-    listAllGistsPaginated, parseLinkHeader, assertGitHubGistsUrl,
+    listAllGistsPaginated, parseLinkHeader, assertGitHubGistsUrl, assertAllowedAuthenticatedUrl, authenticatedGitHubFetch,
     // pending-created identity (R2 B4 + R3 tri-state)
     readPendingCreatedGist, writePendingCreatedGist, clearPendingCreatedGist, evaluatePendingCreated,
     // orchestrators
