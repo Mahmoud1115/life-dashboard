@@ -516,7 +516,7 @@ test.describe('R2 — additional required scenarios', () => {
     expect(pending).not.toBeNull(); // pending kept for recovery
   });
 
-  test('R2-EX-06: parseLinkHeader parses and ignores non-next rels', async ({ page }) => {
+  test('R2-EX-06: parseLinkHeader parses and ignores non-next rels (R3 tri-state)', async ({ page }) => {
     await page.goto('/');
     await waitReady(page);
     const parsed = await page.evaluate(() => {
@@ -524,9 +524,11 @@ test.describe('R2 — additional required scenarios', () => {
         '<https://api.github.com/gists?page=2>; rel="next", <https://api.github.com/gists?page=10>; rel="last"'
       );
     });
+    // R3: parseLinkHeader now returns { state, next?, reason? } tri-state.
+    expect(parsed.state).toBe('VALID');
     expect(parsed.next).toBe('https://api.github.com/gists?page=2');
     const empty = await page.evaluate(() => window.GistSync.parseLinkHeader(''));
-    expect(empty.next).toBeNull();
+    expect(empty.state).toBe('ABSENT');
   });
 
   test('R2-EX-07: pending record schema is validated on read (invalid → null)', async ({ page }) => {

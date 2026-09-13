@@ -525,6 +525,11 @@
     <button class="fin-save-btn fin-save-gist" id="sync-reconcile-pending-btn" type="button" onclick="gistReconcilePendingCreated()">↺ Reconcile pending backup</button>
     <button class="fin-save-btn fin-save-gist-quiet" id="sync-discard-pending-btn" type="button" onclick="gistDiscardPendingCreated()">🗑 Discard pending record</button>
   </div>
+  <div id="sync-pending-unhealthy-row" style="margin-top:12px;display:none;flex-wrap:wrap;gap:8px">
+    <div id="sync-pending-unhealthy-msg" style="width:100%;font-size:12px;color:#c66">⚠ Pending backup record is unhealthy. Create refused. Discard to remove the record.</div>
+    <button class="fin-save-btn fin-save-gist-quiet" id="sync-discard-unhealthy-btn" type="button" onclick="gistDiscardPendingCreated()">🗑 Discard unhealthy pending record</button>
+  </div>
+
     <div id="sync-recovery-row" style="margin-top:12px;display:none;flex-wrap:wrap;gap:8px">
     <button class="fin-save-btn fin-save-gist-quiet" id="sync-restore-current-btn" type="button" onclick="restorePreLoadRecovery('current')" style="display:none">↩ Restore pre-Gist-load backup</button>
     <button class="fin-save-btn fin-save-gist-quiet" id="sync-restore-prev-btn" type="button" onclick="restorePreLoadRecovery('prev')" style="display:none">↩ Restore previous pre-Load generation</button>

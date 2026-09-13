@@ -2765,20 +2765,48 @@ function updateGistUI(){
       if(bootstrapChoices) bootstrapChoices.style.display=showRec?'flex':'none';
       row.style.display=(hasCur||hasPrv||showRec)?'flex':'none';
     }
-    // R2 §B3: reveal Create-First-Backup exactly when token present, no
-    // connected Gist, no unresolved pending identity, and not currently in
-    // flight. Pending row supersedes create-first row — reconcile first.
-    const pending=(window.GistSync && typeof window.GistSync.readPendingCreatedGist==='function')
-      ? window.GistSync.readPendingCreatedGist()
-      : (function(){ try{ const r=localStorage.getItem('dune_gist_pending_created_v1'); return r?JSON.parse(r):null; }catch(_){return null;} })();
+    // R3 §3-A tri-state pending gate. Only proven ABSENT reveals Create.
+    // VALID → pending row (reconcile/discard). CORRUPT/READ_FAILED →
+    // unhealthy row (discard only, with acknowledgement).
+    // Also honors the in-memory pending-write-failed latch (R3 §5): if
+    // set this session, Create-First is refused regardless of localStorage.
+    let pendingState='ABSENT';
+    let pendingReason=null;
+    try{
+      if(window.GistSync && typeof window.GistSync.evaluatePendingCreated==='function'){
+        const ev=window.GistSync.evaluatePendingCreated();
+        pendingState = ev.state || 'ABSENT';
+        pendingReason = ev.reason || null;
+      } else {
+        const raw = localStorage.getItem('dune_gist_pending_created_v1');
+        pendingState = raw === null ? 'ABSENT' : 'VALID';
+      }
+    }catch(_){ pendingState='READ_FAILED'; }
+    const latch = (window.GistSync && typeof window.GistSync.getPendingWriteFailedLatch==='function')
+      ? window.GistSync.getPendingWriteFailedLatch()
+      : null;
     const pendRow=document.getElementById('sync-pending-row');
+    const unhealthyRow=document.getElementById('sync-pending-unhealthy-row');
+    const unhealthyMsg=document.getElementById('sync-pending-unhealthy-msg');
     const createRow=document.getElementById('sync-create-row');
     const createBtn=document.getElementById('sync-create-first-backup-btn');
     const inFlight=!!window._gistCreateInFlight;
-    if(pendRow) pendRow.style.display=(pending?'flex':'none');
+    const pendingVisible = pendingState === 'VALID';
+    const unhealthyVisible = pendingState === 'CORRUPT' || pendingState === 'READ_FAILED' || !!latch;
+    if(pendRow) pendRow.style.display = pendingVisible ? 'flex' : 'none';
+    if(unhealthyRow) unhealthyRow.style.display = unhealthyVisible ? 'flex' : 'none';
+    if(unhealthyMsg){
+      if(latch){
+        unhealthyMsg.textContent = '⚠ A backup Gist was created but the pending record could not be durably stored. Session latch active. Reload after resolving local storage before retry. Latched Gist ID: ' + (latch.gistId || '(unknown)');
+      } else if(pendingState === 'CORRUPT'){
+        unhealthyMsg.textContent = '⚠ Pending backup record is CORRUPT (' + (pendingReason || 'unknown') + '). Create refused. Discard explicitly to remove the record.';
+      } else if(pendingState === 'READ_FAILED'){
+        unhealthyMsg.textContent = '⚠ Pending backup record cannot be read (localStorage error: ' + (pendingReason || 'unknown') + '). Create refused; resolve local persistence first.';
+      }
+    }
     if(createRow){
-      const showCreate=!!token && !connectedId && !pending;
-      createRow.style.display=showCreate?'flex':'none';
+      const showCreate = !!token && !connectedId && pendingState === 'ABSENT' && !latch;
+      createRow.style.display = showCreate ? 'flex' : 'none';
     }
     if(createBtn){
       createBtn.disabled=inFlight;
@@ -2786,8 +2814,10 @@ function updateGistUI(){
     }
     const reconcileBtn=document.getElementById('sync-reconcile-pending-btn');
     const discardBtn=document.getElementById('sync-discard-pending-btn');
+    const discardUnhealthyBtn=document.getElementById('sync-discard-unhealthy-btn');
     if(reconcileBtn) reconcileBtn.disabled=inFlight;
     if(discardBtn) discardBtn.disabled=inFlight;
+    if(discardUnhealthyBtn) discardUnhealthyBtn.disabled=inFlight;
   }catch(_){/*non-fatal UI wiring*/}
 }
 
@@ -2812,6 +2842,8 @@ try{
   });
   window.addEventListener('lifeos:gist-pending-created-updated',()=>updateGistUI());
   window.addEventListener('lifeos:gist-first-backup-unacknowledged',()=>updateGistUI());
+  window.addEventListener('lifeos:gist-pending-created-unhealthy',()=>updateGistUI());
+  window.addEventListener('lifeos:gist-pending-clear-failed',()=>updateGistUI());
 }catch(_){/*non-fatal*/}
 
 window.saveGistToken=function(){

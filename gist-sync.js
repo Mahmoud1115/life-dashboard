@@ -410,18 +410,113 @@
     return { ok:true };
   }
 
-  // Parse a GitHub `Link` header. Returns { next: url|null }. Ignores
-  // other rels (prev, first, last).
+  // Strict GitHub `Link` header parser (R3 §3-C).
+  //
+  // Returns one of:
+  //   { state:'ABSENT' }                          — no Link header at all
+  //   { state:'VALID', next: <string>|null }      — well-formed; next=null when
+  //                                                  no rel="next" is present
+  //   { state:'MALFORMED', reason: <string> }     — nonempty header that could
+  //                                                  not be safely parsed; must
+  //                                                  fail closed at the caller
+  //
+  // Fail-closed cases:
+  //   - nonempty header that produces zero link entries;
+  //   - any link entry whose <URI-Reference> cannot be extracted;
+  //   - duplicate `rel="next"` (even if URLs are identical — we treat any
+  //     duplicated `next` relation as ambiguous provider metadata);
+  //   - multiple `rel` values on a single link entry (per RFC 8288 a link
+  //     value MAY declare multiple space-separated rels; we accept as long
+  //     as we saw a syntactically valid entry).
   function parseLinkHeader(header){
-    if (typeof header !== 'string' || !header) return { next: null };
-    // Match: <URL>; rel="next"
-    const re = /<([^>]+)>\s*;\s*rel\s*=\s*"([^"]+)"/g;
-    let m; let nextUrl = null;
-    while ((m = re.exec(header)) !== null){
-      const url = m[1]; const rel = m[2];
-      if (rel === 'next'){ nextUrl = url; break; }
+    if (typeof header !== 'string' || header.length === 0) return { state:'ABSENT' };
+    // Split link values on commas that are NOT inside quoted strings.
+    const parts = [];
+    let cur = ''; let inQuote = false; let escape = false;
+    for (let i = 0; i < header.length; i++){
+      const ch = header[i];
+      if (escape){ cur += ch; escape = false; continue; }
+      if (ch === '\\' && inQuote){ escape = true; cur += ch; continue; }
+      if (ch === '"'){ inQuote = !inQuote; cur += ch; continue; }
+      if (ch === ',' && !inQuote){ parts.push(cur.trim()); cur = ''; continue; }
+      cur += ch;
     }
-    return { next: nextUrl };
+    if (cur.trim() !== '' || parts.length === 0) parts.push(cur.trim());
+    // Reject an empty split — should never happen after the length check.
+    if (parts.length === 0) return { state:'MALFORMED', reason:'empty-split' };
+    let nextUrl = null;
+    let sawEntry = false;
+    for (const raw of parts){
+      if (!raw) continue;
+      // Each link value: <URI-Reference>; param=value; ...
+      // URI-Reference must be angle-bracket enclosed and non-empty.
+      const uriMatch = raw.match(/^<([^>]*)>\s*(?:;\s*(.*))?$/);
+      if (!uriMatch) return { state:'MALFORMED', reason:'bad-link-value' };
+      const uri = uriMatch[1];
+      if (!uri) return { state:'MALFORMED', reason:'empty-uri' };
+      const paramsRaw = uriMatch[2] || '';
+      // Parse params — semicolon-separated key=value, with quoted values
+      // permitted. RFC 8288 permits multiple params; we only need `rel`.
+      const rels = [];
+      if (paramsRaw.trim() !== ''){
+        // Split params on ';' outside quoted strings.
+        const pList = [];
+        let pcur = ''; let pQuote = false; let pEsc = false;
+        for (let i = 0; i < paramsRaw.length; i++){
+          const ch = paramsRaw[i];
+          if (pEsc){ pcur += ch; pEsc = false; continue; }
+          if (ch === '\\' && pQuote){ pEsc = true; pcur += ch; continue; }
+          if (ch === '"'){ pQuote = !pQuote; pcur += ch; continue; }
+          if (ch === ';' && !pQuote){ pList.push(pcur.trim()); pcur=''; continue; }
+          pcur += ch;
+        }
+        if (pcur.trim() !== '') pList.push(pcur.trim());
+        for (const kv of pList){
+          if (!kv) continue;
+          const eq = kv.indexOf('=');
+          if (eq === -1) return { state:'MALFORMED', reason:'param-without-value' };
+          const key = kv.slice(0, eq).trim().toLowerCase();
+          let val = kv.slice(eq + 1).trim();
+          if (val.startsWith('"') && val.endsWith('"') && val.length >= 2){
+            val = val.slice(1, -1);
+          }
+          if (key === 'rel'){
+            // rel may hold multiple space-separated tokens per RFC 8288.
+            for (const r of val.split(/\s+/)) if (r) rels.push(r.toLowerCase());
+          }
+        }
+      }
+      sawEntry = true;
+      if (rels.includes('next')){
+        if (nextUrl !== null){
+          return { state:'MALFORMED', reason:'duplicate-next' };
+        }
+        nextUrl = uri;
+      }
+    }
+    if (!sawEntry) return { state:'MALFORMED', reason:'no-entries' };
+    return { state:'VALID', next: nextUrl };
+  }
+
+  // R3 §3-B: authenticated-fetch URL allowlist for GitHub Gist pagination.
+  // Any next-URL that is not exactly an https://api.github.com/gists path
+  // MUST NOT receive the caller's PAT. Also refuses embedded credentials.
+  //
+  // Returns { ok, url } on accept, or { ok:false, reason } on reject.
+  function assertGitHubGistsUrl(nextRaw, baseUrl){
+    if (typeof nextRaw !== 'string' || nextRaw.length === 0){
+      return { ok:false, reason:'url-empty' };
+    }
+    let parsed;
+    try { parsed = new URL(nextRaw, baseUrl || 'https://api.github.com/gists'); }
+    catch(_) { return { ok:false, reason:'url-parse-failed' }; }
+    if (parsed.protocol !== 'https:') return { ok:false, reason:'wrong-scheme' };
+    if (parsed.host !== 'api.github.com') return { ok:false, reason:'wrong-host' };
+    if (parsed.username || parsed.password) return { ok:false, reason:'credentials-in-url' };
+    if (parsed.pathname !== '/gists') return { ok:false, reason:'wrong-path' };
+    // Normalize: reject fragments — API responses should never carry them.
+    if (parsed.hash && parsed.hash.length > 0) return { ok:false, reason:'has-fragment' };
+    return { ok:true, url: parsed.href };
   }
 
   // Fetch every page of the caller's Gists until pagination ends, or a
@@ -431,30 +526,52 @@
   // without terminating.
   async function listAllGistsPaginated(token, options){
     options = options || {};
+    const perPage = 100;
     const maxPages = Number.isInteger(options.maxPages) && options.maxPages > 0 ? options.maxPages : MAX_DISCOVERY_PAGES;
     if (!_fetch) return { ok:false, reason:'FETCH_UNAVAILABLE' };
     const visited = new Set();
-    let url = 'https://api.github.com/gists?per_page=100';
+    let url = 'https://api.github.com/gists?per_page=' + perPage;
     let pages = 0;
     const all = [];
     while (url){
-      if (visited.has(url)) return { ok:false, reason:'pagination-loop', pages, atUrl:url };
-      visited.add(url);
+      // URL allowlist BEFORE any authenticated request (R3 §3-B).
+      const guard = assertGitHubGistsUrl(url, 'https://api.github.com/gists');
+      if (!guard.ok) return { ok:false, reason:'next-url-rejected', pages, detail:guard };
+      const canonicalUrl = guard.url;
+      if (visited.has(canonicalUrl)) return { ok:false, reason:'pagination-loop', pages, atUrl:canonicalUrl };
+      visited.add(canonicalUrl);
       if (pages >= maxPages) return { ok:false, reason:'pagination-cap-exceeded', pages };
       let res;
-      try { res = await _fetch(url, { headers: { 'Authorization': 'Bearer ' + token, 'Accept': 'application/vnd.github+json' } }); }
-      catch(e){ return { ok:false, reason:'page-fetch-throw', pages, atUrl:url, error:String(e && e.message || e) }; }
-      if (!res.ok) return { ok:false, reason:'page-fetch-failed', pages, atUrl:url, status:res.status };
+      try { res = await _fetch(canonicalUrl, { headers: { 'Authorization': 'Bearer ' + token, 'Accept': 'application/vnd.github+json' } }); }
+      catch(e){ return { ok:false, reason:'page-fetch-throw', pages, atUrl:canonicalUrl, error:String(e && e.message || e) }; }
+      if (!res.ok) return { ok:false, reason:'page-fetch-failed', pages, atUrl:canonicalUrl, status:res.status };
       let body;
       try { body = await res.json(); }
-      catch(e){ return { ok:false, reason:'page-body-malformed', pages, atUrl:url, error:String(e && e.message || e) }; }
-      if (!Array.isArray(body)) return { ok:false, reason:'page-body-not-array', pages, atUrl:url };
+      catch(e){ return { ok:false, reason:'page-body-malformed', pages, atUrl:canonicalUrl, error:String(e && e.message || e) }; }
+      if (!Array.isArray(body)) return { ok:false, reason:'page-body-not-array', pages, atUrl:canonicalUrl };
       all.push(...body);
       pages++;
       const linkHeader = (typeof res.headers === 'object' && res.headers && typeof res.headers.get === 'function')
         ? res.headers.get('Link')
         : null;
+      // R3 §3-C: strict Link parser semantics.
       const parsed = parseLinkHeader(linkHeader);
+      if (parsed.state === 'MALFORMED'){
+        return { ok:false, reason:'link-header-malformed', pages, detail: parsed };
+      }
+      if (parsed.state === 'ABSENT'){
+        // No Link header at all. GitHub omits the Link header when the
+        // page is a "full and only" page — but that guarantee is not
+        // consistent enough to trust when a page is exactly per_page-sized.
+        // Fail closed on ambiguity: if this page returned exactly per_page
+        // items and no Link header, treat completeness as unknown.
+        if (body.length >= perPage){
+          return { ok:false, reason:'link-header-absent-on-full-page', pages, atUrl:canonicalUrl };
+        }
+        break;
+      }
+      // parsed.state === 'VALID'
+      if (!parsed.next){ break; }
       url = parsed.next;
     }
     return { ok:true, pages, gists: all };
@@ -1146,15 +1263,40 @@
       && typeof v.createdAt === 'string'
       && Number.isFinite(Date.parse(v.createdAt));
   }
-  function readPendingCreatedGist(){
+  // R3 §3-A tri-state. Only { state:'ABSENT' } authorizes new creation.
+  //   ABSENT       — key absent (getItem === null and no read error)
+  //   VALID        — key present + parses + isValidPendingRecord
+  //   READ_FAILED  — localStorage.getItem threw
+  //   CORRUPT      — key present but parse failed / wrong schema / invalid
+  function evaluatePendingCreated(){
     let raw;
     try { raw = localStorage.getItem(PENDING_CREATED_KEY); }
-    catch(_){ return null; }
-    if (typeof raw !== 'string' || !raw) return null;
+    catch(e){ return { state:'READ_FAILED', reason:'getItem-threw', error:String(e && e.message || e) }; }
+    if (raw === null) return { state:'ABSENT' };
+    if (typeof raw !== 'string'){ return { state:'CORRUPT', reason:'not-string', raw:String(raw) }; }
+    if (raw.length === 0) return { state:'CORRUPT', reason:'empty-string', raw:'' };
     let parsed;
     try { parsed = JSON.parse(raw); }
-    catch(_){ return null; }
-    return isValidPendingRecord(parsed) ? parsed : null;
+    catch(e){ return { state:'CORRUPT', reason:'json-parse-failed', raw }; }
+    if (!isValidPendingRecord(parsed)){
+      // Distinguish the top-level shape issues for diagnostics but treat all
+      // as CORRUPT for gating purposes.
+      let why = 'invalid-record';
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) why = 'not-object';
+      else if (parsed.schema !== 1) why = 'wrong-schema';
+      else if (!isValidIdentifier(parsed.gistId, 256)) why = 'invalid-gistId';
+      else if (typeof parsed.createdAt !== 'string' || !Number.isFinite(Date.parse(parsed.createdAt))) why = 'invalid-createdAt';
+      return { state:'CORRUPT', reason: why, raw };
+    }
+    return { state:'VALID', record: parsed, raw };
+  }
+  // Back-compat helper: returns the record ONLY on VALID. Absent, CORRUPT,
+  // and READ_FAILED all return null so existing callers that treat null as
+  // "no valid record" still behave safely — but every new gate MUST use
+  // evaluatePendingCreated so it can distinguish ABSENT from unsafe.
+  function readPendingCreatedGist(){
+    const ev = evaluatePendingCreated();
+    return ev.state === 'VALID' ? ev.record : null;
   }
   function writePendingCreatedGist(gistId){
     if (!isValidIdentifier(gistId, 256)) return { ok:false, reason:'invalid-gist-id' };
@@ -1172,8 +1314,20 @@
     return { ok:true, record: rec };
   }
   function clearPendingCreatedGist(){
-    try { localStorage.removeItem(PENDING_CREATED_KEY); } catch(_){}
+    let removeError = null;
+    try { localStorage.removeItem(PENDING_CREATED_KEY); }
+    catch(e){ removeError = String(e && e.message || e); }
+    let readback;
+    try { readback = localStorage.getItem(PENDING_CREATED_KEY); }
+    catch(e){
+      // If we cannot even read back, we cannot claim clear succeeded.
+      return { ok:false, reason:'readback-threw', removeError, error:String(e && e.message || e) };
+    }
+    if (readback !== null){
+      return { ok:false, reason: removeError ? 'remove-threw-still-present' : 'still-present-after-remove', removeError };
+    }
     try { window.dispatchEvent(new CustomEvent('lifeos:gist-pending-created-updated', { detail:{ present:false } })); } catch(_){}
+    return { ok:true, removeError };
   }
 
   // POST a new private Gist. Response is NOT trusted alone — caller must
@@ -1211,6 +1365,10 @@
 
   // ── same-page serialization (R2 B1) ────────────────────────────────────
   let _createInFlight = false;
+  // R3 §5: session-local latch that trips when POST 2xx succeeded but the
+  // pending record could not be durably persisted. Any subsequent create
+  // in the same session is refused until explicit reload/reset.
+  let _pendingWriteFailedLatch = null;
   async function _withCreateLock(fn){
     // Same-page rejection: refuse concurrent create attempts inside one page.
     if (_createInFlight) return { ok:false, reason:'already-in-flight' };
@@ -1261,16 +1419,35 @@
       return { ok:false, reason:'already-connected' };
     }
 
-    // Round-2 §B4: any unresolved pending-created identity must be reconciled
-    // before a new POST is allowed. This prevents a second orphan Gist after
-    // an earlier POST-then-failure.
-    const pending = readPendingCreatedGist();
-    if (pending){
+    // R3 §3-A tri-state pending gate. Only proven ABSENT permits create.
+    // Also honors the R2 in-memory unresolved-created-ID latch: if this
+    // session recorded a POST-succeeded-but-pending-write-failed identity,
+    // any new create is refused until explicit resolution/reload (R3 §5).
+    if (_pendingWriteFailedLatch){
+      setStatus('A prior backup was created but the pending identity could not be durably recorded. Reload or discard the in-memory latch before creating another.', 'error');
+      return { ok:false, reason:'pending-in-memory-latch-present', latchedGistId: _pendingWriteFailedLatch.gistId };
+    }
+    const pendingEval = evaluatePendingCreated();
+    if (pendingEval.state === 'VALID'){
+      const pending = pendingEval.record;
       setStatus('A previous backup Gist was created but not fully acknowledged. Reconcile before creating another.', 'warn');
       toast('⚠ Pending backup exists — reconcile first');
       try { window.dispatchEvent(new CustomEvent('lifeos:gist-first-backup-unacknowledged', { detail:{ createdGistId: pending.gistId, reason:'pending-blocks-new-create' } })); } catch(_){}
       return { ok:false, reason:'pending-created-present', pendingGistId: pending.gistId };
     }
+    if (pendingEval.state === 'CORRUPT'){
+      setStatus('⚠ Pending backup record is unreadable/corrupt. Create refused. Diagnose or Discard explicitly before creating.', 'error');
+      toast('⚠ Pending record corrupt — no create');
+      try { window.dispatchEvent(new CustomEvent('lifeos:gist-pending-created-unhealthy', { detail:{ state:'CORRUPT', reason:pendingEval.reason } })); } catch(_){}
+      return { ok:false, reason:'pending-corrupt', pendingReason: pendingEval.reason };
+    }
+    if (pendingEval.state === 'READ_FAILED'){
+      setStatus('⚠ Pending backup record cannot be read (localStorage error). Create refused; resolve local persistence first.', 'error');
+      toast('⚠ Pending record unreadable — no create');
+      try { window.dispatchEvent(new CustomEvent('lifeos:gist-pending-created-unhealthy', { detail:{ state:'READ_FAILED', reason:pendingEval.reason } })); } catch(_){}
+      return { ok:false, reason:'pending-read-failed', pendingReason: pendingEval.reason };
+    }
+    // pendingEval.state === 'ABSENT' — safe to proceed.
 
     setStatus('Checking whether a backup Gist already exists for this token…');
     let gists;
@@ -1325,11 +1502,17 @@
       return { ok:false, reason:'existing-backup-discoverable', discoveredGistId: finalGists[0].id };
     }
     // Pending identity might have been persisted by a *cross-tab* attempt
-    // during the discovery window; re-check.
-    const pendingAfterFinal = readPendingCreatedGist();
-    if (pendingAfterFinal){
+    // during the discovery window; re-check via tri-state.
+    const pendingFinalEval = evaluatePendingCreated();
+    if (pendingFinalEval.state === 'VALID'){
       setStatus('Another tab persisted a pending backup identity — reconcile before creating another.', 'warn');
-      return { ok:false, reason:'pending-created-present', pendingGistId: pendingAfterFinal.gistId };
+      return { ok:false, reason:'pending-created-present', pendingGistId: pendingFinalEval.record.gistId };
+    }
+    if (pendingFinalEval.state === 'CORRUPT'){
+      return { ok:false, reason:'pending-corrupt', pendingReason: pendingFinalEval.reason };
+    }
+    if (pendingFinalEval.state === 'READ_FAILED'){
+      return { ok:false, reason:'pending-read-failed', pendingReason: pendingFinalEval.reason };
     }
 
     const backup = { version: BACKUP_WRAPPER_VERSION, exported_at: _now(), data: localData };
@@ -1348,8 +1531,10 @@
     if (!pendWrite.ok){
       // The Gist exists remotely but we cannot durably record it — surface
       // this truthfully. Do NOT proceed to base persistence; do NOT clear
-      // pending (it never wrote).
-      setStatus('⚠ Backup Gist was created but the pending identity could not be persisted (' + pendWrite.reason + '). Local storage may be full or blocked.', 'error');
+      // pending (it never wrote). Latch the identity in-memory so no
+      // second POST occurs in the same session until explicit resolution.
+      _pendingWriteFailedLatch = { gistId: newGistId, at: _now() };
+      setStatus('⚠ Backup Gist was created but the pending identity could not be persisted (' + pendWrite.reason + '). Local storage may be full or blocked. Reload after resolving local storage before retry.', 'error');
       try { window.dispatchEvent(new CustomEvent('lifeos:gist-first-backup-unacknowledged', { detail:{ createdGistId: newGistId, reason:'pending-write-failed' } })); } catch(_){}
       return { ok:false, reason:'pending-write-failed', createdGistId:newGistId, detail:pendWrite };
     }
@@ -1394,7 +1579,20 @@
       return { ok:false, reason:'unacknowledged', createdGistId:newGistId, detail:w };
     }
     // Only on full success: clear pending identity — it has been promoted.
-    clearPendingCreatedGist();
+    const clearRes = clearPendingCreatedGist();
+    if (!clearRes.ok){
+      // The Gist is promoted (ID + base written) but the pending record
+      // could not be verifiably cleared. Report truthful clear failure.
+      setStatus('✓ Backup created and connected, but the pending record could not be verifiably cleared (' + clearRes.reason + '). Please Discard explicitly.', 'warn');
+      try { window.dispatchEvent(new CustomEvent('lifeos:gist-pending-clear-failed', { detail:{ reason: clearRes.reason } })); } catch(_){}
+      // Do not falsely claim `discarded` — return promoted-but-clear-failed
+      // so tests/UI can distinguish it.
+      safeSet(LAST_SYNC_KEY, new Date().toISOString());
+      safeSet(LAST_BACKUP_KEY, new Date().toISOString());
+      safeSet(CHANGE_COUNT_KEY, '0');
+      refreshUI();
+      return { ok:true, kind:'created-first-backup-clear-pending-unverified', gistId:newGistId, base:w.base, clearRes };
+    }
     safeSet(LAST_SYNC_KEY, new Date().toISOString());
     safeSet(LAST_BACKUP_KEY, new Date().toISOString());
     safeSet(CHANGE_COUNT_KEY, '0');
@@ -1415,8 +1613,17 @@
     return _withCreateLock(() => _reconcilePendingCreatedInner());
   }
   async function _reconcilePendingCreatedInner(){
-    const pending = readPendingCreatedGist();
-    if (!pending) return { ok:true, kind:'no-pending' };
+    const ev = evaluatePendingCreated();
+    if (ev.state === 'ABSENT') return { ok:true, kind:'no-pending' };
+    if (ev.state === 'CORRUPT'){
+      setStatus('Pending backup record is corrupt — cannot reconcile without a valid pending identity. Discard explicitly to remove the record.', 'error');
+      return { ok:false, reason:'pending-corrupt', pendingReason: ev.reason };
+    }
+    if (ev.state === 'READ_FAILED'){
+      setStatus('Pending backup record is unreadable (localStorage error) — cannot reconcile.', 'error');
+      return { ok:false, reason:'pending-read-failed', pendingReason: ev.reason };
+    }
+    const pending = ev.record;
     const pre = await preflightSyncEnvironment();
     if (!pre.ok) return { ok:false, reason: pre.reason };
     const token = pre.token;
@@ -1430,8 +1637,13 @@
     try { remote = await fetchConnectedGist(token, pending.gistId); }
     catch(e){
       if (e.status === 404){
-        // Stale pending — safe to remove.
-        clearPendingCreatedGist();
+        // Stale pending — safe to remove; must verify clear.
+        const c = clearPendingCreatedGist();
+        if (!c.ok){
+          setStatus('Pending backup remote returned 404 but the pending record could not be verifiably cleared (' + c.reason + ').', 'warn');
+          try { window.dispatchEvent(new CustomEvent('lifeos:gist-pending-clear-failed', { detail:{ reason:c.reason } })); } catch(_){}
+          return { ok:false, reason:'clear-failed', kind:'reconcile-404-clear-failed', priorPendingGistId: pending.gistId, detail:c };
+        }
         return { ok:true, kind:'pending-cleared-404', priorPendingGistId: pending.gistId };
       }
       setStatus('⚠ Pending backup could not be re-read (' + (e.message || 'error') + ') — pending kept.', 'error');
@@ -1462,7 +1674,16 @@
       setStatus('Pending backup promoted, but sync base could not be confirmed (' + w.reason + '). Pending kept.', 'warn');
       return { ok:false, reason:'unacknowledged', pendingGistId: pending.gistId, detail:w };
     }
-    clearPendingCreatedGist();
+    const clearReconcile = clearPendingCreatedGist();
+    if (!clearReconcile.ok){
+      setStatus('✓ Pending backup promoted but the pending record could not be verifiably cleared (' + clearReconcile.reason + '). Please Discard explicitly.', 'warn');
+      try { window.dispatchEvent(new CustomEvent('lifeos:gist-pending-clear-failed', { detail:{ reason:clearReconcile.reason } })); } catch(_){}
+      safeSet(LAST_SYNC_KEY, new Date().toISOString());
+      safeSet(LAST_BACKUP_KEY, new Date().toISOString());
+      safeSet(CHANGE_COUNT_KEY, '0');
+      refreshUI();
+      return { ok:true, kind:'reconciled-clear-pending-unverified', gistId: pending.gistId, base:w.base, clearRes: clearReconcile };
+    }
     safeSet(LAST_SYNC_KEY, new Date().toISOString());
     safeSet(LAST_BACKUP_KEY, new Date().toISOString());
     safeSet(CHANGE_COUNT_KEY, '0');
@@ -1477,15 +1698,31 @@
   // Requires an in-memory confirm; NEVER clears silently.
   async function discardPendingCreated(options){
     options = options || {};
-    const pending = readPendingCreatedGist();
-    if (!pending) return { ok:true, kind:'no-pending' };
+    const ev = evaluatePendingCreated();
+    if (ev.state === 'ABSENT') return { ok:true, kind:'no-pending' };
+    // Distinct confirm text depending on state — corrupt/read-failed
+    // discards destroy diagnostic evidence, so explicit acknowledgement
+    // is required.
+    let prompt;
+    let priorGistId = null;
+    if (ev.state === 'VALID'){
+      priorGistId = ev.record.gistId;
+      prompt = 'Discard the pending backup Gist (' + priorGistId.slice(0,12) + '…)?\n\nThis does not delete the Gist on GitHub — it only clears the local pending record.';
+    } else if (ev.state === 'CORRUPT'){
+      prompt = 'The pending backup record is CORRUPT (' + ev.reason + '). Discarding will remove the local evidence and cannot be undone. Continue?';
+    } else if (ev.state === 'READ_FAILED'){
+      prompt = 'The pending backup record could not be read (' + ev.reason + '). Discarding will attempt removeItem but cannot guarantee recovery. Continue?';
+    }
     const proceed = options.confirmed === true
-      || (typeof window.confirm === 'function' && window.confirm(
-        'Discard the pending backup Gist (' + pending.gistId.slice(0,12) + '…)?\n\nThis does not delete the Gist on GitHub — it only clears the local pending record.'
-      ));
+      || (typeof window.confirm === 'function' && window.confirm(prompt));
     if (!proceed) return { ok:false, reason:'cancelled-by-user' };
-    clearPendingCreatedGist();
-    return { ok:true, kind:'discarded', priorPendingGistId: pending.gistId };
+    const c = clearPendingCreatedGist();
+    if (!c.ok){
+      setStatus('⚠ Discard attempted but the pending record could not be verifiably cleared (' + c.reason + ').', 'error');
+      try { window.dispatchEvent(new CustomEvent('lifeos:gist-pending-clear-failed', { detail:{ reason:c.reason } })); } catch(_){}
+      return { ok:false, reason:'clear-failed', kind:'discard-clear-failed', priorState: ev.state, priorPendingGistId: priorGistId, detail:c };
+    }
+    return { ok:true, kind:'discarded', priorState: ev.state, priorPendingGistId: priorGistId };
   }
 
   // Bootstrap / reconnect: intentional discovery. Only path that may retarget
@@ -1674,9 +1911,9 @@
     // network
     fetchConnectedGist, patchConnectedGist, findBackupGistsForBootstrap, createBackupGistOnce,
     // discovery internals (tests)
-    listAllGistsPaginated, parseLinkHeader,
-    // pending-created identity (R2 B4)
-    readPendingCreatedGist, writePendingCreatedGist, clearPendingCreatedGist,
+    listAllGistsPaginated, parseLinkHeader, assertGitHubGistsUrl,
+    // pending-created identity (R2 B4 + R3 tri-state)
+    readPendingCreatedGist, writePendingCreatedGist, clearPendingCreatedGist, evaluatePendingCreated,
     // orchestrators
     saveConnected, loadConnected, bootstrapOrReconnect, createFirstBackup, reconcilePendingCreated, discardPendingCreated,
     resolveBootstrapUseLocal, resolveBootstrapLoadRemote, restorePreLoadRecovery,
@@ -1692,6 +1929,9 @@
       CREATE_LOCK_NAME, MAX_DISCOVERY_PAGES,
       GIST_BACKUP_DESCRIPTION, BACKUP_FILE, BACKUP_WRAPPER_VERSION,
     }),
+    // R3 §5 in-memory pending-write-failed latch (read-only)
+    getPendingWriteFailedLatch: () => _pendingWriteFailedLatch,
+    _clearPendingWriteFailedLatch(){ _pendingWriteFailedLatch = null; },
     // injection points
     _setFetch(fn){ _fetch = fn; },
     _setNow(fn){ _now = fn; },
