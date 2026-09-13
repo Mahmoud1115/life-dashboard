@@ -34,6 +34,9 @@
   const LEGACY_REMOTE_KEY  = 'dune_gist_remote_updated_v1'; // display-only
   const PRIOR_REMOTE_KEY   = 'dune_gist_prior_remote_revision_v1'; // audit evidence for Keep-Local resolution
   const CONFLICT_EXPORT_KEY = 'dune_gist_conflict_export_v1';       // local snapshot before destructive Load Remote resolution
+  const PENDING_CREATED_KEY = 'dune_gist_pending_created_v1'; // narrowly-scoped pending-created-Gist identity (R2 B4)
+  const CREATE_LOCK_NAME    = 'lifeos-gist-create-first-v1'; // cross-tab exclusive lock for first-backup creation (R2 B1)
+  const MAX_DISCOVERY_PAGES = 20;                              // defensive cap on GitHub Gist listing pages (R2 B2)
 
   const GIST_BACKUP_DESCRIPTION = 'Dune Life OS — Auto Backup';
   const BACKUP_FILE = 'dune-backup.json';
@@ -407,16 +410,69 @@
     return { ok:true };
   }
 
+  // Parse a GitHub `Link` header. Returns { next: url|null }. Ignores
+  // other rels (prev, first, last).
+  function parseLinkHeader(header){
+    if (typeof header !== 'string' || !header) return { next: null };
+    // Match: <URL>; rel="next"
+    const re = /<([^>]+)>\s*;\s*rel\s*=\s*"([^"]+)"/g;
+    let m; let nextUrl = null;
+    while ((m = re.exec(header)) !== null){
+      const url = m[1]; const rel = m[2];
+      if (rel === 'next'){ nextUrl = url; break; }
+    }
+    return { next: nextUrl };
+  }
+
+  // Fetch every page of the caller's Gists until pagination ends, or a
+  // defensive cap is hit. Returns { ok, pages, gists } or { ok:false, reason }.
+  // Fails closed on: HTTP non-2xx, malformed JSON, non-array page body,
+  // pagination loop (same next URL twice), or exceeding MAX_DISCOVERY_PAGES
+  // without terminating.
+  async function listAllGistsPaginated(token, options){
+    options = options || {};
+    const maxPages = Number.isInteger(options.maxPages) && options.maxPages > 0 ? options.maxPages : MAX_DISCOVERY_PAGES;
+    if (!_fetch) return { ok:false, reason:'FETCH_UNAVAILABLE' };
+    const visited = new Set();
+    let url = 'https://api.github.com/gists?per_page=100';
+    let pages = 0;
+    const all = [];
+    while (url){
+      if (visited.has(url)) return { ok:false, reason:'pagination-loop', pages, atUrl:url };
+      visited.add(url);
+      if (pages >= maxPages) return { ok:false, reason:'pagination-cap-exceeded', pages };
+      let res;
+      try { res = await _fetch(url, { headers: { 'Authorization': 'Bearer ' + token, 'Accept': 'application/vnd.github+json' } }); }
+      catch(e){ return { ok:false, reason:'page-fetch-throw', pages, atUrl:url, error:String(e && e.message || e) }; }
+      if (!res.ok) return { ok:false, reason:'page-fetch-failed', pages, atUrl:url, status:res.status };
+      let body;
+      try { body = await res.json(); }
+      catch(e){ return { ok:false, reason:'page-body-malformed', pages, atUrl:url, error:String(e && e.message || e) }; }
+      if (!Array.isArray(body)) return { ok:false, reason:'page-body-not-array', pages, atUrl:url };
+      all.push(...body);
+      pages++;
+      const linkHeader = (typeof res.headers === 'object' && res.headers && typeof res.headers.get === 'function')
+        ? res.headers.get('Link')
+        : null;
+      const parsed = parseLinkHeader(linkHeader);
+      url = parsed.next;
+    }
+    return { ok:true, pages, gists: all };
+  }
+
+  // Public discovery — paginated. Fails closed on any pagination error;
+  // callers MUST NOT treat a fail-closed result as "no matching gists".
   async function findBackupGistsForBootstrap(token){
     if (!_fetch) throw new Error('FETCH_UNAVAILABLE');
-    const res = await _fetch('https://api.github.com/gists?per_page=100', {
-      headers: { 'Authorization': 'Bearer ' + token, 'Accept': 'application/vnd.github+json' }
-    });
-    if (!res.ok){
-      const err = new Error('GIST_LIST_FAILED'); err.status = res.status; throw err;
+    const listing = await listAllGistsPaginated(token, {});
+    if (!listing.ok){
+      const err = new Error('GIST_LIST_FAILED');
+      err.status = listing.status || 0;
+      err.reason = listing.reason;
+      err.pages = listing.pages || 0;
+      throw err;
     }
-    const gists = await res.json();
-    return (gists || [])
+    return (listing.gists || [])
       .filter(g => g && g.description === GIST_BACKUP_DESCRIPTION && g.files && g.files[BACKUP_FILE])
       .sort((a,b) => new Date(b.updated_at) - new Date(a.updated_at));
   }
@@ -1076,6 +1132,50 @@
     } catch(_){ return null; }
   }
 
+  // ── pending-created-Gist identity (R2 B4) ──────────────────────────────
+  // Written ONLY after the provider returns a syntactically valid created ID
+  // and BEFORE any acknowledgement-based trust step. This is not a
+  // connected-Gist ID and not a sync base; it exists so that a POST-succeeds
+  // failure cannot silently strand a real remote Gist on the user's account.
+  function isValidPendingRecord(v){
+    return !!v
+      && typeof v === 'object'
+      && !Array.isArray(v)
+      && v.schema === 1
+      && isValidIdentifier(v.gistId, 256)
+      && typeof v.createdAt === 'string'
+      && Number.isFinite(Date.parse(v.createdAt));
+  }
+  function readPendingCreatedGist(){
+    let raw;
+    try { raw = localStorage.getItem(PENDING_CREATED_KEY); }
+    catch(_){ return null; }
+    if (typeof raw !== 'string' || !raw) return null;
+    let parsed;
+    try { parsed = JSON.parse(raw); }
+    catch(_){ return null; }
+    return isValidPendingRecord(parsed) ? parsed : null;
+  }
+  function writePendingCreatedGist(gistId){
+    if (!isValidIdentifier(gistId, 256)) return { ok:false, reason:'invalid-gist-id' };
+    const rec = { schema:1, gistId, createdAt: _now() };
+    let ser;
+    try { ser = JSON.stringify(rec); }
+    catch(e){ return { ok:false, reason:'serialize-failed', error:String(e && e.message || e) }; }
+    try { localStorage.setItem(PENDING_CREATED_KEY, ser); }
+    catch(e){ return { ok:false, reason:'setItem-failed', error:String(e && e.message || e) }; }
+    let readback;
+    try { readback = localStorage.getItem(PENDING_CREATED_KEY); }
+    catch(e){ return { ok:false, reason:'readback-failed', error:String(e && e.message || e) }; }
+    if (readback !== ser) return { ok:false, reason:'readback-mismatch' };
+    try { window.dispatchEvent(new CustomEvent('lifeos:gist-pending-created-updated', { detail:{ gistId, present:true } })); } catch(_){}
+    return { ok:true, record: rec };
+  }
+  function clearPendingCreatedGist(){
+    try { localStorage.removeItem(PENDING_CREATED_KEY); } catch(_){}
+    try { window.dispatchEvent(new CustomEvent('lifeos:gist-pending-created-updated', { detail:{ present:false } })); } catch(_){}
+  }
+
   // POST a new private Gist. Response is NOT trusted alone — caller must
   // re-fetch and semantically acknowledge before persisting the ID or a base.
   async function createBackupGistOnce(token, backupObject){
@@ -1109,10 +1209,47 @@
     return { newGistId: created.id };
   }
 
+  // ── same-page serialization (R2 B1) ────────────────────────────────────
+  let _createInFlight = false;
+  async function _withCreateLock(fn){
+    // Same-page rejection: refuse concurrent create attempts inside one page.
+    if (_createInFlight) return { ok:false, reason:'already-in-flight' };
+    _createInFlight = true;
+    try { window.dispatchEvent(new CustomEvent('lifeos:gist-create-in-flight-changed', { detail:{ inFlight:true } })); } catch(_){}
+    try {
+      // Cross-tab: prefer Web Locks when available. On environments without
+      // navigator.locks the same-page flag remains the only guard; declare
+      // that limitation truthfully — we never claim cross-device uniqueness.
+      const canWebLock = typeof navigator !== 'undefined'
+        && navigator.locks
+        && typeof navigator.locks.request === 'function';
+      if (canWebLock){
+        return await navigator.locks.request(CREATE_LOCK_NAME, { mode:'exclusive' }, async () => fn());
+      }
+      return await fn();
+    } finally {
+      _createInFlight = false;
+      try { window.dispatchEvent(new CustomEvent('lifeos:gist-create-in-flight-changed', { detail:{ inFlight:false } })); } catch(_){}
+    }
+  }
+
   // First-backup creation: discovery-guarded, POST-once, then acknowledge
   // via a fresh exact-Gist GET before any local trust state is written.
   // Never called automatically on page load; only via explicit user intent.
+  //
+  // Round-2 semantics:
+  //   - Serialized via in-memory flag + Web Lock (§B1).
+  //   - Discovery is paginated and fail-closed on any list error (§B2).
+  //   - A pending-created identity is persisted the moment the provider
+  //     returns a valid created ID, BEFORE acknowledgement (§B4). It is
+  //     narrowly-scoped, not a connected-Gist ID, not a sync base. On any
+  //     post-POST failure, this pending record is preserved and blocks any
+  //     new POST until reconcilePendingCreated() resolves it.
   async function createFirstBackup(options){
+    return _withCreateLock(() => _createFirstBackupInner(options));
+  }
+
+  async function _createFirstBackupInner(options){
     options = options || {};
     const pre = await preflightSyncEnvironment();
     if (!pre.ok) return { ok:false, reason: pre.reason };
@@ -1124,12 +1261,23 @@
       return { ok:false, reason:'already-connected' };
     }
 
+    // Round-2 §B4: any unresolved pending-created identity must be reconciled
+    // before a new POST is allowed. This prevents a second orphan Gist after
+    // an earlier POST-then-failure.
+    const pending = readPendingCreatedGist();
+    if (pending){
+      setStatus('A previous backup Gist was created but not fully acknowledged. Reconcile before creating another.', 'warn');
+      toast('⚠ Pending backup exists — reconcile first');
+      try { window.dispatchEvent(new CustomEvent('lifeos:gist-first-backup-unacknowledged', { detail:{ createdGistId: pending.gistId, reason:'pending-blocks-new-create' } })); } catch(_){}
+      return { ok:false, reason:'pending-created-present', pendingGistId: pending.gistId };
+    }
+
     setStatus('Checking whether a backup Gist already exists for this token…');
     let gists;
     try { gists = await findBackupGistsForBootstrap(token); }
     catch(e){
       setStatus('⚠ Cannot verify existing backups (' + (e.message || 'error') + ') — create refused.', 'error');
-      return { ok:false, reason:'list-failed', error:e.message };
+      return { ok:false, reason:'list-failed', error:e.message, discoveryReason: e.reason || null };
     }
     if (gists && gists.length){
       setStatus('An existing backup Gist was discovered (' + gists[0].id.slice(0,12) + '…). Create-first refused; use Bootstrap/Connect to reuse it.', 'warn');
@@ -1156,6 +1304,34 @@
       return { ok:false, reason:'cancelled-by-user' };
     }
 
+    // Immediately-before-POST re-verification: local authority state must
+    // still equal the captured snapshot, and discovery must still be empty.
+    let recheckLocal;
+    try { recheckLocal = window.getAllBackupData(); }
+    catch(e){ return { ok:false, reason:'prepost-local-read-failed', error:e.message }; }
+    if (canonicalStringify(semanticBackupData(recheckLocal)) !== canonicalStringify(semanticBackupData(localData))){
+      setStatus('⚠ Local data changed between capture and POST — refusing to create with a mismatched snapshot.', 'warn');
+      return { ok:false, reason:'local-changed-before-post' };
+    }
+    let finalGists;
+    try { finalGists = await findBackupGistsForBootstrap(token); }
+    catch(e){
+      setStatus('⚠ Final discovery check failed (' + (e.message || 'error') + ') — create refused.', 'error');
+      return { ok:false, reason:'final-list-failed', error:e.message };
+    }
+    if (finalGists && finalGists.length){
+      setStatus('A matching backup Gist appeared just before create — refusing to POST.', 'warn');
+      try { window.dispatchEvent(new CustomEvent('lifeos:gist-existing-backup-discoverable', { detail:{ gistId: finalGists[0].id } })); } catch(_){}
+      return { ok:false, reason:'existing-backup-discoverable', discoveredGistId: finalGists[0].id };
+    }
+    // Pending identity might have been persisted by a *cross-tab* attempt
+    // during the discovery window; re-check.
+    const pendingAfterFinal = readPendingCreatedGist();
+    if (pendingAfterFinal){
+      setStatus('Another tab persisted a pending backup identity — reconcile before creating another.', 'warn');
+      return { ok:false, reason:'pending-created-present', pendingGistId: pendingAfterFinal.gistId };
+    }
+
     const backup = { version: BACKUP_WRAPPER_VERSION, exported_at: _now(), data: localData };
     let created;
     try { created = await createBackupGistOnce(token, backup); }
@@ -1165,16 +1341,29 @@
     }
     const newGistId = created.newGistId;
 
+    // R2 §B4: persist pending-created identity IMMEDIATELY after POST returns
+    // a valid ID, BEFORE any acknowledgement step. Any later failure keeps
+    // this record so recovery can locate the real remote object.
+    const pendWrite = writePendingCreatedGist(newGistId);
+    if (!pendWrite.ok){
+      // The Gist exists remotely but we cannot durably record it — surface
+      // this truthfully. Do NOT proceed to base persistence; do NOT clear
+      // pending (it never wrote).
+      setStatus('⚠ Backup Gist was created but the pending identity could not be persisted (' + pendWrite.reason + '). Local storage may be full or blocked.', 'error');
+      try { window.dispatchEvent(new CustomEvent('lifeos:gist-first-backup-unacknowledged', { detail:{ createdGistId: newGistId, reason:'pending-write-failed' } })); } catch(_){}
+      return { ok:false, reason:'pending-write-failed', createdGistId:newGistId, detail:pendWrite };
+    }
+
     let ack;
     try { ack = await fetchConnectedGist(token, newGistId); }
     catch(e){
-      setStatus('⚠ Backup Gist was created but could not be re-read for acknowledgement — sync uncertain. Local data preserved.', 'error');
-      toast('⚠ Backup created but unacknowledged — retry');
+      setStatus('⚠ Backup Gist was created but could not be re-read for acknowledgement — sync uncertain. Local preserved. A pending identity was recorded for recovery.', 'error');
+      toast('⚠ Backup created but unacknowledged — retry via Reconcile');
       try { window.dispatchEvent(new CustomEvent('lifeos:gist-first-backup-unacknowledged', { detail:{ createdGistId: newGistId, reason:'ack-fetch-failed' } })); } catch(_){}
       return { ok:false, reason:'ack-fetch-failed', createdGistId:newGistId, error:e.message };
     }
     if (ack.remoteHash !== localHash){
-      setStatus('⚠ Created backup content does not match local — sync uncertain. Local data preserved.', 'error');
+      setStatus('⚠ Created backup content does not match local — sync uncertain. A pending identity was recorded for recovery.', 'error');
       toast('⚠ Backup created but content mismatch');
       try { window.dispatchEvent(new CustomEvent('lifeos:gist-first-backup-unacknowledged', { detail:{ createdGistId: newGistId, reason:'ack-hash-mismatch' } })); } catch(_){}
       return { ok:false, reason:'ack-hash-mismatch', createdGistId:newGistId, ack };
@@ -1183,25 +1372,29 @@
     let postLocal;
     try { postLocal = window.getAllBackupData(); }
     catch(e){
-      setStatus('⚠ Cannot re-read local backup for post-create verification. Sync uncertain.', 'error');
+      setStatus('⚠ Cannot re-read local backup for post-create verification. Sync uncertain. A pending identity was recorded for recovery.', 'error');
       return { ok:false, reason:'post-local-read-failed', createdGistId:newGistId, error:e.message };
     }
     if (canonicalStringify(semanticBackupData(postLocal)) !== canonicalStringify(semanticBackupData(localData))){
-      setStatus('⚠ Local data changed during backup creation — the created Gist reflects an earlier state. Local preserved; retry.', 'warn');
+      setStatus('⚠ Local data changed during backup creation — the created Gist reflects an earlier state. A pending identity was recorded for recovery.', 'warn');
       try { window.dispatchEvent(new CustomEvent('lifeos:gist-first-backup-unacknowledged', { detail:{ createdGistId: newGistId, reason:'local-changed-during-creation' } })); } catch(_){}
       return { ok:false, reason:'local-changed-during-creation', createdGistId:newGistId };
     }
 
     const idWrite = writeConnectedGistId(newGistId);
     if (!idWrite.ok){
-      setStatus('⚠ Backup created but the connected ID could not be persisted (' + idWrite.reason + '). Sync uncertain.', 'error');
+      setStatus('⚠ Backup created but the connected ID could not be persisted (' + idWrite.reason + '). Pending identity kept for recovery.', 'error');
       return { ok:false, reason:idWrite.reason, createdGistId:newGistId, detail:idWrite };
     }
     const w = writeSyncBase({ gistId:newGistId, remoteVersion: ack.revision, baseDataHash: localHash });
     if (!w.ok){
-      setStatus('Backup created and connected, but sync base could not be confirmed (' + w.reason + ').', 'warn');
+      setStatus('Backup created and connected, but sync base could not be confirmed (' + w.reason + '). Pending identity kept for recovery.', 'warn');
+      // ID-written-but-base-failed is intentionally fail-closed for overwrite
+      // safety (Codex-confirmed). We DO NOT clear pending here.
       return { ok:false, reason:'unacknowledged', createdGistId:newGistId, detail:w };
     }
+    // Only on full success: clear pending identity — it has been promoted.
+    clearPendingCreatedGist();
     safeSet(LAST_SYNC_KEY, new Date().toISOString());
     safeSet(LAST_BACKUP_KEY, new Date().toISOString());
     safeSet(CHANGE_COUNT_KEY, '0');
@@ -1209,6 +1402,90 @@
     setStatus('✓ First backup Gist created and acknowledged.', 'ok');
     toast('✓ First backup created');
     return { ok:true, kind:'created-first-backup', gistId:newGistId, base:w.base };
+  }
+
+  // Recover a pending-created identity via an EXACT-ID GET. If the remote
+  // Gist exists and its semantic content equals the caller's local backup,
+  // promote it into connected + sync base. If it exists but content differs,
+  // leave pending in place and expose an uncertain state (the user must
+  // decide via existing Bootstrap Load/Use flows). If the exact-ID GET is
+  // 404, the pending identity is stale (Gist deleted or never persisted
+  // outside our scope) — remove it and permit a new POST.
+  async function reconcilePendingCreated(){
+    return _withCreateLock(() => _reconcilePendingCreatedInner());
+  }
+  async function _reconcilePendingCreatedInner(){
+    const pending = readPendingCreatedGist();
+    if (!pending) return { ok:true, kind:'no-pending' };
+    const pre = await preflightSyncEnvironment();
+    if (!pre.ok) return { ok:false, reason: pre.reason };
+    const token = pre.token;
+    // Refuse if the user is already connected to a different Gist — that
+    // combination is inconsistent and needs human resolution.
+    const connectedId = safeGet(GIST_ID_KEY, '');
+    if (connectedId && connectedId !== pending.gistId){
+      return { ok:false, reason:'connected-elsewhere', pendingGistId: pending.gistId, connectedGistId: connectedId };
+    }
+    let remote;
+    try { remote = await fetchConnectedGist(token, pending.gistId); }
+    catch(e){
+      if (e.status === 404){
+        // Stale pending — safe to remove.
+        clearPendingCreatedGist();
+        return { ok:true, kind:'pending-cleared-404', priorPendingGistId: pending.gistId };
+      }
+      setStatus('⚠ Pending backup could not be re-read (' + (e.message || 'error') + ') — pending kept.', 'error');
+      return { ok:false, reason:'reconcile-fetch-failed', pendingGistId: pending.gistId, error:e.message };
+    }
+    let localData, localHash;
+    try {
+      localData = await captureLocalBackup();
+      localHash = await backupDataHash(localData);
+    } catch(e){
+      return { ok:false, reason:e.code || 'local-hash-failed', pendingGistId: pending.gistId, error:e.message };
+    }
+    if (remote.remoteHash !== localHash){
+      // Real remote exists but content differs from local. Do NOT promote
+      // silently. Keep pending; user should use Bootstrap flow to resolve.
+      setStatus('The pending backup exists remotely but its content differs from local. Use Bootstrap to resolve.', 'warn');
+      try { window.dispatchEvent(new CustomEvent('lifeos:gist-pending-created-diverged', { detail:{ gistId: pending.gistId } })); } catch(_){}
+      return { ok:false, reason:'reconcile-diverged', pendingGistId: pending.gistId, remote };
+    }
+    // Content matches — safe to promote.
+    const idWrite = writeConnectedGistId(pending.gistId);
+    if (!idWrite.ok){
+      setStatus('⚠ Pending backup content matches local, but the connected ID could not be persisted (' + idWrite.reason + ').', 'error');
+      return { ok:false, reason:idWrite.reason, pendingGistId: pending.gistId, detail:idWrite };
+    }
+    const w = writeSyncBase({ gistId: pending.gistId, remoteVersion: remote.revision, baseDataHash: localHash });
+    if (!w.ok){
+      setStatus('Pending backup promoted, but sync base could not be confirmed (' + w.reason + '). Pending kept.', 'warn');
+      return { ok:false, reason:'unacknowledged', pendingGistId: pending.gistId, detail:w };
+    }
+    clearPendingCreatedGist();
+    safeSet(LAST_SYNC_KEY, new Date().toISOString());
+    safeSet(LAST_BACKUP_KEY, new Date().toISOString());
+    safeSet(CHANGE_COUNT_KEY, '0');
+    refreshUI();
+    setStatus('✓ Pending backup reconciled into connected sync state.', 'ok');
+    toast('✓ Pending backup reconciled');
+    return { ok:true, kind:'reconciled', gistId: pending.gistId, base:w.base };
+  }
+
+  // Explicit safe discard for the pending identity — used when the user
+  // knowingly abandons the remote Gist (they will delete it externally).
+  // Requires an in-memory confirm; NEVER clears silently.
+  async function discardPendingCreated(options){
+    options = options || {};
+    const pending = readPendingCreatedGist();
+    if (!pending) return { ok:true, kind:'no-pending' };
+    const proceed = options.confirmed === true
+      || (typeof window.confirm === 'function' && window.confirm(
+        'Discard the pending backup Gist (' + pending.gistId.slice(0,12) + '…)?\n\nThis does not delete the Gist on GitHub — it only clears the local pending record.'
+      ));
+    if (!proceed) return { ok:false, reason:'cancelled-by-user' };
+    clearPendingCreatedGist();
+    return { ok:true, kind:'discarded', priorPendingGistId: pending.gistId };
   }
 
   // Bootstrap / reconnect: intentional discovery. Only path that may retarget
@@ -1396,8 +1673,12 @@
     classifyState, rotatePreLoadCapsule,
     // network
     fetchConnectedGist, patchConnectedGist, findBackupGistsForBootstrap, createBackupGistOnce,
+    // discovery internals (tests)
+    listAllGistsPaginated, parseLinkHeader,
+    // pending-created identity (R2 B4)
+    readPendingCreatedGist, writePendingCreatedGist, clearPendingCreatedGist,
     // orchestrators
-    saveConnected, loadConnected, bootstrapOrReconnect, createFirstBackup,
+    saveConnected, loadConnected, bootstrapOrReconnect, createFirstBackup, reconcilePendingCreated, discardPendingCreated,
     resolveBootstrapUseLocal, resolveBootstrapLoadRemote, restorePreLoadRecovery,
     // conflict resolvers (§A1 / §A2)
     resolveConflictKeepLocal, resolveConflictLoadRemote,
@@ -1407,7 +1688,8 @@
       SYNC_BASE_KEY, SYNC_BASE_SCHEMA,
       CAPSULE_KEY, CAPSULE_PREV_KEY,
       GIST_ID_KEY, TOKEN_KEY, LAST_SYNC_KEY, LAST_BACKUP_KEY, CHANGE_COUNT_KEY, LEGACY_REMOTE_KEY,
-      PRIOR_REMOTE_KEY, CONFLICT_EXPORT_KEY,
+      PRIOR_REMOTE_KEY, CONFLICT_EXPORT_KEY, PENDING_CREATED_KEY,
+      CREATE_LOCK_NAME, MAX_DISCOVERY_PAGES,
       GIST_BACKUP_DESCRIPTION, BACKUP_FILE, BACKUP_WRAPPER_VERSION,
     }),
     // injection points
@@ -1428,6 +1710,9 @@
   window.loadFromGist = function(){ return loadConnected(); };
   window.gistBootstrap = function(){ return bootstrapOrReconnect('reconnect'); };
   window.gistCreateFirstBackup = function(){ return createFirstBackup(); };
+  window.gistReconcilePendingCreated = function(){ return reconcilePendingCreated(); };
+  window.gistDiscardPendingCreated = function(){ return discardPendingCreated(); };
+  window.gistReadPendingCreated = function(){ return readPendingCreatedGist(); };
   window.gistBootstrapUseLocal = function(){ return resolveBootstrapUseLocal(); };
   window.gistBootstrapLoadRemote = function(){ return resolveBootstrapLoadRemote(); };
   window.restorePreLoadRecovery = function(which){ return restorePreLoadRecovery(which); };

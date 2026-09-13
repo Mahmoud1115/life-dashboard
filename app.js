@@ -2749,12 +2749,12 @@ function updateGistUI(){
     const prv=document.getElementById('sync-restore-prev-btn');
     const rec=document.getElementById('sync-reconnect-btn');
     const bootstrapChoices=document.getElementById('sync-bootstrap-choice-row');
+    const connectedId=(window.GistSync&&typeof window.GistSync.readConnectedGistId==='function')
+      ? window.GistSync.readConnectedGistId()
+      : LS.get('dune_gist_id_v1','');
     if(row){
       const hasCur=!!localStorage.getItem('dune_pre_import_backup_v1');
       const hasPrv=!!localStorage.getItem('dune_pre_import_backup_prev_v1');
-      const connectedId=(window.GistSync&&typeof window.GistSync.readConnectedGistId==='function')
-        ? window.GistSync.readConnectedGistId()
-        : LS.get('dune_gist_id_v1','');
       const baseOk=!!(window.GistSync
         && typeof window.GistSync.effectiveBaseFor==='function'
         && window.GistSync.effectiveBaseFor(connectedId));
@@ -2765,6 +2765,29 @@ function updateGistUI(){
       if(bootstrapChoices) bootstrapChoices.style.display=showRec?'flex':'none';
       row.style.display=(hasCur||hasPrv||showRec)?'flex':'none';
     }
+    // R2 §B3: reveal Create-First-Backup exactly when token present, no
+    // connected Gist, no unresolved pending identity, and not currently in
+    // flight. Pending row supersedes create-first row — reconcile first.
+    const pending=(window.GistSync && typeof window.GistSync.readPendingCreatedGist==='function')
+      ? window.GistSync.readPendingCreatedGist()
+      : (function(){ try{ const r=localStorage.getItem('dune_gist_pending_created_v1'); return r?JSON.parse(r):null; }catch(_){return null;} })();
+    const pendRow=document.getElementById('sync-pending-row');
+    const createRow=document.getElementById('sync-create-row');
+    const createBtn=document.getElementById('sync-create-first-backup-btn');
+    const inFlight=!!window._gistCreateInFlight;
+    if(pendRow) pendRow.style.display=(pending?'flex':'none');
+    if(createRow){
+      const showCreate=!!token && !connectedId && !pending;
+      createRow.style.display=showCreate?'flex':'none';
+    }
+    if(createBtn){
+      createBtn.disabled=inFlight;
+      createBtn.setAttribute('aria-busy', inFlight?'true':'false');
+    }
+    const reconcileBtn=document.getElementById('sync-reconcile-pending-btn');
+    const discardBtn=document.getElementById('sync-discard-pending-btn');
+    if(reconcileBtn) reconcileBtn.disabled=inFlight;
+    if(discardBtn) discardBtn.disabled=inFlight;
   }catch(_){/*non-fatal UI wiring*/}
 }
 
@@ -2783,6 +2806,12 @@ try{
   window.addEventListener('lifeos:gist-bootstrap-diverged',()=>{
     const b=document.getElementById('sync-bootstrap-choice-row'); if(b) b.style.display='flex';
   });
+  window.addEventListener('lifeos:gist-create-in-flight-changed',(e)=>{
+    try{ window._gistCreateInFlight = !!(e && e.detail && e.detail.inFlight); }catch(_){ window._gistCreateInFlight=false; }
+    updateGistUI();
+  });
+  window.addEventListener('lifeos:gist-pending-created-updated',()=>updateGistUI());
+  window.addEventListener('lifeos:gist-first-backup-unacknowledged',()=>updateGistUI());
 }catch(_){/*non-fatal*/}
 
 window.saveGistToken=function(){

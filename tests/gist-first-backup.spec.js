@@ -331,7 +331,10 @@ test.describe('First-Gist creation (P1-B) — createFirstBackup', () => {
     });
     const result = await runCreate(page);
     expect(result.ok).toBe(false);
-    expect(result.reason).toBe('local-changed-during-creation');
+    // R2 (Round-2): the immediately-before-POST re-verification catches the
+    // mutation earlier than the post-ack guard. Both are correct fail-closed
+    // outcomes; the earlier one is stronger (no orphan Gist created).
+    expect(['local-changed-before-post','local-changed-during-creation']).toContain(result.reason);
     const { gistId, base } = await readIdAndBase(page);
     expect(gistId).toBeNull();
     expect(base).toBeNull();
