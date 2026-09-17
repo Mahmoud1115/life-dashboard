@@ -97,59 +97,107 @@
   }
   function uid() { return 'c_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
 
+  // S1a Finance P0: tri-state authority read. A thrown/malformed read must
+  // never be treated as absence and must never authorize a whole-key rewrite.
+  function readAuthority() {
+    if (typeof global.finReadAuthority === 'function') return global.finReadAuthority();
+    // Fallback tri-state if the app.js hook is unavailable.
+    let raw;
+    try { raw = localStorage.getItem('dune_finance_v1'); }
+    catch (e) { return { state: 'READ_FAILED' }; }
+    if (raw === null) return { state: 'ABSENT' };
+    let parsed;
+    try { parsed = JSON.parse(raw); }
+    catch (e) { return { state: 'MALFORMED', reason: 'json' }; }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { state: 'MALFORMED', reason: 'shape' };
+    return { state: 'PRESENT', value: parsed };
+  }
+  // Presentational read only — may soft-default because it never authorizes a
+  // write on its own. Writers must go through mutateRussia (authority-gated).
   function loadInputs() {
     if (typeof global.finGetInputs === 'function') return global.finGetInputs();
     try { return JSON.parse(localStorage.getItem('dune_finance_v1') || '{}'); }
     catch (e) { return {}; }
   }
+  // Guarded write: returns { ok } (readback-proven via app.js when present).
   function saveInputs(v) {
     if (typeof global.finSaveInputs === 'function') return global.finSaveInputs(v);
-    try { localStorage.setItem('dune_finance_v1', JSON.stringify(v)); } catch (e) {}
+    try { localStorage.setItem('dune_finance_v1', JSON.stringify(v)); return { ok: true }; }
+    catch (e) { return { ok: false, reason: 'write-failed' }; }
   }
   function recompute() {
     if (typeof global.finRecompute === 'function') global.finRecompute();
   }
+  function blockedToast() {
+    if (typeof global.showBackupToast === 'function') {
+      try { global.showBackupToast('⚠ Not saved — Finance storage unavailable. Nothing was changed.'); } catch (e) {}
+    }
+  }
 
+  // Presentational shape: never writes. On unsafe read returns a safe empty
+  // view so render()/getRows do not throw, WITHOUT persisting anything.
   function getRussia() {
-    const all = loadInputs();
+    const auth = readAuthority();
+    const all = (auth.state === 'PRESENT') ? auth.value : {};
     if (!all.russia) all.russia = {};
     if (!Array.isArray(all.russia.customIncome))   all.russia.customIncome = [];
     if (!Array.isArray(all.russia.customExpenses)) all.russia.customExpenses = [];
     return all;
   }
 
+  // Authority-gated mutation: refuse (no write, no destructive render) on
+  // READ_FAILED/MALFORMED; on ABSENT/PRESENT build the object, mutate, and
+  // commit through the guarded writer, reporting truthful failure.
+  function mutateRussia(mutator) {
+    const auth = readAuthority();
+    if (auth.state === 'READ_FAILED' || auth.state === 'MALFORMED') { blockedToast(); return { ok: false, reason: 'finance-authority-' + auth.state.toLowerCase() }; }
+    const all = (auth.state === 'PRESENT') ? auth.value : {};
+    if (!all.russia) all.russia = {};
+    if (!Array.isArray(all.russia.customIncome))   all.russia.customIncome = [];
+    if (!Array.isArray(all.russia.customExpenses)) all.russia.customExpenses = [];
+    const r = mutator(all);
+    if (r === false) return { ok: false, reason: 'noop' };
+    const w = saveInputs(all);
+    if (w && w.ok === false) { blockedToast(); return w; }
+    return { ok: true };
+  }
+
   function addRow(kind) {
-    const all = getRussia();
-    const list = kind === 'income' ? all.russia.customIncome : all.russia.customExpenses;
-    list.push({ id: uid(), name: '', amount: 0 });
-    saveInputs(all);
+    const res = mutateRussia((all) => {
+      const list = kind === 'income' ? all.russia.customIncome : all.russia.customExpenses;
+      list.push({ id: uid(), name: '', amount: 0 });
+    });
+    if (!res.ok) return res; // refused: no destructive render; existing DOM kept
     render();
-    // Focus the newly-added name input
     setTimeout(() => {
       const rows = document.querySelectorAll('.mc-row[data-kind="' + kind + '"]');
       const last = rows[rows.length - 1];
       if (last) last.querySelector('.mc-name').focus();
     }, 30);
+    return res;
   }
   function updateRow(kind, id, patch) {
-    const all = getRussia();
-    const list = kind === 'income' ? all.russia.customIncome : all.russia.customExpenses;
-    const idx = list.findIndex(r => r.id === id);
-    if (idx === -1) return;
-    list[idx] = Object.assign({}, list[idx], patch);
-    saveInputs(all);
-    recompute();
+    const res = mutateRussia((all) => {
+      const list = kind === 'income' ? all.russia.customIncome : all.russia.customExpenses;
+      const idx = list.findIndex(r => r.id === id);
+      if (idx === -1) return false;
+      list[idx] = Object.assign({}, list[idx], patch);
+    });
+    if (res.ok) recompute();
+    return res;
   }
   function removeRow(kind, id) {
-    const all = getRussia();
-    if (kind === 'income') {
-      all.russia.customIncome = all.russia.customIncome.filter(r => r.id !== id);
-    } else {
-      all.russia.customExpenses = all.russia.customExpenses.filter(r => r.id !== id);
-    }
-    saveInputs(all);
+    const res = mutateRussia((all) => {
+      if (kind === 'income') {
+        all.russia.customIncome = all.russia.customIncome.filter(r => r.id !== id);
+      } else {
+        all.russia.customExpenses = all.russia.customExpenses.filter(r => r.id !== id);
+      }
+    });
+    if (!res.ok) return res; // refused: keep existing DOM, do not drop the row visually
     render();
     recompute();
+    return res;
   }
 
   function rowHTML(kind, r) {
@@ -226,24 +274,26 @@
   // matching their planning context. Gated on russia.customSeeded so it only
   // runs when both arrays are still empty AND has never run before.
   function seedFromIdeas() {
-    const all = getRussia();
-    if (all.russia.customSeeded) return;
-    if (all.russia.customIncome.length || all.russia.customExpenses.length) {
-      // User already added something — mark seeded and bail
+    // S1a: a failed/malformed authority read must NOT fall through into this
+    // default-minting startup writer (that is the F02 startup vector).
+    const auth = readAuthority();
+    if (auth.state === 'READ_FAILED' || auth.state === 'MALFORMED') return;
+    mutateRussia((all) => {
+      if (all.russia.customSeeded) return false;
+      if (all.russia.customIncome.length || all.russia.customExpenses.length) {
+        all.russia.customSeeded = true;
+        return; // commit the marker only
+      }
+      all.russia.customIncome = [
+        { id: uid(), name: 'Side job (off-days)', amount: 0 }
+      ];
+      all.russia.customExpenses = [
+        { id: uid(), name: 'Gym',                    amount: 0 },
+        { id: uid(), name: 'Archery',                amount: 0 },
+        { id: uid(), name: 'Engine certifications',  amount: 0 }
+      ];
       all.russia.customSeeded = true;
-      saveInputs(all);
-      return;
-    }
-    all.russia.customIncome = [
-      { id: uid(), name: 'Side job (off-days)', amount: 0 }
-    ];
-    all.russia.customExpenses = [
-      { id: uid(), name: 'Gym',                    amount: 0 },
-      { id: uid(), name: 'Archery',                amount: 0 },
-      { id: uid(), name: 'Engine certifications',  amount: 0 }
-    ];
-    all.russia.customSeeded = true;
-    saveInputs(all);
+    });
   }
 
   function boot() {

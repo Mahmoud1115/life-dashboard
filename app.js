@@ -1896,6 +1896,37 @@ function renderATACoverage(entries){
   const STORE='dune_finance_v1';
   function getInputs(){return LS.get(STORE,D.finance);}
   function saveInputs(v){LS.set(STORE,v);}
+  // S1a Finance P0 (owner-authorized bounded correction).
+  // Tri-state authority read: only a successful null (ABSENT) or a parsed
+  // object (PRESENT) may authorize a Finance write. A thrown read
+  // (READ_FAILED) or unparseable/wrong-shape bytes (MALFORMED) must NEVER
+  // mint a default and overwrite the durable key.
+  function readFinanceAuthority(){
+    let raw;
+    try { raw = localStorage.getItem(STORE); }
+    catch(e){ return { state:'READ_FAILED', error:String(e && e.message || e) }; }
+    if (raw === null) return { state:'ABSENT' };
+    let parsed;
+    try { parsed = JSON.parse(raw); }
+    catch(e){ return { state:'MALFORMED', reason:'json' }; }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { state:'MALFORMED', reason:'shape' };
+    return { state:'PRESENT', value:parsed };
+  }
+  function financeDefaultClone(){ try { return JSON.parse(JSON.stringify(D.finance)); } catch(e){ return { russia:{} }; } }
+  // Write + readback proof: a silently-dropped setItem (no-op) or a thrown
+  // write is reported as failure, never as a saved success.
+  function saveFinanceGuarded(v){
+    let ser;
+    try { ser = JSON.stringify(v); } catch(e){ return { ok:false, reason:'serialize' }; }
+    try { localStorage.setItem(STORE, ser); } catch(e){ return { ok:false, reason:'write-failed' }; }
+    let rb;
+    try { rb = localStorage.getItem(STORE); } catch(e){ return { ok:false, reason:'readback-failed' }; }
+    if (rb !== ser) return { ok:false, reason:'readback-mismatch' };
+    return { ok:true };
+  }
+  function flashBlockedInd(reason){
+    if (typeof showBackupToast === 'function') { try { showBackupToast('⚠ Not saved — Finance storage unavailable (' + reason + '). Your typed value is kept; nothing was overwritten.'); } catch(e){} }
+  }
   function calcRussia(v){
     const customInc=Array.isArray(v.customIncome)?v.customIncome.reduce((a,c)=>a+(parseFloat(c.amount)||0),0):0;
     const customExp=Array.isArray(v.customExpenses)?v.customExpenses.reduce((a,c)=>a+(parseFloat(c.amount)||0),0):0;
@@ -1954,21 +1985,36 @@ function renderATACoverage(entries){
     finIndTimer=setTimeout(()=>{ind.style.opacity='0';},1600);
   }
   window.finInputChange=function(phase,field,val){
-    const v=getInputs();
+    const auth=readFinanceAuthority();
+    if(auth.state==='READ_FAILED'||auth.state==='MALFORMED'){
+      flashBlockedInd(auth.state.toLowerCase());
+      return { ok:false, reason:'finance-authority-'+auth.state.toLowerCase() };
+    }
+    const v = auth.state==='PRESENT' ? auth.value : financeDefaultClone();
     if(!v[phase]) v[phase]={};
     v[phase][field]=parseFloat(val)||0;
-    saveInputs(v);
+    const w=saveFinanceGuarded(v);
+    if(!w.ok){ flashBlockedInd(w.reason); return { ok:false, reason:w.reason }; }
     renderOutputs();
     flashSavedInd();
     if(typeof bumpChangeCount==='function') bumpChangeCount();
+    return { ok:true };
   };
   window.saveFinanceNow=function(){
-    // values are already persisted on every keystroke — this re-writes and confirms
-    saveInputs(getInputs());
+    // Re-write and confirm — but only from a trustworthy authority read.
+    const auth=readFinanceAuthority();
+    if(auth.state==='READ_FAILED'||auth.state==='MALFORMED'){
+      flashBlockedInd(auth.state.toLowerCase());
+      return { ok:false, reason:'finance-authority-'+auth.state.toLowerCase() };
+    }
+    const v = auth.state==='PRESENT' ? auth.value : financeDefaultClone();
+    const w=saveFinanceGuarded(v);
+    if(!w.ok){ flashBlockedInd(w.reason); return { ok:false, reason:w.reason }; }
     renderOutputs();
     flashSavedInd();
     if(typeof showBackupToast==='function') showBackupToast('✓ Numbers saved on this device — use ☁ Gist sync to share across devices');
     if(typeof renderHome==='function') try{renderHome();}catch(e){}
+    return { ok:true };
   };
   window.setFinScenario=function(s,btn){
     document.querySelectorAll('.fin-scenario').forEach(b=>b.classList.remove('active'));
@@ -1979,11 +2025,18 @@ function renderATACoverage(entries){
       upside:{russia:{salary:145000,rent:24000,food:14000,transport:4000,utilities:3000,phone:1200,family_transfer:0,other:6000,mai:0}},
     };
     if(presets[s]){
-      const v=getInputs();
+      const auth=readFinanceAuthority();
+      if(auth.state==='READ_FAILED'||auth.state==='MALFORMED'){
+        flashBlockedInd(auth.state.toLowerCase());
+        return { ok:false, reason:'finance-authority-'+auth.state.toLowerCase() };
+      }
+      const v = auth.state==='PRESENT' ? auth.value : financeDefaultClone();
       if(presets[s].russia) v.russia=Object.assign(v.russia||{},presets[s].russia);
-      saveInputs(v);
+      const w=saveFinanceGuarded(v);
+      if(!w.ok){ flashBlockedInd(w.reason); return { ok:false, reason:w.reason }; }
       syncInputs();
       renderOutputs();
+      return { ok:true };
     }
   };
   document.addEventListener('DOMContentLoaded',()=>{ syncInputs(); renderOutputs(); refreshFinGistStatus(); });
@@ -1991,7 +2044,10 @@ function renderATACoverage(entries){
   // and read/write the finance store without re-implementing it.
   window.finRecompute = function(){ try { syncInputs(); renderOutputs(); } catch(e){} };
   window.finGetInputs = getInputs;
-  window.finSaveInputs = saveInputs;
+  window.finReadAuthority = readFinanceAuthority;
+  // Guarded public write helper: returns { ok } with readback proof so
+  // layered modules (money-custom.js) never treat a no-op/failed write as saved.
+  window.finSaveInputs = function(v){ return saveFinanceGuarded(v); };
 
   // Reflect Gist sync state in both the Finance pointer and the dedicated Sync section.
   function refreshFinGistStatus(){
@@ -4096,10 +4152,15 @@ window.aptToggleWinner=function(id){
     };
     const orig = window.finInputChange;
     window.finInputChange = function (phase, field, val) {
-      if (typeof orig === 'function') orig.call(this, phase, field, val);
-      if (phase === 'russia' && fieldMap[field]) {
+      let res;
+      if (typeof orig === 'function') res = orig.call(this, phase, field, val);
+      // S1a: only publish the Gen-2 shadow when the canonical Gen-1 write
+      // actually committed. A refused/failed Finance write must not mint a
+      // fabricated Store money shadow of an edit that was never durably saved.
+      if (res && res.ok === true && phase === 'russia' && fieldMap[field]) {
         Store.set(fieldMap[field], parseFloat(val) || 0);
       }
+      return res;
     };
 
     // Narrow one-time bootstrap: if the canonical Gen-1 key is genuinely
