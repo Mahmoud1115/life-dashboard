@@ -101,8 +101,35 @@
   // layers enforce the identical contract; local fallback for degraded init).
   function isUsableId(x){ return (global.finAdmit && global.finAdmit.isUsableId) ? global.finAdmit.isUsableId(x) : (typeof x === 'string' && x.length > 0); }
   function isAdmissibleRow(r){ return (global.finAdmit && global.finAdmit.isAdmissibleRow) ? global.finAdmit.isAdmissibleRow(r) : (isPlainObject(r) && isUsableId(r.id)); }
-  function admitDeep(v){ return (global.finAdmit && global.finAdmit.deep) ? global.finAdmit.deep(v) : { ok:true }; }
-  function verifyRow(kind, id, field, value){ return (global.finAdmit && global.finAdmit.verifyRow) ? global.finAdmit.verifyRow(kind, id, field, value) : true; }
+  // R4-P1-03: when app.js hooks are unavailable, admission/verification must NOT
+  // downgrade to permissive success. These fall back to an EQUIVALENT local deep
+  // admission / semantic verification, never {ok:true}/true by default.
+  function localAdmitDeep(v){
+    if (!isPlainObject(v)) return { ok:false, reason:'root-shape' };
+    if ('russia' in v){
+      const ph = v.russia;
+      if (!isPlainObject(ph)) return { ok:false, reason:'phase-shape' };
+      for (const key of ['customIncome','customExpenses']){
+        if (key in ph){
+          if (!Array.isArray(ph[key])) return { ok:false, reason:'malformed-collection' };
+          if (!ph[key].every(isAdmissibleRow)) return { ok:false, reason:'malformed-row' };
+        }
+      }
+    }
+    return { ok:true };
+  }
+  function localVerifyRow(kind, id, field, value){
+    let parsed; try { parsed = JSON.parse(localStorage.getItem('dune_finance_v1')); } catch (e) { return false; }
+    if (!isPlainObject(parsed) || !isPlainObject(parsed.russia)) return false;
+    const coll = kind === 'income' ? parsed.russia.customIncome : parsed.russia.customExpenses;
+    if (!Array.isArray(coll)) return false;
+    const matches = coll.filter(r => isPlainObject(r) && r.id === id);
+    if (matches.length !== 1) return false;
+    const rv = matches[0][field];
+    return field === 'amount' ? (parseFloat(rv) || 0) === value : rv === value;
+  }
+  function admitDeep(v){ return (global.finAdmit && global.finAdmit.deep) ? global.finAdmit.deep(v) : localAdmitDeep(v); }
+  function verifyRow(kind, id, field, value){ return (global.finAdmit && global.finAdmit.verifyRow) ? global.finAdmit.verifyRow(kind, id, field, value) : localVerifyRow(kind, id, field, value); }
   // Finance-local draft registry accessor: prefer the app.js registry so drafts
   // are shared with scalar edits; fall back to a local Map only when the hook
   // is unavailable (degraded init). Not a platform-wide draft store.
@@ -291,7 +318,10 @@
     // is usable and unique in this collection, else kind+position. Drafts bind
     // to this token so replay never crosses kinds or ambiguous rows.
     const unique = isUsableId(r.id) && list.filter(x => isPlainObject(x) && x.id === r.id).length === 1;
-    const sel = unique ? ['id', r.id] : ['pos', index];
+    // R4-P1-01: a position token also records the captured row id so replay can
+    // refuse to bind onto a DIFFERENT row after a structural change (position is
+    // never treated as stable identity).
+    const sel = unique ? ['id', r.id] : ['pos', index, (r.id == null ? '' : String(r.id))];
     return `
       <div class="mc-row" data-kind="${kind}" data-id="${esc(r.id)}" data-sel='${attrEsc(JSON.stringify(sel))}'>
         <input class="mc-name" type="text" placeholder="${kind === 'income' ? 'e.g. side job · tutoring' : 'e.g. gym · archery class'}" value="${esc(r.name)}">
@@ -367,8 +397,13 @@
         catch (e) { nodes = []; }
         if (nodes.length === 1) row = nodes[0];
       } else if (sel[0] === 'pos') {
+        // R4-P1-01: position is unstable. Only replay when the row currently at
+        // that position still has the SAME id captured at draft time; otherwise
+        // the intent is retained in the registry but never bound to another row.
         const nodes = host.querySelectorAll('.mc-row[data-kind="' + kind + '"]');
-        row = nodes[sel[1]] || null;
+        const cand = nodes[sel[1]] || null;
+        const capturedId = (sel.length > 2 && sel[2] != null) ? String(sel[2]) : null;
+        if (cand && (cand.dataset.id || '') === (capturedId || '')) row = cand;
       }
       if (!row) continue;
       const input = row.querySelector(field === 'name' ? '.mc-name' : '.mc-amount');

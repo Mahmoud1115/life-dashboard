@@ -1959,9 +1959,39 @@ function renderATACoverage(entries){
   // for admitted public collection updates (R3-P1-07).
   function mergeRowExtras(srcColl, tgtColl){
     if (!Array.isArray(srcColl) || !Array.isArray(tgtColl)) return;
-    const byId = {};
+    const byId = Object.create(null);
     srcColl.forEach(r => { if (isPlainObject(r) && isUsableId(r.id) && rowMatchCount(srcColl, r.id)===1) byId[r.id]=r; });
-    tgtColl.forEach(r => { if (isPlainObject(r) && isUsableId(r.id) && byId[r.id]){ const sr=byId[r.id]; for (const k of Object.keys(sr)) if (!(k in r)) r[k]=sr[k]; } });
+    tgtColl.forEach(r => {
+      if (isPlainObject(r) && isUsableId(r.id) && Object.prototype.hasOwnProperty.call(byId, r.id)){
+        const sr=byId[r.id];
+        // R4-P1-04: own-property semantics — an OWN row field named
+        // constructor/toString/hasOwnProperty must be preserved, not skipped
+        // because the inherited name is "in" the target.
+        for (const k of Object.keys(sr)) if (!Object.prototype.hasOwnProperty.call(r, k)) r[k]=sr[k];
+      }
+    });
+  }
+  // R4-P1-04: detect ambiguous preservation correspondence that would STRIP
+  // unknown own metadata. A source row whose id is duplicated in the source
+  // carries unknown own fields that mergeRowExtras cannot map (rowMatchCount>1);
+  // if the detached target's matching row(s) do not already carry those own
+  // fields, committing would silently drop them, so the public writer must
+  // refuse. The legitimate command path passes the full authority-derived rows
+  // (their unknown metadata already present), so it is unaffected.
+  function ownUnknownKeys(r){ return Object.keys(r).filter(k => k !== 'id' && k !== 'name' && k !== 'amount'); }
+  function ambiguousMetadataLoss(srcColl, tgtColl){
+    if (!Array.isArray(srcColl) || !Array.isArray(tgtColl)) return false;
+    const counts = Object.create(null);
+    srcColl.forEach(r => { if (isPlainObject(r) && isUsableId(r.id)) counts[r.id] = (counts[r.id]||0) + 1; });
+    for (const r of srcColl){
+      if (!isPlainObject(r) || !isUsableId(r.id) || counts[r.id] <= 1) continue; // unique ids handled by mergeRowExtras
+      const unknown = ownUnknownKeys(r);
+      if (unknown.length === 0) continue;                                        // nothing to lose
+      const tgts = tgtColl.filter(t => isPlainObject(t) && t.id === r.id);
+      if (tgts.length === 0) continue;                                           // id fully removed = explicit deletion, not ambiguous loss
+      if (tgts.some(t => unknown.some(k => !Object.prototype.hasOwnProperty.call(t, k)))) return true;
+    }
+    return false;
   }
   function rawSnapshot(){ try { return localStorage.getItem(STORE); } catch(e){ return '__READ_THREW__'; } }
   // Guarded commit with a truthful acknowledgement outcome. Compares the
@@ -2236,12 +2266,22 @@ function renderATACoverage(entries){
     if(auth.state==='PRESENT'){ const sa=admitFinance(src); if(!sa.ok) return { ok:false, outcome:'UNSAFE_AUTHORITY_REFUSAL', reason:'source-'+sa.reason }; }
     const ta=admitFinance(v);
     if(!ta.ok) return { ok:false, outcome:'UNSAFE_AUTHORITY_REFUSAL', reason:'target-'+ta.reason };
-    // Preservation merge (R3-P1-07): unknown root/phase keys, and unknown fields
-    // on rows matched by id, are carried from the source; target explicit fields win.
+    // R4-P1-04: refuse a detached public submission when preservation
+    // correspondence is ambiguous (duplicate ids in source or target); unknown
+    // own metadata on ambiguous rows cannot then be proven preserved.
+    if(isPlainObject(src) && isPlainObject(src.russia) && isPlainObject(v.russia)){
+      for(const key of ['customIncome','customExpenses']){
+        if(ambiguousMetadataLoss(src.russia[key], v.russia[key]))
+          return { ok:false, outcome:'UNSAFE_AUTHORITY_REFUSAL', reason:'ambiguous-row-correspondence' };
+      }
+    }
+    // Preservation merge (R3-P1-07 / R4-P1-04): unknown root/phase keys, and
+    // unknown OWN fields on rows matched by id, are carried from the source;
+    // target explicit fields win.
     if(isPlainObject(src)){
-      for(const k of Object.keys(src)) if(!(k in v)) v[k]=src[k];
+      for(const k of Object.keys(src)) if(!Object.prototype.hasOwnProperty.call(v,k)) v[k]=src[k];
       if(isPlainObject(src.russia) && isPlainObject(v.russia)){
-        for(const k of Object.keys(src.russia)) if(!(k in v.russia)) v.russia[k]=src.russia[k];
+        for(const k of Object.keys(src.russia)) if(!Object.prototype.hasOwnProperty.call(v.russia,k)) v.russia[k]=src.russia[k];
         mergeRowExtras(src.russia.customIncome, v.russia.customIncome);
         mergeRowExtras(src.russia.customExpenses, v.russia.customExpenses);
       }
@@ -4360,18 +4400,36 @@ window.aptToggleWinner=function(id){
       // actually committed. A refused/failed Finance write must not mint a
       // fabricated Store money shadow of an edit that was never durably saved.
       if (res && res.ok === true && res.outcome === 'VERIFIED_LOCAL_COMMIT' && phase === 'russia' && fieldMap[field]) {
-        Store.set(fieldMap[field], parseFloat(val) || 0);
+        window.finReconcileShadow([[field, parseFloat(val) || 0]]);
       }
       return res;
     };
-    // R3-P1-08: after a VERIFIED canonical Save/scenario of mapped Finance
-    // scalar fields, reconcile the derived Store money shadow so a later
-    // unrelated money subscription cannot replay a pre-Save value over the
-    // committed Finance input. Reconciliation happens only post-verification.
+    // R4-P1-02: Finance-local committed-value projection guard. A verified
+    // canonical commit records committedValue per mapped field; the shadow is
+    // then published and OBSERVED. If publication succeeds and the shadow is
+    // coherent, the guard clears; if it fails/throws/incoheres, the guard is
+    // retained so the money subscriber cannot replay a stale mapped value over
+    // the newer verified canonical commit. This is a single-client Finance-local
+    // safeguard, not a Store commit protocol / CAS / F11 change.
+    const _finProjection = new Map();
+    window.finProjection = {
+      set(f, v){ _finProjection.set(f, v); },
+      clear(f){ _finProjection.delete(f); },
+      get(f){ return _finProjection.get(f); },
+      has(f){ return _finProjection.has(f); }
+    };
     window.finReconcileShadow = function (pairs) {
       if (!Array.isArray(pairs)) return;
       pairs.forEach(([field, val]) => {
-        if (fieldMap[field]) { try { Store.set(fieldMap[field], parseFloat(val) || 0); } catch (e) {} }
+        if (!fieldMap[field]) return;
+        const num = parseFloat(val) || 0;
+        let published = false;
+        try {
+          Store.set(fieldMap[field], num);              // observe (no throw => attempted)
+          try { published = (Store.get(fieldMap[field]) === num); } catch (e) { published = false; }
+        } catch (e) { published = false; }
+        if (published) window.finProjection.clear(field);      // shadow coherent
+        else window.finProjection.set(field, num);             // guard against stale replay
       });
     };
 
@@ -4442,10 +4500,16 @@ window.aptToggleWinner=function(id){
       ];
       map.forEach(([id, val]) => {
         const el = document.getElementById(id);
-        // Keep newer refused intent: skip a field that has a pending scalar
-        // draft, so a stale money subscription cannot erase it (B03).
         const field = id.replace('fin-r-','');
+        // Keep newer refused intent: skip a field with a pending scalar draft (B03).
         if (window.finDrafts && window.finDrafts.has('scalar:'+field)) return;
+        // R4-P1-02: reject a stale mapped shadow for a field whose verified
+        // canonical commit has not yet cohered; re-assert the committed value.
+        if (window.finProjection && window.finProjection.has(field)) {
+          const committed = window.finProjection.get(field);
+          if (val === committed) { window.finProjection.clear(field); }        // shadow cohered
+          else { if (el && document.activeElement !== el) el.value = committed; return; }
+        }
         if (el && document.activeElement !== el && val != null) el.value = val;
       });
     }
