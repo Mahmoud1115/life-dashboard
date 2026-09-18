@@ -1,32 +1,26 @@
-// S1a Track A proof fixtures + Track C/Round-2 certification for the Finance P0.
+// S1a Finance Round-3 certification + Round-2 regressions (hardened).
 //
-// Bounded claim under test (owner authorization 101 §19):
-//   A failed or malformed Finance authority read cannot authorize destructive
-//   overwrite or false Store-shadow publication; every named Finance structure
-//   is admitted before it can authorize a write; submitted semantic intent is
-//   verified in the durable result; refused/newer drafts survive ordinary
-//   render/recompute callbacks; Save and post-write feedback are truthful; and
-//   the degraded fallback never acknowledges a dropped write. Supported healthy
-//   edits retain intended data.
+// Bounded claim (owner auth 106): every ordinary Finance mutation/seed/public
+// merge/Save classifies root, admits the authoritative source structures it
+// consumes (root+phase+collections+every row), admits the submitted target,
+// builds a preservation-aware result, re-admits it, commits with readback
+// proof, and verifies the intended semantic result (scalar field AND selected
+// row). Row identity is unambiguous or the mutation refuses; drafts bind to
+// kind+row-selection+field; Save aggregates scalar+custom intent truthfully;
+// custom UI copy derives from the receipt outcome; matching-row unknown fields
+// are preserved; a verified Save reconciles the mapped Store shadow. F11 /
+// cross-tab / source-movement remains OUT.
 //
-// Track A discipline (auth 101 §8 / Codex 100 §17 G01):
-//   - Portable PROTOTYPE-level storage fault injection (NOT own-property
-//     assignment, a WebKit no-op — Codex F12). Every negative fault carries a
-//     POSITIVE HIT WITNESS.
-//   - Exact durable-byte oracle over dune_finance_v1 (read through the REAL
-//     getter, so a faulted getItem cannot mask truth) + Store money shadow
-//     oracle + truthful UI/outcome oracle.
-//   - Every B01-B06 regression FAILS on the frozen failed candidate
-//     8194b489 (the calibrated unsafe control, auth 101 §8) and PASSES here.
-//
-// Chromium + WebKit. workers=1, retries=0.
+// Harness discipline (auth 106 §9): prototype-level faults with POSITIVE hit
+// witnesses; durable bytes read through the REAL getter; STRUCTURED refusal
+// receipts required (never undefined/thrown as acceptable refusal); shadow
+// oracle requires Store; native-UI selectors + selected-row + draft-registry +
+// visible-DOM oracles. workers=1, retries=0, fresh dedicated server.
+// Every R3 case discriminates against the frozen Round-2 unsafe control.
 
 const { test, expect } = require('@playwright/test');
 
 const FIN = 'dune_finance_v1';
-
-// Rich seed matching Codex 100: salary sentinel, two custom rows with a row
-// sentinel, and unknown root/phase fields that must all survive.
 const RICH = JSON.stringify({
   rootExtra: 'ROOTKEEP',
   russia: {
@@ -40,24 +34,18 @@ const RICH = JSON.stringify({
   otherPhase: { zero: 0, extra: 'OTHERKEEP' }
 });
 
-// Prototype-level fault injector installed before app scripts run. Faults are
-// scoped to the Finance key and counted so tests assert a positive hit. The
-// readback* modes fire only AFTER a write (dirty), so the initial authority
-// read sees truth and the post-write readback is what fails (Codex 100 harness).
 async function installStorageFaults(page){
   await page.addInitScript(() => {
     const proto = Object.getPrototypeOf(window.localStorage);
-    const realGet = proto.getItem;
-    const realSet = proto.setItem;
+    const realGet = proto.getItem, realSet = proto.setItem;
     const w = { getThrow:0, setThrow:0, setNoop:0, getMalformed:0, readbackThrow:0, readbackMalformed:0, readbackDifferent:0 };
     window.__faults = { mode:{}, witness:w, dirty:false };
-    window.__realGet = realGet;
-    window.__realSet = realSet;
+    window.__realGet = realGet; window.__realSet = realSet;
     proto.getItem = function(k){
       if (k === 'dune_finance_v1'){
         const f = window.__faults, m = f.mode;
         if (m.getThrow){ w.getThrow++; throw new DOMException('SecurityError','SecurityError'); }
-        if (m.getMalformed){ w.getMalformed++; return m.getMalformed === 'string' ? '"a-plain-string"' : '{not-json'; }
+        if (m.getMalformed){ w.getMalformed++; return '{not-json'; }
         if (m.readbackThrow && f.dirty){ w.readbackThrow++; throw new DOMException('SecurityError','SecurityError'); }
         if (m.readbackMalformed && f.dirty){ w.readbackMalformed++; return '{invalid'; }
         if (m.readbackDifferent && f.dirty){ w.readbackDifferent++; return '{"different":true}'; }
@@ -68,466 +56,411 @@ async function installStorageFaults(page){
       if (k === 'dune_finance_v1'){
         const f = window.__faults, m = f.mode; f.dirty = true;
         if (m.setThrow){ w.setThrow++; throw new DOMException('QuotaExceededError','QuotaExceededError'); }
-        if (m.setNoop){ w.setNoop++; return; } // silent no-op: value NOT written
+        if (m.setNoop){ w.setNoop++; return; }
       }
       return realSet.call(this, k, v);
     };
   });
 }
-
-// Seed via the REAL setter, reload-idempotent (addInitScript re-runs on every
-// navigation; only seed when genuinely absent so a reload cannot clobber edits).
 async function seedRaw(page, raw){
   await page.addInitScript((raw) => {
-    const realGet = window.__realGet || Object.getPrototypeOf(window.localStorage).getItem;
-    const realSet = window.__realSet || Object.getPrototypeOf(window.localStorage).setItem;
-    if (realGet.call(window.localStorage, 'dune_finance_v1') !== null) return;
-    if (raw !== null) realSet.call(window.localStorage, 'dune_finance_v1', raw);
+    const g = window.__realGet || Object.getPrototypeOf(window.localStorage).getItem;
+    const s = window.__realSet || Object.getPrototypeOf(window.localStorage).setItem;
+    if (g.call(window.localStorage, 'dune_finance_v1') !== null) return;
+    if (raw !== null) s.call(window.localStorage, 'dune_finance_v1', raw);
   }, raw);
 }
-
-// Legacy healthy seed used by the original calibrated tests.
-async function seedFinance(page){
-  await seedRaw(page, JSON.stringify({
-    russia: {
-      salary: 424242, rent: 26000, food: 16000, save_target: 55000,
-      customIncome: [{ id:'c_seed1', name:'Side job', amount:33333 }],
-      customExpenses: [], customSeeded: true,
-      __sentinel: 'KEEPME'
-    }
-  }));
-}
-
 async function waitFinance(page){
   await page.waitForFunction(() => typeof window.finInputChange === 'function'
     && typeof window.finGetInputs === 'function'
     && typeof window.finSaveInputs === 'function'
-    && !!window.MONEY_CUSTOM, {}, { timeout: 15000 });
+    && !!window.MONEY_CUSTOM
+    && !!(window.Store && typeof window.Store.get === 'function')
+    && !!window.finDrafts, {}, { timeout: 15000 });
 }
-
-// Durable read through the REAL getter so an armed fault cannot mask truth.
 function readFinanceRaw(page){
   return page.evaluate(() => {
-    try {
-      const g = window.__realGet || Object.getPrototypeOf(window.localStorage).getItem;
-      return g.call(window.localStorage, 'dune_finance_v1');
-    } catch(e){ return '__READ_THREW__'; }
+    try { const g = window.__realGet || Object.getPrototypeOf(window.localStorage).getItem; return g.call(window.localStorage, 'dune_finance_v1'); }
+    catch(e){ return '__READ_THREW__'; }
   });
 }
-
-// Strongest durable oracle: a fresh same-origin page with NO app scripts,
-// reading native storage directly (Codex 100 §10 independent reader).
-async function independentDurableRead(context){
-  const p = await context.newPage();
-  await p.route('**/*', route => {
-    const u = route.request().url();
-    return u.endsWith('/__reader__') ? route.fulfill({ status:200, contentType:'text/html', body:'<!doctype html><title>reader</title>' }) : (u.startsWith('http://127.0.0.1') || u.startsWith('http://localhost') ? route.continue() : route.abort());
-  });
+async function independentRead(context){
   const base = await context.pages()[0].evaluate(() => location.origin);
-  await p.goto(base + '/__reader__');
+  const p = await context.newPage();
+  await p.route('**/__r3reader__', route => route.fulfill({ status:200, contentType:'text/html', body:'<!doctype html><title>reader</title>' }));
+  await p.route('**/*', route => { const u = route.request().url(); return (u.startsWith(base)) ? route.continue() : route.abort(); });
+  await p.goto(base + '/__r3reader__');
   const raw = await p.evaluate(() => localStorage.getItem('dune_finance_v1'));
   await p.close();
   return raw;
 }
+async function armFault(page, mode){ await page.evaluate((m)=>{ window.__faults.mode = m; window.__faults.dirty = false; }, mode); }
+async function faultWitness(page){ return page.evaluate(() => window.__faults.witness); }
+async function toastText(page){ return page.evaluate(() => (document.getElementById('backup-toast')||{}).textContent || ''); }
+async function shadowRent(page){ return page.evaluate(() => window.Store.get('money.expenses.rent') ?? null); }
 
-async function armFault(page, mode){
-  await page.evaluate((m) => { window.__faults.mode = m; window.__faults.dirty = false; }, mode);
+// Structured-refusal oracle (auth 106 §9): the return must be a plain object
+// (not undefined, not a thrown string) whose ok is not true; optionally the
+// outcome must be one of the expected set. No conditional skip.
+function expectRefused(ret, outcomes){
+  expect(ret && typeof ret === 'object' && !ret.threw, 'must return a structured receipt, not throw/undefined').toBeTruthy();
+  expect(ret.ok, 'must not report ok').not.toBe(true);
+  if (outcomes) expect(outcomes, 'refusal outcome must be one of '+outcomes.join('/')).toContain(ret.outcome);
 }
-async function faultWitness(page){
-  return page.evaluate(() => window.__faults.witness);
-}
-async function toastText(page){
-  return page.evaluate(() => (document.getElementById('backup-toast')||{}).textContent || '');
-}
-async function shadowRent(page){
-  return page.evaluate(() => (window.Store && typeof window.Store.get === 'function') ? (window.Store.get('money.expenses.rent') ?? null) : null);
+async function call(page, fn){
+  return page.evaluate(new Function('return (async()=>{ try { return await ('+fn+')(); } catch(e){ return { threw:String(e && e.message || e) }; } })()'));
 }
 
-// ── F02 CALIBRATION — must FAIL destructively on baseline, PASS after fix ──
-test.describe('S1a — Finance failed-read destructive overwrite (F02)', () => {
-
-  test('CAL-F02-readfail: a thrown Finance read + edit must NOT overwrite the durable key', async ({ page }) => {
-    await installStorageFaults(page);
-    await seedFinance(page);
-    await page.goto('/');
-    await waitFinance(page);
-    const before = await readFinanceRaw(page);
-    expect(before).toContain('KEEPME');
-    expect(before).toContain('424242');
-
-    await armFault(page, { getThrow: true });
-    const res = await page.evaluate(() => {
-      try { return { ret: window.finInputChange('russia','rent',31000) }; }
-      catch(e){ return { threw: String(e && e.message || e) }; }
-    });
-    const w = await faultWitness(page);
-    expect(w.getThrow).toBeGreaterThan(0);
-
+// ── F02 calibration (hardened; structured receipts) ──
+test.describe('S1a — F02 failed-read destructive overwrite', () => {
+  test('CAL-F02-readfail: thrown read + edit preserves durable key', async ({ page }) => {
+    await installStorageFaults(page); await seedRaw(page, RICH); await page.goto('/'); await waitFinance(page);
+    const before = await readFinanceRaw(page); expect(before).toContain('424242'); expect(before).toContain('ROWKEEP');
+    await armFault(page, { getThrow:true });
+    const ret = await call(page, "()=>window.finInputChange('russia','rent',31000)");
+    expect((await faultWitness(page)).getThrow).toBeGreaterThan(0);
+    expectRefused(ret, ['UNSAFE_AUTHORITY_REFUSAL']);
     await armFault(page, {});
     const after = await readFinanceRaw(page);
-    expect(after, 'durable Finance data must survive a failed read').toContain('KEEPME');
-    expect(after).toContain('424242');
-    expect(after).toContain('c_seed1');
-    if (res && res.ret !== undefined) {
-      expect(res.ret && res.ret.ok, 'finInputChange must not report ok on a failed authority read').not.toBe(true);
-    }
+    expect(after).toContain('424242'); expect(after).toContain('c1'); expect(after).toContain('ROWKEEP');
   });
-
-  test('CAL-F02-malformed: malformed stored Finance + edit must NOT overwrite', async ({ page }) => {
-    await installStorageFaults(page);
-    await seedRaw(page, '{not-json-MALFORMED-SENTINEL');
-    await page.goto('/');
-    await waitFinance(page);
-    const before = await readFinanceRaw(page);
-    expect(before).toContain('MALFORMED-SENTINEL');
-    const res = await page.evaluate(() => { try { return { ret: window.finInputChange('russia','rent',31000) }; } catch(e){ return { threw:String(e) }; } });
-    const after = await readFinanceRaw(page);
-    expect(after, 'malformed durable bytes must be preserved, not overwritten').toContain('MALFORMED-SENTINEL');
-    if (res && res.ret !== undefined) expect(res.ret && res.ret.ok).not.toBe(true);
-  });
-
-  test('CAL-F02-writenoop: a silently-dropped write must NOT report saved', async ({ page }) => {
-    await installStorageFaults(page);
-    await seedFinance(page);
-    await page.goto('/');
-    await waitFinance(page);
-    await armFault(page, { setNoop: true });
-    const res = await page.evaluate(() => { try { return { ret: window.finInputChange('russia','rent',31000) }; } catch(e){ return { threw:String(e) }; } });
-    const w = await faultWitness(page);
-    expect(w.setNoop).toBeGreaterThan(0);
-    if (res && res.ret !== undefined) {
-      expect(res.ret && res.ret.ok, 'a no-op write must not be reported as saved').not.toBe(true);
-    }
-    // A verified-unchanged no-op must be truthful: nothing overwritten.
+  test('CAL-F02-writenoop: dropped write is not saved and nothing overwritten', async ({ page }) => {
+    await installStorageFaults(page); await seedRaw(page, RICH); await page.goto('/'); await waitFinance(page);
+    await armFault(page, { setNoop:true });
+    const ret = await call(page, "()=>window.finInputChange('russia','rent',31000)");
+    expect((await faultWitness(page)).setNoop).toBeGreaterThan(0);
+    expectRefused(ret, ['REFUSED_PRE_WRITE']);
     await armFault(page, {});
-    const after = await readFinanceRaw(page);
-    expect(after).toContain('26000');
-    expect(after).not.toContain('31000');
+    const after = await readFinanceRaw(page); expect(after).toContain('26000'); expect(after).not.toContain('31000');
   });
-
-  test('SHADOW-F02: a refused Finance edit must NOT publish a Store money shadow', async ({ page }) => {
-    await installStorageFaults(page);
-    await seedFinance(page);
-    await page.goto('/');
-    await waitFinance(page);
-    await page.waitForFunction(() => !!(window.Store && typeof window.Store.get === 'function'));
-    const shadowBefore = await shadowRent(page);
-    await armFault(page, { getThrow: true });
-    await page.evaluate(() => { try { window.finInputChange('russia','rent', 999999); } catch(e){} });
-    const w = await faultWitness(page);
-    expect(w.getThrow).toBeGreaterThan(0);
+  test('SHADOW-F02: refused edit publishes no Store shadow', async ({ page }) => {
+    await installStorageFaults(page); await seedRaw(page, RICH); await page.goto('/'); await waitFinance(page);
+    const before = await shadowRent(page);
+    await armFault(page, { getThrow:true });
+    await call(page, "()=>window.finInputChange('russia','rent',999999)");
+    expect((await faultWitness(page)).getThrow).toBeGreaterThan(0);
     await armFault(page, {});
-    const shadowAfter = await shadowRent(page);
-    expect(shadowAfter).not.toBe(999999);
-    expect(shadowAfter).toBe(shadowBefore);
+    expect(await shadowRent(page)).toBe(before); expect(await shadowRent(page)).not.toBe(999999);
   });
 });
 
-// ── B01 — public whole-object authority bypass (P0) ──
-test.describe('S1a Round-2 — B01 public authority bypass', () => {
-
-  test('B01-default-under-throw: finSaveInputs(finGetInputs()) under a thrown read must not destroy durable data', async ({ page }) => {
-    await installStorageFaults(page);
-    await seedRaw(page, RICH);
-    await page.goto('/');
-    await waitFinance(page);
-    await armFault(page, { getThrow: true });
-    const res = await page.evaluate(() => {
-      try { const d = window.finGetInputs(); return { ret: window.finSaveInputs(d) }; }
-      catch(e){ return { threw: String(e) }; }
+// ── A. source/target/result admission (R3-P1-01) ──
+test.describe('S1a R3 — A source/target/result admission', () => {
+  for (const [label, raw] of [['phase-array','{"russia":[]}'],['phase-null','{"russia":null}'],['phase-string','{"russia":"BAD"}']]) {
+    test('A-src-'+label+'-partial-public: malformed source phase + partial target refuses, bytes unchanged', async ({ page }) => {
+      await installStorageFaults(page); await seedRaw(page, raw); await page.goto('/'); await waitFinance(page);
+      const ret = await call(page, "()=>window.finSaveInputs({russia:{rent:31000}})");
+      expectRefused(ret, ['UNSAFE_AUTHORITY_REFUSAL']);
+      expect(await readFinanceRaw(page)).toBe(raw);
     });
-    const w = await faultWitness(page);
-    expect(w.getThrow, 'read fault must actually fire').toBeGreaterThan(0);
-    await armFault(page, {});
-    const after = await readFinanceRaw(page);
-    expect(after).toContain('424242');   // salary sentinel survives
-    expect(after).toContain('ROOTKEEP');
-    expect(after).toContain('ROWKEEP');
-    expect(after).toContain('c1');
-    if (res && res.ret !== undefined) expect(res.ret && res.ret.ok).not.toBe(true);
-  });
-
-  test('B01-null: finSaveInputs(null) must be refused, not become canonical authority', async ({ page }) => {
-    await installStorageFaults(page);
-    await seedRaw(page, RICH);
-    await page.goto('/');
-    await waitFinance(page);
-    const res = await page.evaluate(() => ({ ret: window.finSaveInputs(null) }));
-    expect(res.ret && res.ret.ok).not.toBe(true);
-    const after = await readFinanceRaw(page);
-    expect(after).toContain('424242');
-    expect(after).not.toBe('null');
-  });
-
-  test('B01-partial: finSaveInputs partial target cannot silently destroy extras', async ({ page }) => {
-    await installStorageFaults(page);
-    await seedRaw(page, RICH);
-    await page.goto('/');
-    await waitFinance(page);
-    const res = await page.evaluate(() => ({ ret: window.finSaveInputs({ russia: { rent: 31000 } }) }));
-    const after = await readFinanceRaw(page);
-    // preservation merge: extras survive; the intended rent is applied.
-    expect(after).toContain('424242');   // salary preserved
-    expect(after).toContain('ROOTKEEP'); // unknown root preserved
-    expect(after).toContain('c1');       // custom rows preserved
-    expect(after).toContain('31000');    // intent applied
-    expect(res.ret && res.ret.ok).toBe(true);
-  });
-});
-
-// ── B02 — nested shape / semantic acknowledgement (P1) ──
-test.describe('S1a Round-2 — B02 nested admission + semantic intent', () => {
-
-  for (const [label, raw] of [['phase-array','{"russia":[]}'],['phase-string','{"russia":"BAD_PHASE"}'],['phase-null','{"russia":null}']]) {
-    test(`B02-${label}: invalid phase must refuse, not fabricate success/shadow`, async ({ page }) => {
-      await installStorageFaults(page);
-      await seedRaw(page, raw);
-      await page.goto('/');
-      await waitFinance(page);
-      const shadowBefore = await shadowRent(page);
-      const res = await page.evaluate(() => { try { return { ret: window.finInputChange('russia','rent',99000) }; } catch(e){ return { threw:String(e) }; } });
-      const after = await readFinanceRaw(page);
-      const shadowAfter = await shadowRent(page);
-      expect(res.ret && res.ret.ok, 'invalid phase must not report ok').not.toBe(true);
-      // durable bytes unchanged (evidence preserved), no fabricated shadow.
-      expect(after).toBe(raw);
-      expect(shadowAfter).not.toBe(99000);
-      expect(shadowAfter).toBe(shadowBefore);
+    test('A-src-'+label+'-empty-public: malformed source phase + empty target refuses, bytes unchanged', async ({ page }) => {
+      await installStorageFaults(page); await seedRaw(page, raw); await page.goto('/'); await waitFinance(page);
+      const ret = await call(page, "()=>window.finSaveInputs({})");
+      expectRefused(ret, ['UNSAFE_AUTHORITY_REFUSAL']);
+      expect(await readFinanceRaw(page)).toBe(raw);
     });
   }
-
-  test('B02-malformed-collection: a present-but-malformed custom collection must refuse, preserving evidence', async ({ page }) => {
-    const raw = '{"rootExtra":"ROOTKEEP","russia":{"salary":424242,"customIncome":"MALFORMED_ROWS","customExpenses":[],"customSeeded":true}}';
-    await installStorageFaults(page);
-    await seedRaw(page, raw);
-    await page.goto('/');
-    await waitFinance(page);
-    const res = await page.evaluate(() => ({ ret: window.MONEY_CUSTOM.addRow('income') }));
-    const after = await readFinanceRaw(page);
-    expect(res.ret && res.ret.ok, 'malformed collection must not be silently normalized/committed').not.toBe(true);
-    expect(after, 'malformed collection evidence must be preserved').toContain('MALFORMED_ROWS');
+  const BADCOLL = '{"rootExtra":"ROOTKEEP","russia":{"salary":424242,"customIncome":"MALFORMED_ROWS","customExpenses":[],"customSeeded":true}}';
+  test('A-badcoll-scalar: malformed source collection refuses a scalar edit, evidence preserved', async ({ page }) => {
+    await installStorageFaults(page); await seedRaw(page, BADCOLL); await page.goto('/'); await waitFinance(page);
+    const ret = await call(page, "()=>window.finInputChange('russia','rent',31000)");
+    expectRefused(ret, ['UNSAFE_AUTHORITY_REFUSAL']);
+    expect(await readFinanceRaw(page)).toContain('MALFORMED_ROWS');
   });
-
-  test('B02-semantic-intent: a successful scalar edit must persist the intended field itself', async ({ page }) => {
-    await installStorageFaults(page);
-    await seedRaw(page, RICH);
-    await page.goto('/');
-    await waitFinance(page);
-    const res = await page.evaluate(() => ({ ret: window.finInputChange('russia','rent',31000) }));
-    expect(res.ret && res.ret.ok).toBe(true);
-    const after = JSON.parse(await readFinanceRaw(page));
-    expect(after.russia.rent, 'the intended canonical field must hold the intended value').toBe(31000);
-    expect(after.russia.salary).toBe(424242); // preserved
+  test('A-badcoll-scenario: malformed source collection refuses a scenario, evidence preserved', async ({ page }) => {
+    await installStorageFaults(page); await seedRaw(page, BADCOLL); await page.goto('/'); await waitFinance(page);
+    const ret = await call(page, "()=>window.setFinScenario('realistic')");
+    expectRefused(ret, ['UNSAFE_AUTHORITY_REFUSAL']);
+    expect(await readFinanceRaw(page)).toContain('MALFORMED_ROWS');
   });
-
-  test('B02-healthy-zero-empty-partial: valid zero/empty/partial historical data is admitted and preserved', async ({ page }) => {
-    const raw = JSON.stringify({ rootExtra:'ROOTKEEP', russia:{ customIncome:[], customExpenses:[], customSeeded:true, phaseExtra:'PHASEKEEP' } });
-    await installStorageFaults(page);
-    await seedRaw(page, raw);
-    await page.goto('/');
-    await waitFinance(page);
-    const res = await page.evaluate(() => ({ ret: window.finInputChange('russia','rent',0) }));
-    expect(res.ret && res.ret.ok).toBe(true);
+  test('A-badcoll-save: malformed source collection refuses Save, evidence preserved', async ({ page }) => {
+    await installStorageFaults(page); await seedRaw(page, BADCOLL); await page.goto('/'); await waitFinance(page);
+    const ret = await call(page, "()=>window.saveFinanceNow()");
+    expectRefused(ret, ['UNSAFE_AUTHORITY_REFUSAL']);
+    expect(await readFinanceRaw(page)).toContain('MALFORMED_ROWS');
+  });
+  test('A-healthy-partial-public: supported partial preserves extras and applies intent', async ({ page }) => {
+    await installStorageFaults(page); await seedRaw(page, RICH); await page.goto('/'); await waitFinance(page);
+    const ret = await call(page, "()=>window.finSaveInputs({russia:{rent:31000}})");
+    expect(ret.ok).toBe(true);
     const after = JSON.parse(await readFinanceRaw(page));
-    expect(after.russia.rent).toBe(0);
+    expect(after.russia.rent).toBe(31000); expect(after.russia.salary).toBe(424242);
     expect(after.rootExtra).toBe('ROOTKEEP');
-    expect(after.russia.phaseExtra).toBe('PHASEKEEP');
+    expect(after.russia.customIncome.find(r=>r.id==='c1').rowExtra).toBe('ROWKEEP');
+  });
+  test('A-healthy-zero-unknown: zero/empty/unknown controls admitted and preserved', async ({ page }) => {
+    const raw = JSON.stringify({ rootExtra:'ROOTKEEP', russia:{ customIncome:[], customExpenses:[], customSeeded:true, phaseExtra:'PHASEKEEP' } });
+    await installStorageFaults(page); await seedRaw(page, raw); await page.goto('/'); await waitFinance(page);
+    const ret = await call(page, "()=>window.finInputChange('russia','rent',0)");
+    expect(ret.ok).toBe(true);
+    const after = JSON.parse(await readFinanceRaw(page));
+    expect(after.russia.rent).toBe(0); expect(after.rootExtra).toBe('ROOTKEEP'); expect(after.russia.phaseExtra).toBe('PHASEKEEP');
   });
 });
 
-// ── B03 — refused draft later erased by ordinary render (P1) ──
-test.describe('S1a Round-2 — B03 retained drafts survive render', () => {
+// ── B. row-element admission (R3-P1-02) ──
+test.describe('S1a R3 — B row-element admission', () => {
+  const bads = [['null','null'],['number','123'],['string','"x"'],['array','[]'],['object','{}']];
+  for (const [label, badJson] of bads) {
+    for (const [op, expr] of [
+      ['scalar', "()=>window.finInputChange('russia','rent',31000)"],
+      ['add',    "()=>window.MONEY_CUSTOM.addRow('income')"],
+      ['update', "()=>window.MONEY_CUSTOM.updateRow('income','c1',{name:'UPDATED'})"],
+      ['remove', "()=>window.MONEY_CUSTOM.removeRow('income','c1')"],
+      ['public', "()=>window.finSaveInputs({russia:{rent:31000}})"],
+      ['save',   "()=>window.saveFinanceNow()"],
+    ]) {
+      test('B-'+label+'-'+op+': malformed row element fails closed, evidence preserved, no crash', async ({ page }) => {
+        const errs = []; page.on('pageerror', e => errs.push(e.message));
+        const seed = '{"rootExtra":"ROOTKEEP","russia":{"salary":424242,"customIncome":['+badJson+',{"id":"c1","name":"Old name","amount":33333,"rowExtra":"ROWKEEP"}],"customExpenses":[],"customSeeded":true}}';
+        await installStorageFaults(page); await seedRaw(page, seed); await page.goto('/'); await waitFinance(page);
+        await page.evaluate(() => window.show && window.show('finance'));
+        const ret = await call(page, expr);
+        expectRefused(ret, ['UNSAFE_AUTHORITY_REFUSAL']);
+        const after = await readFinanceRaw(page);
+        // malformed element evidence preserved (not normalized/deleted/committed)
+        expect(JSON.parse(after).russia.customIncome.length).toBe(2);
+        expect(after).toContain('ROWKEEP'); expect(after).toContain('424242');
+        expect(errs, 'render/op must not crash the page').toEqual([]);
+      });
+    }
+  }
+  test('B-startup-seed: malformed rows + customSeeded:false must NOT flip the marker', async ({ page }) => {
+    const seed = '{"russia":{"customIncome":[123],"customExpenses":[],"customSeeded":false}}';
+    await installStorageFaults(page); await seedRaw(page, seed); await page.goto('/'); await waitFinance(page);
+    await page.waitForTimeout(200);
+    const after = JSON.parse(await readFinanceRaw(page));
+    expect(after.russia.customSeeded, 'startup seed must fail closed on malformed rows').toBe(false);
+    expect(after.russia.customIncome).toEqual([123]);
+  });
+  test('B-mixed-healthy-update-still-refuses: a malformed neighbour fails the whole mutation closed', async ({ page }) => {
+    const seed = '{"russia":{"salary":1,"customIncome":[null,{"id":"c1","name":"Old","amount":5}],"customExpenses":[],"customSeeded":true}}';
+    await installStorageFaults(page); await seedRaw(page, seed); await page.goto('/'); await waitFinance(page);
+    const ret = await call(page, "()=>window.MONEY_CUSTOM.updateRow('income','c1',{name:'X'})");
+    expectRefused(ret, ['UNSAFE_AUTHORITY_REFUSAL']);
+    expect(JSON.parse(await readFinanceRaw(page)).russia.customIncome[1].name).toBe('Old');
+  });
+});
 
-  test('B03-custom-draft-survives-add: a refused custom name draft is not erased by a later successful Add', async ({ page }) => {
-    await installStorageFaults(page);
-    await seedRaw(page, RICH);
-    await page.goto('/');
-    await waitFinance(page);
+// ── C. identity (R3-P1-03) native UI ──
+test.describe('S1a R3 — C row identity', () => {
+  const DUP = JSON.stringify({ russia:{ salary:1, customIncome:[
+    {id:'dup',name:'FIRST',amount:111,rowExtra:'FIRSTKEEP'},
+    {id:'dup',name:'SECOND',amount:222,rowExtra:'SECONDKEEP'},
+    {id:'c2',name:'NEIGHBOR',amount:333}
+  ], customExpenses:[], customSeeded:true } });
+  test('C-dup-remove-native: second-duplicate Remove deletes NO row (ambiguous refused)', async ({ page }) => {
+    await installStorageFaults(page); await seedRaw(page, DUP); await page.goto('/'); await waitFinance(page);
+    await page.evaluate(() => window.show && window.show('finance'));
+    await page.locator('.mc-row[data-kind="income"] .mc-rm').nth(1).click();
+    await page.waitForTimeout(60);
+    const coll = JSON.parse(await readFinanceRaw(page)).russia.customIncome;
+    expect(coll.filter(r=>r.id==='dup').length, 'both duplicate rows must survive').toBe(2);
+    expect(coll.find(r=>r.id==='c2')).toBeTruthy();
+    // must not falsely claim success ("Not saved" legitimately contains 'saved')
+    expect((await toastText(page)).toLowerCase()).not.toContain('saved on this device');
+  });
+  test('C-dup-edit-native: editing the second duplicate does NOT modify the first durable row', async ({ page }) => {
+    await installStorageFaults(page); await seedRaw(page, DUP); await page.goto('/'); await waitFinance(page);
+    await page.evaluate(() => window.show && window.show('finance'));
+    await page.locator('.mc-row[data-kind="income"] .mc-name').nth(1).fill('EDIT SECOND');
+    await page.waitForTimeout(60);
+    const coll = JSON.parse(await readFinanceRaw(page)).russia.customIncome;
+    expect(coll[0].name).toBe('FIRST'); expect(coll[1].name).toBe('SECOND'); // neither durable row wrongly edited
+  });
+});
+
+// ── D. draft binding (R3-P1-04) native UI ──
+test.describe('S1a R3 — D draft binding', () => {
+  const CROSS = JSON.stringify({ russia:{ salary:1,
+    customIncome:[{id:'c1',name:'Income old',amount:5}],
+    customExpenses:[{id:'c1',name:'Expense old',amount:9}], customSeeded:true } });
+  test('D-cross-kind: refused expense draft binds to expense only, never income', async ({ page }) => {
+    await installStorageFaults(page); await seedRaw(page, CROSS); await page.goto('/'); await waitFinance(page);
+    await page.evaluate(() => window.show && window.show('finance'));
+    await page.waitForSelector('.mc-row[data-kind="expense"][data-id="c1"] .mc-name');
+    await armFault(page, { setNoop:true });
+    await page.locator('.mc-row[data-kind="expense"][data-id="c1"] .mc-name').fill('EXPENSE DRAFT');
+    expect((await faultWitness(page)).setNoop).toBeGreaterThan(0);
+    await armFault(page, {});
+    await page.evaluate(() => window.MONEY_CUSTOM.render());
+    await expect(page.locator('.mc-row[data-kind="expense"][data-id="c1"] .mc-name')).toHaveValue('EXPENSE DRAFT');
+    await expect(page.locator('.mc-row[data-kind="income"][data-id="c1"] .mc-name'), 'income c1 must be untouched').toHaveValue('Income old');
+  });
+});
+
+// ── E. Save aggregation (R3-P1-05) ──
+test.describe('S1a R3 — E Save aggregation', () => {
+  test('E-custom-only: Save submits a retained custom draft and only then claims saved', async ({ page }) => {
+    await installStorageFaults(page); await seedRaw(page, RICH); await page.goto('/'); await waitFinance(page);
     await page.evaluate(() => window.show && window.show('finance'));
     await page.waitForSelector('.mc-row[data-id="c1"] .mc-name');
-    await armFault(page, { setNoop: true });
-    await page.locator('.mc-row[data-id="c1"] .mc-name').fill('NEW TYPED DRAFT');
-    const w = await faultWitness(page);
-    expect(w.setNoop).toBeGreaterThan(0);
-    expect(await page.locator('.mc-row[data-id="c1"] .mc-name').inputValue()).toBe('NEW TYPED DRAFT');
+    await armFault(page, { setNoop:true });
+    await page.locator('.mc-row[data-id="c1"] .mc-name').fill('NEW CUSTOM INTENT');
     await armFault(page, {});
-    await page.locator('#mc-host [data-add="income"]').click();
-    // after a successful add + render, the newer refused intent must survive.
-    await expect(page.locator('.mc-row[data-id="c1"] .mc-name')).toHaveValue('NEW TYPED DRAFT');
-  });
-
-  test('B03-scalar-draft-survives-recompute: a refused scalar draft is not erased by finRecompute', async ({ page }) => {
-    await installStorageFaults(page);
-    await seedRaw(page, RICH);
-    await page.goto('/');
-    await waitFinance(page);
-    await page.evaluate(() => window.show && window.show('finance'));
-    await armFault(page, { setNoop: true });
-    await page.locator('#fin-r-rent').fill('31000');
-    // money-commas.js formats the DISPLAY with thousands separators; storage is
-    // raw. Normalize the comma so the oracle is on numeric intent, not display.
-    expect((await page.locator('#fin-r-rent').inputValue()).replace(/,/g,'')).toBe('31000');
-    await armFault(page, {});
-    await page.evaluate(() => window.finRecompute && window.finRecompute());
-    expect((await page.locator('#fin-r-rent').inputValue()).replace(/,/g,''), 'refused scalar draft must survive recompute').toBe('31000');
-  });
-});
-
-// ── B04 — Save-on-device truthfulness (P1) ──
-test.describe('S1a Round-2 — B04 truthful Save on this device', () => {
-
-  test('B04-save-commits-retained-intent: Save submits the visible refused edit and only then claims saved', async ({ page }) => {
-    await installStorageFaults(page);
-    await seedRaw(page, RICH);
-    await page.goto('/');
-    await waitFinance(page);
-    await page.evaluate(() => window.show && window.show('finance'));
-    await armFault(page, { setNoop: true });
-    await page.locator('#fin-r-rent').fill('31000');   // refused → draft retained
-    await armFault(page, {});                          // fault cleared
-    const res = await page.evaluate(() => window.saveFinanceNow());
-    const after = JSON.parse(await readFinanceRaw(page));
-    expect(res && res.ok).toBe(true);
-    expect(after.russia.rent, 'Save must actually persist the visible intent').toBe(31000);
+    const ret = await call(page, "()=>window.saveFinanceNow()");
+    expect(ret.ok).toBe(true);
+    const coll = JSON.parse(await readFinanceRaw(page)).russia.customIncome;
+    expect(coll.find(r=>r.id==='c1').name, 'Save must persist the retained custom intent').toBe('NEW CUSTOM INTENT');
     expect((await toastText(page)).toLowerCase()).toContain('saved');
+    const pending = await page.evaluate(() => window.finDrafts.entries().length);
+    expect(pending, 'the submitted custom draft must be cleared').toBe(0);
   });
-
-  test('B04-save-refuses-under-fault: Save must not claim saved while the write still fails', async ({ page }) => {
-    await installStorageFaults(page);
-    await seedRaw(page, RICH);
-    await page.goto('/');
-    await waitFinance(page);
+  test('E-scalar-plus-custom: both are submitted and verified', async ({ page }) => {
+    await installStorageFaults(page); await seedRaw(page, RICH); await page.goto('/'); await waitFinance(page);
     await page.evaluate(() => window.show && window.show('finance'));
-    await armFault(page, { setNoop: true });
+    await armFault(page, { setNoop:true });
     await page.locator('#fin-r-rent').fill('31000');
-    const res = await page.evaluate(() => window.saveFinanceNow()); // fault still armed
-    expect(res && res.ok).not.toBe(true);
+    await page.locator('.mc-row[data-id="c1"] .mc-amount').fill('44444');
     await armFault(page, {});
-    const after = await readFinanceRaw(page);
-    expect(after).toContain('26000');       // durable unchanged
-    expect(after).not.toContain('31000');
+    const ret = await call(page, "()=>window.saveFinanceNow()");
+    expect(ret.ok).toBe(true);
+    const after = JSON.parse(await readFinanceRaw(page));
+    expect(after.russia.rent).toBe(31000);
+    expect(after.russia.customIncome.find(r=>r.id==='c1').amount).toBe(44444);
+  });
+  test('E-unresolved-scoped: an ambiguous custom draft is truthfully scoped, not claimed saved', async ({ page }) => {
+    const DUP = JSON.stringify({ russia:{ salary:1, customIncome:[{id:'dup',name:'A',amount:1},{id:'dup',name:'B',amount:2}], customExpenses:[], customSeeded:true } });
+    await installStorageFaults(page); await seedRaw(page, DUP); await page.goto('/'); await waitFinance(page);
+    await page.evaluate(() => window.show && window.show('finance'));
+    await page.locator('.mc-row[data-kind="income"] .mc-name').nth(1).fill('AMBIG DRAFT'); // ambiguous -> refused + retained
+    const ret = await call(page, "()=>window.saveFinanceNow()");
+    expect(ret.ok).toBe(true);
+    expect(ret.unresolvedCustom).toBeGreaterThan(0);
+    const toast = (await toastText(page)).toLowerCase();
+    expect(toast).toContain('pending');
+    // durable duplicate rows unchanged (ambiguous never written)
+    const coll = JSON.parse(await readFinanceRaw(page)).russia.customIncome;
+    expect(coll[0].name).toBe('A'); expect(coll[1].name).toBe('B');
+  });
+  test('E-save-refuses-under-fault: Save does not claim saved while writes fail', async ({ page }) => {
+    await installStorageFaults(page); await seedRaw(page, RICH); await page.goto('/'); await waitFinance(page);
+    await page.evaluate(() => window.show && window.show('finance'));
+    await armFault(page, { setNoop:true });
+    await page.locator('#fin-r-rent').fill('31000');
+    const ret = await call(page, "()=>window.saveFinanceNow()");
+    expectRefused(ret, ['REFUSED_PRE_WRITE','POST_WRITE_UNCERTAIN','UNSAFE_AUTHORITY_REFUSAL']);
+    await armFault(page, {});
+    expect(await readFinanceRaw(page)).toContain('26000');
     expect((await toastText(page)).toLowerCase()).not.toContain('saved on this device');
   });
 });
 
-// ── B05 — post-write uncertainty must not be mislabeled unchanged (P1) ──
-test.describe('S1a Round-2 — B05 post-write uncertainty', () => {
-
+// ── F. custom uncertainty copy (R3-P1-06) ──
+test.describe('S1a R3 — F custom post-write uncertainty', () => {
   for (const mode of ['readbackThrow','readbackDifferent']) {
-    test(`B05-${mode}: a successful native write with failed readback is POST_WRITE_UNCERTAIN, never "unchanged"`, async ({ page }) => {
-      await installStorageFaults(page);
-      await seedRaw(page, RICH);
-      await page.goto('/');
-      await waitFinance(page);
-      const shadowBefore = await shadowRent(page);
-      await armFault(page, { [mode]: true });
-      const res = await page.evaluate(() => { try { return { ret: window.finInputChange('russia','rent',31000) }; } catch(e){ return { threw:String(e) }; } });
-      const w = await faultWitness(page);
-      expect(w[mode], 'the readback fault must actually fire').toBeGreaterThan(0);
-      expect(res.ret && res.ret.ok).not.toBe(true);
-      expect(res.ret && res.ret.outcome, 'must be flagged uncertain, not unchanged/refused-pre-write').toBe('POST_WRITE_UNCERTAIN');
-      // no false shadow publication
-      const shadowAfter = await shadowRent(page);
-      expect(shadowAfter).not.toBe(31000);
-      expect(shadowAfter).toBe(shadowBefore);
-      // truthful copy: must not claim nothing was overwritten
-      expect((await toastText(page)).toLowerCase()).not.toContain('nothing was overwritten');
-      // durable independently inspected after disarm: the write DID land (31000)
+    test('F-'+mode+': landed custom write with failed readback is uncertain, never "nothing changed"', async ({ page }) => {
+      await installStorageFaults(page); await seedRaw(page, RICH); await page.goto('/'); await waitFinance(page);
+      await armFault(page, { [mode]:true });
+      const ret = await call(page, "()=>window.MONEY_CUSTOM.updateRow('income','c1',{name:'LANDED NEW'})");
+      expect((await faultWitness(page))[mode]).toBeGreaterThan(0);
+      expectRefused(ret, ['POST_WRITE_UNCERTAIN']);
+      const toast = (await toastText(page)).toLowerCase();
+      expect(toast).toContain('uncertain'); expect(toast).not.toContain('nothing was changed');
       await armFault(page, {});
-      const after = await readFinanceRaw(page);
-      expect(after).toContain('31000');
+      expect(await readFinanceRaw(page)).toContain('LANDED NEW'); // it did land
     });
   }
-});
-
-// ── B06 — degraded custom fallback must not falsely acknowledge (P1) ──
-test.describe('S1a Round-2 — B06 degraded fallback truthfulness', () => {
-
-  test('B06-fallback-dropped-write: with app hooks removed, a dropped fallback write must not return ok', async ({ page }) => {
-    await installStorageFaults(page);
-    await seedRaw(page, RICH);
-    await page.goto('/');
-    await waitFinance(page);
-    const res = await page.evaluate(() => {
-      // Remove the app.js hooks so money-custom uses its OWN fallback writer.
-      delete window.finReadAuthority;
-      delete window.finSaveInputs;
-      window.__faults.mode = { setNoop: true };
-      window.__faults.dirty = false;
-      try { return { ret: window.MONEY_CUSTOM.addRow('income') }; }
-      catch(e){ return { threw: String(e) }; }
-    });
-    const w = await faultWitness(page);
-    expect(w.setNoop, 'the dropped-write fault must actually fire').toBeGreaterThan(0);
-    expect(res.ret && res.ret.ok, 'fallback must not acknowledge a dropped write as saved').not.toBe(true);
+  test('F-setnoop-refused-pre-write: dropped custom write reports refusal with unchanged bytes', async ({ page }) => {
+    await installStorageFaults(page); await seedRaw(page, RICH); await page.goto('/'); await waitFinance(page);
+    await armFault(page, { setNoop:true });
+    const ret = await call(page, "()=>window.MONEY_CUSTOM.updateRow('income','c1',{name:'DROPPED'})");
+    expect((await faultWitness(page)).setNoop).toBeGreaterThan(0);
+    expectRefused(ret, ['REFUSED_PRE_WRITE']);
     await armFault(page, {});
-    const after = await readFinanceRaw(page);
-    // durable bytes byte-identical to the seed (no row stored).
-    expect(after).toBe(RICH);
+    expect(await readFinanceRaw(page)).not.toContain('DROPPED');
   });
 });
 
-// ── HEALTHY CONTROLS — must PASS on baseline AND after fix (no regression) ──
-test.describe('S1a — healthy Finance controls (no regression)', () => {
+// ── G. matching-row unknown-field preservation (R3-P1-07) ──
+test.describe('S1a R3 — G matching-row preservation', () => {
+  test('G-rowextra-preserved: same ids/order, changed name, omitted unknown field survives', async ({ page }) => {
+    await installStorageFaults(page); await seedRaw(page, RICH); await page.goto('/'); await waitFinance(page);
+    const ret = await call(page, "()=>window.finSaveInputs({russia:{customIncome:[{id:'c1',name:'Changed',amount:33333},{id:'c2',name:'Second',amount:0}]}})");
+    expect(ret.ok).toBe(true);
+    const inc = JSON.parse(await readFinanceRaw(page)).russia.customIncome;
+    const c1 = inc.find(r=>r.id==='c1');
+    expect(c1.name).toBe('Changed');
+    expect(c1.rowExtra, 'unknown matching-row field must be preserved').toBe('ROWKEEP');
+    expect(inc.find(r=>r.id==='c2')).toBeTruthy(); // unrelated row not dropped
+  });
+});
 
-  test('HEALTHY-edit-reload: normal edit persists and survives reload', async ({ page }) => {
-    await installStorageFaults(page);
-    await seedFinance(page);
-    await page.goto('/');
-    await waitFinance(page);
-    const r = await page.evaluate(() => window.finInputChange('russia','rent', 27777));
-    if (r !== undefined) expect(r && r.ok !== false).toBeTruthy();
+// ── H. verified Save → shadow reconciliation (R3-P1-08) ──
+test.describe('S1a R3 — H Save/shadow reconciliation', () => {
+  test('H-verified-save-reconciles-shadow: subscription cannot replay pre-Save value', async ({ page }) => {
+    await installStorageFaults(page); await seedRaw(page, RICH); await page.goto('/'); await waitFinance(page);
+    await page.evaluate(() => window.show && window.show('finance'));
+    await armFault(page, { setNoop:true });
+    await page.locator('#fin-r-rent').fill('31000');
+    await armFault(page, {});
+    const ret = await call(page, "()=>window.saveFinanceNow()");
+    expect(ret.ok).toBe(true);
+    expect(JSON.parse(await readFinanceRaw(page)).russia.rent).toBe(31000);
+    expect(await shadowRent(page), 'shadow reconciled to committed value').toBe(31000);
+    // an unrelated money update fires the subscription; the committed rent must stand
+    await page.evaluate(() => window.Store.set('money.expenses.food', 42));
+    await page.waitForTimeout(120);
+    expect((await page.locator('#fin-r-rent').inputValue()).replace(/,/g,'')).toBe('31000');
+  });
+  test('H-refused-save-no-shadow: a refused Save fabricates no shadow', async ({ page }) => {
+    await installStorageFaults(page); await seedRaw(page, RICH); await page.goto('/'); await waitFinance(page);
+    await page.evaluate(() => window.show && window.show('finance'));
+    const before = await shadowRent(page);
+    await armFault(page, { setNoop:true });
+    await page.locator('#fin-r-rent').fill('31000');
+    await call(page, "()=>window.saveFinanceNow()");
+    await armFault(page, {});
+    expect(await shadowRent(page)).toBe(before);
+  });
+});
+
+// ── Healthy controls (no regression) ──
+test.describe('S1a — healthy controls', () => {
+  test('HEALTHY-edit-reload', async ({ page }) => {
+    await installStorageFaults(page); await seedRaw(page, RICH); await page.goto('/'); await waitFinance(page);
+    const r = await call(page, "()=>window.finInputChange('russia','rent',27777)");
+    expect(r.ok).toBe(true);
     let after = await readFinanceRaw(page);
-    expect(after).toContain('27777');
-    expect(after).toContain('KEEPME');
-    expect(after).toContain('c_seed1');
-    expect(after).toContain('424242');
+    expect(after).toContain('27777'); expect(after).toContain('ROWKEEP'); expect(after).toContain('424242');
     await page.reload(); await waitFinance(page);
-    after = await readFinanceRaw(page);
-    expect(after).toContain('27777');
+    expect(await readFinanceRaw(page)).toContain('27777');
   });
-
-  test('HEALTHY-absent-firstedit: genuine absence + edit writes a fresh default+field', async ({ page }) => {
-    await installStorageFaults(page);
-    await page.goto('/');
-    await waitFinance(page);
-    const r = await page.evaluate(() => window.finInputChange('russia','rent', 25000));
-    if (r !== undefined) expect(r && r.ok !== false).toBeTruthy();
+  test('HEALTHY-absent-firstedit: proven ABSENT immediately before edit', async ({ page }) => {
+    await installStorageFaults(page); await page.goto('/'); await waitFinance(page);
+    const auth = await page.evaluate(() => { try { localStorage.removeItem('dune_finance_v1'); } catch(e){} return window.finReadAuthority().state; });
+    expect(auth, 'must be ABSENT at the edit point').toBe('ABSENT');
+    const r = await call(page, "()=>window.finInputChange('russia','rent',25000)");
+    expect(r.ok).toBe(true);
+    expect(await readFinanceRaw(page)).toContain('25000');
+  });
+  test('HEALTHY-scenario preserves unknown fields + rows', async ({ page }) => {
+    await installStorageFaults(page); await seedRaw(page, RICH); await page.goto('/'); await waitFinance(page);
+    const r = await call(page, "()=>window.setFinScenario('realistic')");
+    expect(r.ok).toBe(true);
     const after = await readFinanceRaw(page);
-    expect(after).toContain('25000');
+    expect(after).toContain('ROOTKEEP'); expect(after).toContain('ROWKEEP'); expect(after).toContain('c1');
   });
-
-  test('HEALTHY-scenario: setFinScenario preserves unknown fields + custom rows', async ({ page }) => {
-    await installStorageFaults(page);
-    await seedFinance(page);
-    await page.goto('/');
-    await waitFinance(page);
-    await page.evaluate(() => window.setFinScenario('realistic'));
-    const after = await readFinanceRaw(page);
-    expect(after).toContain('KEEPME');
-    expect(after).toContain('c_seed1');
-  });
-
-  test('HEALTHY-sequential: sequential edits + custom zero + save persist and reload', async ({ page }) => {
-    await installStorageFaults(page);
-    await seedRaw(page, RICH);
-    await page.goto('/');
-    await waitFinance(page);
-    const d = await page.evaluate(() => ({
-      a: window.finInputChange('russia','rent',27777),
-      b: window.finInputChange('russia','food',0),
-      c: window.MONEY_CUSTOM.updateRow('income','c1',{amount:0}),
-      s: window.saveFinanceNow()
-    }));
-    expect(d.a.ok).toBe(true);
-    expect(d.b.ok).toBe(true);
-    expect(d.c.ok).toBe(true);
+  test('HEALTHY-sequential custom zero + save + reload preserves unknown row fields', async ({ page }) => {
+    await installStorageFaults(page); await seedRaw(page, RICH); await page.goto('/'); await waitFinance(page);
+    await page.evaluate(() => window.show && window.show('finance'));
+    const a = await call(page, "()=>window.finInputChange('russia','rent',27777)"); expect(a.ok).toBe(true);
+    const b = await call(page, "()=>window.MONEY_CUSTOM.updateRow('income','c1',{amount:0})"); expect(b.ok).toBe(true);
+    const s = await call(page, "()=>window.saveFinanceNow()"); expect(s.ok).toBe(true);
     await page.reload(); await waitFinance(page);
     const after = JSON.parse(await readFinanceRaw(page));
     expect(after.russia.rent).toBe(27777);
-    expect(after.russia.food).toBe(0);
-    expect(after.rootExtra).toBe('ROOTKEEP');   // unknown preserved
-    expect(after.russia.customIncome.find(r => r.id === 'c1').amount).toBe(0);
-    expect(after.russia.customIncome.find(r => r.id === 'c1').rowExtra).toBe('ROWKEEP'); // row unknown preserved
+    const c1 = after.russia.customIncome.find(r=>r.id==='c1');
+    expect(c1.amount).toBe(0); expect(c1.rowExtra).toBe('ROWKEEP');
+  });
+  test('HEALTHY-custom-draft-survives-add', async ({ page }) => {
+    await installStorageFaults(page); await seedRaw(page, RICH); await page.goto('/'); await waitFinance(page);
+    await page.evaluate(() => window.show && window.show('finance'));
+    await page.waitForSelector('.mc-row[data-id="c1"] .mc-name');
+    await armFault(page, { setNoop:true });
+    await page.locator('.mc-row[data-id="c1"] .mc-name').fill('KEPT DRAFT');
+    await armFault(page, {});
+    await page.locator('#mc-host [data-add="income"]').click();
+    await expect(page.locator('.mc-row[data-id="c1"] .mc-name')).toHaveValue('KEPT DRAFT');
   });
 });

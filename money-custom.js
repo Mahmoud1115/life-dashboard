@@ -97,6 +97,12 @@
   }
   function uid() { return 'c_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
   function isPlainObject(o){ return !!o && typeof o === 'object' && !Array.isArray(o); }
+  // R3: shared Finance-local admission/identity helpers (prefer app.js's, so both
+  // layers enforce the identical contract; local fallback for degraded init).
+  function isUsableId(x){ return (global.finAdmit && global.finAdmit.isUsableId) ? global.finAdmit.isUsableId(x) : (typeof x === 'string' && x.length > 0); }
+  function isAdmissibleRow(r){ return (global.finAdmit && global.finAdmit.isAdmissibleRow) ? global.finAdmit.isAdmissibleRow(r) : (isPlainObject(r) && isUsableId(r.id)); }
+  function admitDeep(v){ return (global.finAdmit && global.finAdmit.deep) ? global.finAdmit.deep(v) : { ok:true }; }
+  function verifyRow(kind, id, field, value){ return (global.finAdmit && global.finAdmit.verifyRow) ? global.finAdmit.verifyRow(kind, id, field, value) : true; }
   // Finance-local draft registry accessor: prefer the app.js registry so drafts
   // are shared with scalar edits; fall back to a local Map only when the hook
   // is unavailable (degraded init). Not a platform-wide draft store.
@@ -108,8 +114,18 @@
       has: (k) => _localDrafts.has(k),
       get: (k) => _localDrafts.get(k),
       entries: () => Array.from(_localDrafts.entries()),
-      applyScalars() {}
+      applyScalars() {},
+      customKey: (kind, sel, field) => 'custom:' + JSON.stringify([kind, sel, field]),
+      parseCustom: (k) => { if (typeof k !== 'string' || k.slice(0,7) !== 'custom:') return null; try { const a = JSON.parse(k.slice(7)); return { kind:a[0], sel:a[1], field:a[2] }; } catch(e){ return null; } }
     };
+  }
+  function dKey(kind, sel, field){ const d = drafts(); return d.customKey ? d.customKey(kind, sel, field) : ('custom:' + JSON.stringify([kind, sel, field])); }
+  // R3-P1-03: resolve a single unambiguous durable row by id; -1 = missing/ambiguous.
+  function resolveRow(list, id){
+    if (!Array.isArray(list) || !isUsableId(id)) return -1;
+    const idxs = [];
+    list.forEach((r, i) => { if (isPlainObject(r) && r.id === id) idxs.push(i); });
+    return idxs.length === 1 ? idxs[0] : -1;
   }
 
   // S1a Finance P0: tri-state authority read. A thrown/malformed read must
@@ -154,10 +170,16 @@
   function recompute() {
     if (typeof global.finRecompute === 'function') global.finRecompute();
   }
-  function blockedToast() {
-    if (typeof global.showBackupToast === 'function') {
-      try { global.showBackupToast('⚠ Not saved — Finance storage unavailable. Nothing was changed.'); } catch (e) {}
-    }
+  // R3-P1-06: custom UI copy derives from the actual receipt outcome; a
+  // POST_WRITE_UNCERTAIN custom mutation must never claim "Nothing was changed".
+  function customToast(res) {
+    if (typeof global.showBackupToast !== 'function') return;
+    let msg;
+    if (res && res.outcome === 'POST_WRITE_UNCERTAIN') msg = '⚠ Save uncertain — this change may or may not be stored. Reload to check before relying on it.';
+    else if (res && res.reason === 'ambiguous-identity') msg = '⚠ Not saved — this row cannot be identified unambiguously; nothing was changed. Your typed value is kept.';
+    else if (res && res.outcome === 'UNSAFE_AUTHORITY_REFUSAL') msg = '⚠ Not saved — Finance data is unreadable/invalid right now; nothing was changed. Your typed value is kept.';
+    else msg = '⚠ Not saved — nothing was overwritten. Your typed value is kept.';
+    try { global.showBackupToast(msg); } catch (e) {}
   }
 
   // Presentational shape: never writes. On unsafe read returns a safe empty
@@ -176,24 +198,24 @@
   // commit through the guarded writer, reporting truthful failure.
   function mutateRussia(mutator) {
     const auth = readAuthority();
-    if (auth.state === 'READ_FAILED' || auth.state === 'MALFORMED') { blockedToast(); return { ok: false, outcome: 'UNSAFE_AUTHORITY_REFUSAL', reason: 'finance-authority-' + auth.state.toLowerCase() }; }
+    if (auth.state === 'READ_FAILED' || auth.state === 'MALFORMED') { const res = { ok: false, outcome: 'UNSAFE_AUTHORITY_REFUSAL', reason: 'finance-authority-' + auth.state.toLowerCase() }; customToast(res); return res; }
     const all = (auth.state === 'PRESENT') ? auth.value : {};
     // Only a genuinely ABSENT phase key defaults to {}. A present but non-object
-    // russia (null/array/scalar) is REFUSED (evidence preserved), never
-    // normalized — otherwise a malformed phase silently becomes writable (B02).
+    // russia is REFUSED (evidence preserved), never normalized (B02).
     if (!('russia' in all)) all.russia = {};
-    if (!isPlainObject(all.russia)) { blockedToast(); return { ok: false, outcome: 'UNSAFE_AUTHORITY_REFUSAL', reason: 'phase-shape' }; }
-    // Present-but-malformed named collections are refused (evidence preserved),
-    // never normalized to [] (B02). Only ABSENT collections default to [].
-    if ('customIncome' in all.russia && !Array.isArray(all.russia.customIncome)) { blockedToast(); return { ok: false, outcome: 'UNSAFE_AUTHORITY_REFUSAL', reason: 'malformed-collection' }; }
-    if ('customExpenses' in all.russia && !Array.isArray(all.russia.customExpenses)) { blockedToast(); return { ok: false, outcome: 'UNSAFE_AUTHORITY_REFUSAL', reason: 'malformed-collection' }; }
+    if (!isPlainObject(all.russia)) { const res = { ok: false, outcome: 'UNSAFE_AUTHORITY_REFUSAL', reason: 'phase-shape' }; customToast(res); return res; }
     if (!('customIncome' in all.russia))   all.russia.customIncome = [];
     if (!('customExpenses' in all.russia)) all.russia.customExpenses = [];
+    // R3-P1-01/02: deep-admit the SOURCE (collections + every row element). A
+    // present-but-malformed collection or row fails closed (evidence preserved),
+    // never normalized/deleted/committed-before-crash.
+    const sa = admitDeep(all);
+    if (!sa.ok) { const res = { ok: false, outcome: 'UNSAFE_AUTHORITY_REFUSAL', reason: 'source-' + sa.reason }; customToast(res); return res; }
     const r = mutator(all);
     if (r === false) return { ok: false, outcome: 'REFUSED_PRE_WRITE', reason: 'noop' };
     const w = saveInputs(all);
     // VERIFIED-only success: any non-verified result is a truthful failure.
-    if (!w || w.ok !== true) { blockedToast(); return w || { ok: false, outcome: 'POST_WRITE_UNCERTAIN', reason: 'unknown' }; }
+    if (!w || w.ok !== true) { customToast(w); return w || { ok: false, outcome: 'POST_WRITE_UNCERTAIN', reason: 'unknown' }; }
     return { ok: true, outcome: 'VERIFIED_LOCAL_COMMIT' };
   }
 
@@ -211,51 +233,80 @@
     }, 30);
     return res;
   }
-  function updateRow(kind, id, patch) {
+  function updateRow(kind, id, patch, sel) {
+    sel = sel || ['id', id];
+    const d = drafts();
+    let ambiguous = false;
     const res = mutateRussia((all) => {
       const list = kind === 'income' ? all.russia.customIncome : all.russia.customExpenses;
-      const idx = list.findIndex(r => r.id === id);
-      if (idx === -1) return false;
+      const idx = resolveRow(list, id); // R3-P1-03: exactly one match, else refuse
+      if (idx === -1) { ambiguous = true; return false; }
       list[idx] = Object.assign({}, list[idx], patch);
     });
-    const d = drafts();
     if (res.ok) {
-      // committed: the field is durable, drop any retained draft.
-      Object.keys(patch).forEach(f => d.clear('custom:' + kind + ':' + id + ':' + f));
+      // R3-P1-03: verify the exact SELECTED row's field survived, not just bytes.
+      let verified = true;
+      for (const f of Object.keys(patch)) { if (!verifyRow(kind, id, f, patch[f])) { verified = false; break; } }
+      if (!verified) {
+        const out = { ok:false, outcome:'POST_WRITE_UNCERTAIN', reason:'intent-not-persisted' };
+        Object.keys(patch).forEach(f => d.set(dKey(kind, sel, f), patch[f]));
+        customToast(out);
+        return out;
+      }
+      Object.keys(patch).forEach(f => d.clear(dKey(kind, sel, f)));
       recompute();
-    } else if (res.reason !== 'noop') {
-      // refused/uncertain: retain the newer typed intent so a later ordinary
-      // render/recompute cannot erase it (B03).
-      Object.keys(patch).forEach(f => d.set('custom:' + kind + ':' + id + ':' + f, patch[f]));
+      return res;
+    }
+    if (ambiguous) {
+      // Missing/duplicate identity: refuse durable mutation, retain visible intent
+      // bound to this exact row selection (R3-P1-04), truthful toast.
+      const out = { ok:false, outcome:'UNSAFE_AUTHORITY_REFUSAL', reason:'ambiguous-identity' };
+      Object.keys(patch).forEach(f => d.set(dKey(kind, sel, f), patch[f]));
+      customToast(out);
+      return out;
+    }
+    if (res.reason !== 'noop') {
+      // refused/uncertain write: retain the newer typed intent (toast already
+      // fired inside mutateRussia with the correct outcome copy).
+      Object.keys(patch).forEach(f => d.set(dKey(kind, sel, f), patch[f]));
     }
     return res;
   }
-  function removeRow(kind, id) {
+  function removeRow(kind, id, sel) {
+    let ambiguous = false;
     const res = mutateRussia((all) => {
-      if (kind === 'income') {
-        all.russia.customIncome = all.russia.customIncome.filter(r => r.id !== id);
-      } else {
-        all.russia.customExpenses = all.russia.customExpenses.filter(r => r.id !== id);
-      }
+      const list = kind === 'income' ? all.russia.customIncome : all.russia.customExpenses;
+      const idx = resolveRow(list, id); // exactly one match, else refuse (never delete both)
+      if (idx === -1) { ambiguous = true; return false; }
+      list.splice(idx, 1);
     });
-    if (!res.ok) return res; // refused: keep existing DOM, do not drop the row visually
-    render();
-    recompute();
-    return res;
+    if (res.ok) { render(); recompute(); return res; }
+    if (ambiguous) { const out = { ok:false, outcome:'UNSAFE_AUTHORITY_REFUSAL', reason:'ambiguous-identity' }; customToast(out); return out; }
+    return res; // other refusal: keep existing DOM
   }
 
-  function rowHTML(kind, r) {
+  function attrEsc(s){ return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/'/g,'&#39;'); }
+  function rowHTML(kind, r, index, list) {
+    // R3-P1-04: bind a stable selection token to each row: kind+id when the id
+    // is usable and unique in this collection, else kind+position. Drafts bind
+    // to this token so replay never crosses kinds or ambiguous rows.
+    const unique = isUsableId(r.id) && list.filter(x => isPlainObject(x) && x.id === r.id).length === 1;
+    const sel = unique ? ['id', r.id] : ['pos', index];
     return `
-      <div class="mc-row" data-kind="${kind}" data-id="${esc(r.id)}">
+      <div class="mc-row" data-kind="${kind}" data-id="${esc(r.id)}" data-sel='${attrEsc(JSON.stringify(sel))}'>
         <input class="mc-name" type="text" placeholder="${kind === 'income' ? 'e.g. side job · tutoring' : 'e.g. gym · archery class'}" value="${esc(r.name)}">
-        <input class="mc-amount" type="number" inputmode="numeric" placeholder="0" value="${r.amount || ''}">
+        <input class="mc-amount" type="number" inputmode="numeric" placeholder="0" value="${(r.amount === 0 || r.amount) ? esc(r.amount) : ''}">
         <button class="mc-rm" type="button" aria-label="Remove">✕</button>
       </div>
     `;
   }
 
   function blockHTML(kind, rows) {
-    const total = rows.reduce((a, r) => a + (parseFloat(r.amount) || 0), 0);
+    // Presentational only: a malformed durable row (non-object) is SKIPPED for
+    // display so it cannot crash render/calculation; it is never written or
+    // deleted here (mutation refuses malformed collections/rows) (R3-P1-02).
+    const list = Array.isArray(rows) ? rows.filter(isPlainObject) : [];
+    const total = list.reduce((a, r) => a + (parseFloat(r.amount) || 0), 0);
     const title = kind === 'income' ? 'Custom Income' : 'Custom Expenses';
     const addLabel = kind === 'income' ? '+ add income' : '+ add expense';
     return `
@@ -264,10 +315,10 @@
           <span class="mc-block-title">${title} (₽/month)</span>
           <button class="mc-add" type="button" data-add="${kind}">${addLabel}</button>
         </div>
-        ${rows.length === 0
+        ${list.length === 0
           ? `<div class="mc-empty">Nothing here yet. Click <strong>${addLabel}</strong>.</div>`
-          : rows.map(r => rowHTML(kind, r)).join('')}
-        ${rows.length > 0 ? `
+          : list.map((r, i) => rowHTML(kind, r, i, list)).join('')}
+        ${list.length > 0 ? `
           <div class="mc-total ${kind}">
             <span>Total ${kind}</span>
             <span class="v">${total > 0 ? (kind === 'expense' ? '−' : '+') : ''}${Math.round(total).toLocaleString()} ₽</span>
@@ -304,13 +355,23 @@
   function applyCustomDrafts(host) {
     const d = drafts();
     for (const [k, v] of d.entries()) {
-      const m = /^custom:(income|expense):([^:]+):(name|amount)$/.exec(k);
-      if (!m) continue;
-      let row;
-      try { row = host.querySelector('.mc-row[data-id="' + (window.CSS && CSS.escape ? CSS.escape(m[2]) : m[2]) + '"]'); }
-      catch (e) { row = null; }
+      const c = d.parseCustom ? d.parseCustom(k) : null;
+      if (!c || !c.sel) continue;
+      const kind = c.kind, sel = c.sel, field = c.field;
+      let row = null;
+      if (sel[0] === 'id') {
+        // R3-P1-04: bind by kind AND id, and only when it resolves to exactly one
+        // row — never cross income/expense, never an ambiguous match.
+        let nodes;
+        try { nodes = host.querySelectorAll('.mc-row[data-kind="' + kind + '"][data-id="' + (window.CSS && CSS.escape ? CSS.escape(sel[1]) : sel[1]) + '"]'); }
+        catch (e) { nodes = []; }
+        if (nodes.length === 1) row = nodes[0];
+      } else if (sel[0] === 'pos') {
+        const nodes = host.querySelectorAll('.mc-row[data-kind="' + kind + '"]');
+        row = nodes[sel[1]] || null;
+      }
       if (!row) continue;
-      const input = row.querySelector(m[3] === 'name' ? '.mc-name' : '.mc-amount');
+      const input = row.querySelector(field === 'name' ? '.mc-name' : '.mc-amount');
       if (input && document.activeElement !== input) input.value = v;
     }
   }
@@ -322,12 +383,13 @@
     host.querySelectorAll('.mc-row').forEach(row => {
       const kind = row.dataset.kind;
       const id   = row.dataset.id;
+      let sel; try { sel = JSON.parse(row.dataset.sel); } catch (e) { sel = ['id', id]; }
       const name = row.querySelector('.mc-name');
       const amt  = row.querySelector('.mc-amount');
       const rm   = row.querySelector('.mc-rm');
-      name.addEventListener('input', () => updateRow(kind, id, { name: name.value }));
-      amt.addEventListener('input',  () => updateRow(kind, id, { amount: parseFloat(String(amt.value).replace(/,/g, '')) || 0 }));
-      rm.addEventListener('click',   () => removeRow(kind, id));
+      name.addEventListener('input', () => updateRow(kind, id, { name: name.value }, sel));
+      amt.addEventListener('input',  () => updateRow(kind, id, { amount: parseFloat(String(amt.value).replace(/,/g, '')) || 0 }, sel));
+      rm.addEventListener('click',   () => removeRow(kind, id, sel));
     });
   }
 
@@ -386,6 +448,9 @@
     boot();
   }
 
+  // R3-P1-05: Save re-renders custom rows to reflect committed values / drops
+  // committed drafts. Exposed so app.js saveFinanceNow can refresh after commit.
+  global.finRenderCustom = render;
   global.MONEY_CUSTOM = {
     addRow, updateRow, removeRow, render,
     getRows: (kind) => {

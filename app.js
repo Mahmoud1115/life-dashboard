@@ -1920,14 +1920,48 @@ function renderATACoverage(entries){
   // a plain object; present custom collections must be arrays. A present-but-
   // malformed named structure is REFUSED (never normalized), preserving its
   // evidence. Absent structures are allowed (defaulted later).
+  function isUsableId(x){ return typeof x === 'string' && x.length > 0; }
+  function isAdmissibleRow(r){ return isPlainObject(r) && isUsableId(r.id); }
+  function admitCollection(a){ return Array.isArray(a) && a.every(isAdmissibleRow); }
+  function admitPhase(ph){
+    if (!isPlainObject(ph)) return false;
+    if ('customIncome' in ph && !admitCollection(ph.customIncome)) return false;
+    if ('customExpenses' in ph && !admitCollection(ph.customExpenses)) return false;
+    return true;
+  }
+  // Deep Finance admission: root + phase + collections + every row element
+  // (owner auth 106 §1). A present-but-malformed structure is REFUSED (never
+  // normalized/coerced/deleted), preserving its evidence.
   function admitFinance(v){
     if (!isPlainObject(v)) return { ok:false, reason:'root-shape' };
-    if ('russia' in v && !isPlainObject(v.russia)) return { ok:false, reason:'phase-shape' };
-    if (isPlainObject(v.russia)){
+    if ('russia' in v){
+      if (!isPlainObject(v.russia)) return { ok:false, reason:'phase-shape' };
       if ('customIncome' in v.russia && !Array.isArray(v.russia.customIncome)) return { ok:false, reason:'malformed-collection' };
       if ('customExpenses' in v.russia && !Array.isArray(v.russia.customExpenses)) return { ok:false, reason:'malformed-collection' };
+      if (Array.isArray(v.russia.customIncome) && !v.russia.customIncome.every(isAdmissibleRow)) return { ok:false, reason:'malformed-row' };
+      if (Array.isArray(v.russia.customExpenses) && !v.russia.customExpenses.every(isAdmissibleRow)) return { ok:false, reason:'malformed-row' };
     }
     return { ok:true };
+  }
+  function rowMatchCount(coll, id){ return Array.isArray(coll) ? coll.filter(r => isPlainObject(r) && r.id === id).length : 0; }
+  // Verify a selected custom row's field survived into durable bytes (R3-P1-03/07).
+  function verifyRowIntent(kind, id, field, value){
+    let parsed; try { parsed = JSON.parse(localStorage.getItem(STORE)); } catch(e){ return false; }
+    if (!isPlainObject(parsed) || !isPlainObject(parsed.russia)) return false;
+    const coll = kind==='income' ? parsed.russia.customIncome : parsed.russia.customExpenses;
+    if (!Array.isArray(coll)) return false;
+    const matches = coll.filter(r => isPlainObject(r) && r.id === id);
+    if (matches.length !== 1) return false;
+    const rv = matches[0][field];
+    return field==='amount' ? (parseFloat(rv)||0) === value : rv === value;
+  }
+  // Preserve unknown fields on rows matched by id (target explicit fields win),
+  // for admitted public collection updates (R3-P1-07).
+  function mergeRowExtras(srcColl, tgtColl){
+    if (!Array.isArray(srcColl) || !Array.isArray(tgtColl)) return;
+    const byId = {};
+    srcColl.forEach(r => { if (isPlainObject(r) && isUsableId(r.id) && rowMatchCount(srcColl, r.id)===1) byId[r.id]=r; });
+    tgtColl.forEach(r => { if (isPlainObject(r) && isUsableId(r.id) && byId[r.id]){ const sr=byId[r.id]; for (const k of Object.keys(sr)) if (!(k in r)) r[k]=sr[k]; } });
   }
   function rawSnapshot(){ try { return localStorage.getItem(STORE); } catch(e){ return '__READ_THREW__'; } }
   // Guarded commit with a truthful acknowledgement outcome. Compares the
@@ -1971,7 +2005,11 @@ function renderATACoverage(entries){
         const m = /^scalar:(.+)$/.exec(k);
         if (m){ const el = document.getElementById('fin-r-'+m[1]); if (el && document.activeElement !== el) el.value = v; }
       }
-    }
+    },
+    // Custom (money) draft keys bind to kind + row-selection + field (R3-P1-04).
+    // sel is ['id', <id>] (usable+unique) or ['pos', <index>] (ambiguous/missing).
+    customKey(kind, sel, field){ return 'custom:' + JSON.stringify([kind, sel, field]); },
+    parseCustom(k){ if (typeof k !== 'string' || k.slice(0,7) !== 'custom:') return null; try { const a = JSON.parse(k.slice(7)); return { kind:a[0], sel:a[1], field:a[2] }; } catch(e){ return null; } }
   };
   function outcomeToast(res){
     if (typeof showBackupToast !== 'function') return;
@@ -1986,8 +2024,8 @@ function renderATACoverage(entries){
   }
   function flashBlockedInd(res){ outcomeToast(typeof res === 'string' ? { outcome:'REFUSED_PRE_WRITE', reason:res } : res); }
   function calcRussia(v){
-    const customInc=Array.isArray(v.customIncome)?v.customIncome.reduce((a,c)=>a+(parseFloat(c.amount)||0),0):0;
-    const customExp=Array.isArray(v.customExpenses)?v.customExpenses.reduce((a,c)=>a+(parseFloat(c.amount)||0),0):0;
+    const customInc=Array.isArray(v.customIncome)?v.customIncome.reduce((a,c)=>a+((c&&typeof c==='object')?(parseFloat(c.amount)||0):0),0):0;
+    const customExp=Array.isArray(v.customExpenses)?v.customExpenses.reduce((a,c)=>a+((c&&typeof c==='object')?(parseFloat(c.amount)||0):0),0):0;
     const gross=(parseFloat(v.salary)||0)+customInc;
     const expenses=(parseFloat(v.rent)||0)+(parseFloat(v.food)||0)+(parseFloat(v.transport)||0)+(parseFloat(v.utilities)||0)+(parseFloat(v.phone)||0)+(parseFloat(v.family_transfer)||0)+(parseFloat(v.other)||0)+(parseFloat(v.mai)||0)+customExp;
     const net=gross-expenses;
@@ -2050,25 +2088,27 @@ function renderATACoverage(entries){
     const auth=readFinanceAuthority();
     if(auth.state==='READ_FAILED'||auth.state==='MALFORMED'){
       const res={ ok:false, outcome:'UNSAFE_AUTHORITY_REFUSAL', reason:'finance-authority-'+auth.state.toLowerCase() };
-      window.finDrafts.set('scalar:'+field, val);
-      flashBlockedInd(res);
-      return res;
+      window.finDrafts.set('scalar:'+field, val); flashBlockedInd(res); return res;
     }
     const v = auth.state==='PRESENT' ? auth.value : financeDefaultClone();
-    // Phase admission: a present but non-object phase is refused (evidence
-    // preserved), never mutated as an array/scalar (B02).
+    // R3-P1-01: deep-admit the authoritative SOURCE (phase + collections + rows)
+    // this write consumes; a malformed source fails closed (evidence preserved).
+    if(auth.state==='PRESENT'){
+      const sa=admitFinance(v);
+      if(!sa.ok){ const res={ ok:false, outcome:'UNSAFE_AUTHORITY_REFUSAL', reason:'source-'+sa.reason }; window.finDrafts.set('scalar:'+field, val); flashBlockedInd(res); return res; }
+    }
     if(v[phase] === undefined) v[phase]={};
     else if(!isPlainObject(v[phase])){
       const res={ ok:false, outcome:'UNSAFE_AUTHORITY_REFUSAL', reason:'phase-shape' };
-      window.finDrafts.set('scalar:'+field, val);
-      flashBlockedInd(res);
-      return res;
+      window.finDrafts.set('scalar:'+field, val); flashBlockedInd(res); return res;
     }
     const num=parseFloat(val)||0;
     v[phase][field]=num;
+    // R3-P1-01: re-admit the built result before committing.
+    const ra=admitFinance(v);
+    if(!ra.ok){ const res={ ok:false, outcome:'UNSAFE_AUTHORITY_REFUSAL', reason:'result-'+ra.reason }; window.finDrafts.set('scalar:'+field, val); flashBlockedInd(res); return res; }
     const w=commitFinance(v);
     if(!w.ok){ window.finDrafts.set('scalar:'+field, val); flashBlockedInd(w); return w; }
-    // Semantic-intent verification: the field itself must hold the value (B02).
     if(!verifyScalarIntent(phase, field, num)){
       const res={ ok:false, outcome:'POST_WRITE_UNCERTAIN', reason:'intent-not-persisted' };
       window.finDrafts.set('scalar:'+field, val); flashBlockedInd(res); return res;
@@ -2080,40 +2120,64 @@ function renderATACoverage(entries){
     return { ok:true, outcome:'VERIFIED_LOCAL_COMMIT' };
   };
   window.saveFinanceNow=function(){
-    // Submit the RETAINED visible intent (drafts), not stale durable bytes,
-    // and only from a trustworthy authority read (B04).
+    // Submit ALL relevant retained intent — scalar AND resolvable custom drafts —
+    // from a trustworthy admitted authority read, then claim saved only for what
+    // was verified, truthfully scoping any pending custom intent (R3-P1-05/08).
     const auth=readFinanceAuthority();
     if(auth.state==='READ_FAILED'||auth.state==='MALFORMED'){
       const res={ ok:false, outcome:'UNSAFE_AUTHORITY_REFUSAL', reason:'finance-authority-'+auth.state.toLowerCase() };
       flashBlockedInd(res); return res;
     }
     const v = auth.state==='PRESENT' ? auth.value : financeDefaultClone();
+    if(auth.state==='PRESENT'){
+      const sa=admitFinance(v);
+      if(!sa.ok){ const res={ ok:false, outcome:'UNSAFE_AUTHORITY_REFUSAL', reason:'source-'+sa.reason }; flashBlockedInd(res); return res; }
+    }
     if(v.russia === undefined) v.russia={};
     else if(!isPlainObject(v.russia)){
       const res={ ok:false, outcome:'UNSAFE_AUTHORITY_REFUSAL', reason:'phase-shape' };
       flashBlockedInd(res); return res;
     }
-    // Apply retained scalar drafts (the visible attempted edits). No blind
-    // whole-DOM harvest, so unpopulated inputs cannot zero durable fields.
-    const submitted=[];
+    if(!('customIncome' in v.russia)) v.russia.customIncome=[];
+    if(!('customExpenses' in v.russia)) v.russia.customExpenses=[];
+    const scalarSubmitted=[]; const customSubmitted=[]; let unresolved=0;
     for(const [k,dv] of window.finDrafts.entries()){
-      const m=/^scalar:(.+)$/.exec(k);
-      if(m){ const num=parseFloat(dv)||0; v.russia[m[1]]=num; submitted.push([m[1],num]); }
-    }
-    const w=commitFinance(v);
-    if(!w.ok){ flashBlockedInd(w); return w; }
-    for(const [f,num] of submitted){
-      if(!verifyScalarIntent('russia', f, num)){
-        const res={ ok:false, outcome:'POST_WRITE_UNCERTAIN', reason:'intent-not-persisted' };
-        flashBlockedInd(res); return res;
+      const sm=/^scalar:(.+)$/.exec(k);
+      if(sm){ const num=parseFloat(dv)||0; v.russia[sm[1]]=num; scalarSubmitted.push([sm[1],num]); continue; }
+      const cm=window.finDrafts.parseCustom(k);
+      if(cm){
+        const coll = cm.kind==='income' ? v.russia.customIncome : v.russia.customExpenses;
+        if(Array.isArray(coll) && cm.sel && cm.sel[0]==='id' && rowMatchCount(coll, cm.sel[1])===1){
+          const idx=coll.findIndex(r=>isPlainObject(r)&&r.id===cm.sel[1]);
+          const value = cm.field==='amount' ? (parseFloat(dv)||0) : dv;
+          coll[idx]=Object.assign({}, coll[idx], { [cm.field]: value });
+          customSubmitted.push({ key:k, kind:cm.kind, id:cm.sel[1], field:cm.field, value });
+        } else { unresolved++; }
       }
     }
-    submitted.forEach(([f])=>window.finDrafts.clear('scalar:'+f));
+    const ra=admitFinance(v);
+    if(!ra.ok){ const res={ ok:false, outcome:'UNSAFE_AUTHORITY_REFUSAL', reason:'result-'+ra.reason }; flashBlockedInd(res); return res; }
+    const w=commitFinance(v);
+    if(!w.ok){ flashBlockedInd(w); return w; }
+    for(const [f,num] of scalarSubmitted){
+      if(!verifyScalarIntent('russia', f, num)){ const res={ ok:false, outcome:'POST_WRITE_UNCERTAIN', reason:'intent-not-persisted' }; flashBlockedInd(res); return res; }
+    }
+    for(const c of customSubmitted){
+      if(!verifyRowIntent(c.kind, c.id, c.field, c.value)){ const res={ ok:false, outcome:'POST_WRITE_UNCERTAIN', reason:'intent-not-persisted' }; flashBlockedInd(res); return res; }
+    }
+    scalarSubmitted.forEach(([f])=>window.finDrafts.clear('scalar:'+f));
+    customSubmitted.forEach(c=>window.finDrafts.clear(c.key));
+    // R3-P1-08: reconcile the derived Store shadow AFTER verified canonical commit.
+    if(typeof window.finReconcileShadow==='function') try{ window.finReconcileShadow(scalarSubmitted); }catch(e){}
     renderOutputs();
     flashSavedInd();
-    if(typeof showBackupToast==='function') showBackupToast('✓ Numbers saved on this device — use ☁ Gist sync to share across devices');
+    if(typeof window.finRenderCustom==='function') try{ window.finRenderCustom(); }catch(e){}
+    if(typeof showBackupToast==='function'){
+      if(unresolved>0) showBackupToast('✓ Saved supported changes on this device. '+unresolved+' custom edit(s) could not be saved and remain pending.');
+      else showBackupToast('✓ Numbers saved on this device — use ☁ Gist sync to share across devices');
+    }
     if(typeof renderHome==='function') try{renderHome();}catch(e){}
-    return { ok:true, outcome:'VERIFIED_LOCAL_COMMIT' };
+    return { ok:true, outcome:'VERIFIED_LOCAL_COMMIT', unresolvedCustom:unresolved };
   };
   window.setFinScenario=function(s,btn){
     const presets={
@@ -2130,13 +2194,21 @@ function renderATACoverage(entries){
       flashBlockedInd(res); return res;
     }
     const v = auth.state==='PRESENT' ? auth.value : financeDefaultClone();
+    if(auth.state==='PRESENT'){
+      const sa=admitFinance(v);
+      if(!sa.ok){ const res={ ok:false, outcome:'UNSAFE_AUTHORITY_REFUSAL', reason:'source-'+sa.reason }; flashBlockedInd(res); return res; }
+    }
     if(v.russia !== undefined && !isPlainObject(v.russia)){
       const res={ ok:false, outcome:'UNSAFE_AUTHORITY_REFUSAL', reason:'phase-shape' };
       flashBlockedInd(res); return res;
     }
     v.russia=Object.assign(isPlainObject(v.russia)?v.russia:{},presets[s].russia);
+    const ra=admitFinance(v);
+    if(!ra.ok){ const res={ ok:false, outcome:'UNSAFE_AUTHORITY_REFUSAL', reason:'result-'+ra.reason }; flashBlockedInd(res); return res; }
     const w=commitFinance(v);
     if(!w.ok){ flashBlockedInd(w); return w; }
+    // R3-P1-08: reconcile mapped shadows after verified canonical commit.
+    if(typeof window.finReconcileShadow==='function') try{ window.finReconcileShadow(Object.entries(presets[s].russia)); }catch(e){}
     document.querySelectorAll('.fin-scenario').forEach(b=>b.classList.remove('active'));
     if(btn) btn.classList.add('active');
     syncInputs();
@@ -2149,6 +2221,8 @@ function renderATACoverage(entries){
   window.finRecompute = function(){ try { syncInputs(); renderOutputs(); } catch(e){} };
   window.finGetInputs = getInputs;
   window.finReadAuthority = readFinanceAuthority;
+  // Shared Finance-local admission/identity helpers for layered modules (money-custom).
+  window.finAdmit = { isPlainObject, isUsableId, isAdmissibleRow, admitCollection, admitPhase, deep:admitFinance, matchCount:rowMatchCount, verifyRow:verifyRowIntent };
   // Source-bound public writer (owner auth 101 §5): read authority, admit the
   // submitted object, preservation-merge unknown fields from the authoritative
   // source so a partial/soft/default caller object cannot destroy extras, then
@@ -2157,14 +2231,23 @@ function renderATACoverage(entries){
     const auth=readFinanceAuthority();
     if(auth.state==='READ_FAILED'||auth.state==='MALFORMED')
       return { ok:false, outcome:'UNSAFE_AUTHORITY_REFUSAL', reason:'finance-authority-'+auth.state.toLowerCase() };
-    const adm=admitFinance(v);
-    if(!adm.ok) return { ok:false, outcome:'UNSAFE_AUTHORITY_REFUSAL', reason:adm.reason };
     const src = auth.state==='PRESENT' ? auth.value : {};
+    // R3-P1-01: admit SOURCE (when present), TARGET, and (below) RESULT deeply.
+    if(auth.state==='PRESENT'){ const sa=admitFinance(src); if(!sa.ok) return { ok:false, outcome:'UNSAFE_AUTHORITY_REFUSAL', reason:'source-'+sa.reason }; }
+    const ta=admitFinance(v);
+    if(!ta.ok) return { ok:false, outcome:'UNSAFE_AUTHORITY_REFUSAL', reason:'target-'+ta.reason };
+    // Preservation merge (R3-P1-07): unknown root/phase keys, and unknown fields
+    // on rows matched by id, are carried from the source; target explicit fields win.
     if(isPlainObject(src)){
       for(const k of Object.keys(src)) if(!(k in v)) v[k]=src[k];
-      if(isPlainObject(src.russia) && isPlainObject(v.russia))
+      if(isPlainObject(src.russia) && isPlainObject(v.russia)){
         for(const k of Object.keys(src.russia)) if(!(k in v.russia)) v.russia[k]=src.russia[k];
+        mergeRowExtras(src.russia.customIncome, v.russia.customIncome);
+        mergeRowExtras(src.russia.customExpenses, v.russia.customExpenses);
+      }
     }
+    const ra=admitFinance(v);
+    if(!ra.ok) return { ok:false, outcome:'UNSAFE_AUTHORITY_REFUSAL', reason:'result-'+ra.reason };
     return commitFinance(v);
   };
 
@@ -4280,6 +4363,16 @@ window.aptToggleWinner=function(id){
         Store.set(fieldMap[field], parseFloat(val) || 0);
       }
       return res;
+    };
+    // R3-P1-08: after a VERIFIED canonical Save/scenario of mapped Finance
+    // scalar fields, reconcile the derived Store money shadow so a later
+    // unrelated money subscription cannot replay a pre-Save value over the
+    // committed Finance input. Reconciliation happens only post-verification.
+    window.finReconcileShadow = function (pairs) {
+      if (!Array.isArray(pairs)) return;
+      pairs.forEach(([field, val]) => {
+        if (fieldMap[field]) { try { Store.set(fieldMap[field], parseFloat(val) || 0); } catch (e) {} }
+      });
     };
 
     // Narrow one-time bootstrap: if the canonical Gen-1 key is genuinely
