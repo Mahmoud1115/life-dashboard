@@ -1913,20 +1913,78 @@ function renderATACoverage(entries){
     return { state:'PRESENT', value:parsed };
   }
   function financeDefaultClone(){ try { return JSON.parse(JSON.stringify(D.finance)); } catch(e){ return { russia:{} }; } }
-  // Write + readback proof: a silently-dropped setItem (no-op) or a thrown
-  // write is reported as failure, never as a saved success.
-  function saveFinanceGuarded(v){
-    let ser;
-    try { ser = JSON.stringify(v); } catch(e){ return { ok:false, reason:'serialize' }; }
-    try { localStorage.setItem(STORE, ser); } catch(e){ return { ok:false, reason:'write-failed' }; }
-    let rb;
-    try { rb = localStorage.getItem(STORE); } catch(e){ return { ok:false, reason:'readback-failed' }; }
-    if (rb !== ser) return { ok:false, reason:'readback-mismatch' };
+
+  // ── Round-2 admission + acknowledgement (owner auth 101 §3/§6) ──────────
+  function isPlainObject(o){ return !!o && typeof o === 'object' && !Array.isArray(o); }
+  // Admit a whole Finance object: root object; a present `russia` phase must be
+  // a plain object; present custom collections must be arrays. A present-but-
+  // malformed named structure is REFUSED (never normalized), preserving its
+  // evidence. Absent structures are allowed (defaulted later).
+  function admitFinance(v){
+    if (!isPlainObject(v)) return { ok:false, reason:'root-shape' };
+    if ('russia' in v && !isPlainObject(v.russia)) return { ok:false, reason:'phase-shape' };
+    if (isPlainObject(v.russia)){
+      if ('customIncome' in v.russia && !Array.isArray(v.russia.customIncome)) return { ok:false, reason:'malformed-collection' };
+      if ('customExpenses' in v.russia && !Array.isArray(v.russia.customExpenses)) return { ok:false, reason:'malformed-collection' };
+    }
     return { ok:true };
   }
-  function flashBlockedInd(reason){
-    if (typeof showBackupToast === 'function') { try { showBackupToast('⚠ Not saved — Finance storage unavailable (' + reason + '). Your typed value is kept; nothing was overwritten.'); } catch(e){} }
+  function rawSnapshot(){ try { return localStorage.getItem(STORE); } catch(e){ return '__READ_THREW__'; } }
+  // Guarded commit with a truthful acknowledgement outcome. Compares the
+  // durable readback against the intended serialization AND the pre-write
+  // snapshot, so a no-op/dropped write is reported as verified-unchanged
+  // (REFUSED_PRE_WRITE) rather than a false "saved", and a post-write readback
+  // failure is POST_WRITE_UNCERTAIN (never "nothing was overwritten").
+  function commitFinance(v, prevRaw){
+    if (prevRaw === undefined) prevRaw = rawSnapshot();
+    let ser;
+    try { ser = JSON.stringify(v); } catch(e){ return { ok:false, outcome:'REFUSED_PRE_WRITE', reason:'serialize' }; }
+    let wrote = false;
+    try { localStorage.setItem(STORE, ser); wrote = true; } catch(e){ /* write likely rejected */ }
+    let rb, rbThrew = false;
+    try { rb = localStorage.getItem(STORE); } catch(e){ rbThrew = true; }
+    if (!rbThrew && rb === ser) return { ok:true, outcome:'VERIFIED_LOCAL_COMMIT' };
+    if (!rbThrew && rb === prevRaw) return { ok:false, outcome:'REFUSED_PRE_WRITE', reason: wrote ? 'write-noop' : 'write-failed' };
+    return { ok:false, outcome:'POST_WRITE_UNCERTAIN', reason: rbThrew ? 'readback-failed' : 'readback-mismatch' };
   }
+  // Verify the SUBMITTED semantic intent actually survived into durable bytes
+  // (not merely byte-equality of a wrapper). True only when the intended field
+  // holds the intended value on a fresh parse.
+  function verifyScalarIntent(phase, field, num){
+    let parsed;
+    try { parsed = JSON.parse(localStorage.getItem(STORE)); } catch(e){ return false; }
+    return isPlainObject(parsed) && isPlainObject(parsed[phase]) && (parseFloat(parsed[phase][field])||0) === num;
+  }
+  // ── Finance-local, in-memory draft registry (owner auth 101 §7) ─────────
+  // Retains attempted-but-not-committed Finance intent so an ordinary later
+  // render/recompute/subscription/delayed callback cannot erase newer intent.
+  // Finance input fields only; no persistence; not a platform-wide draft store.
+  const _finDrafts = new Map();
+  window.finDrafts = {
+    set(k,v){ _finDrafts.set(k, v); },
+    clear(k){ _finDrafts.delete(k); },
+    get(k){ return _finDrafts.get(k); },
+    has(k){ return _finDrafts.has(k); },
+    entries(){ return Array.from(_finDrafts.entries()); },
+    applyScalars(){
+      for (const [k,v] of _finDrafts){
+        const m = /^scalar:(.+)$/.exec(k);
+        if (m){ const el = document.getElementById('fin-r-'+m[1]); if (el && document.activeElement !== el) el.value = v; }
+      }
+    }
+  };
+  function outcomeToast(res){
+    if (typeof showBackupToast !== 'function') return;
+    try {
+      if (res && res.outcome === 'POST_WRITE_UNCERTAIN')
+        showBackupToast('⚠ Save uncertain — this value may or may not be stored. Reload to check before relying on it.');
+      else if (res && res.outcome === 'UNSAFE_AUTHORITY_REFUSAL')
+        showBackupToast('⚠ Not saved — Finance data is unreadable/invalid right now; nothing was changed. Your typed value is kept.');
+      else
+        showBackupToast('⚠ Not saved — nothing was overwritten. Your typed value is kept.');
+    } catch(e){}
+  }
+  function flashBlockedInd(res){ outcomeToast(typeof res === 'string' ? { outcome:'REFUSED_PRE_WRITE', reason:res } : res); }
   function calcRussia(v){
     const customInc=Array.isArray(v.customIncome)?v.customIncome.reduce((a,c)=>a+(parseFloat(c.amount)||0),0):0;
     const customExp=Array.isArray(v.customExpenses)?v.customExpenses.reduce((a,c)=>a+(parseFloat(c.amount)||0),0):0;
@@ -1972,9 +2030,13 @@ function renderATACoverage(entries){
     ['salary','rent','food','transport','utilities','phone','family_transfer','other','mai','usd_rate','save_target'].forEach(k=>{
       const el=document.getElementById('fin-r-'+k);
       if(!el) return;
+      // Keep newer refused intent: a pending scalar draft is not clobbered by a
+      // sync from durable/stale data (B03).
+      if(window.finDrafts && window.finDrafts.has('scalar:'+k)) return;
       const val=(v.russia&&v.russia[k]!==undefined)?v.russia[k]:rd[k];
       if(val!==undefined) el.value=val;
     });
+    if(window.finDrafts) window.finDrafts.applyScalars();
   }
   let finIndTimer;
   function flashSavedInd(){
@@ -1987,57 +2049,99 @@ function renderATACoverage(entries){
   window.finInputChange=function(phase,field,val){
     const auth=readFinanceAuthority();
     if(auth.state==='READ_FAILED'||auth.state==='MALFORMED'){
-      flashBlockedInd(auth.state.toLowerCase());
-      return { ok:false, reason:'finance-authority-'+auth.state.toLowerCase() };
+      const res={ ok:false, outcome:'UNSAFE_AUTHORITY_REFUSAL', reason:'finance-authority-'+auth.state.toLowerCase() };
+      window.finDrafts.set('scalar:'+field, val);
+      flashBlockedInd(res);
+      return res;
     }
     const v = auth.state==='PRESENT' ? auth.value : financeDefaultClone();
-    if(!v[phase]) v[phase]={};
-    v[phase][field]=parseFloat(val)||0;
-    const w=saveFinanceGuarded(v);
-    if(!w.ok){ flashBlockedInd(w.reason); return { ok:false, reason:w.reason }; }
+    // Phase admission: a present but non-object phase is refused (evidence
+    // preserved), never mutated as an array/scalar (B02).
+    if(v[phase] === undefined) v[phase]={};
+    else if(!isPlainObject(v[phase])){
+      const res={ ok:false, outcome:'UNSAFE_AUTHORITY_REFUSAL', reason:'phase-shape' };
+      window.finDrafts.set('scalar:'+field, val);
+      flashBlockedInd(res);
+      return res;
+    }
+    const num=parseFloat(val)||0;
+    v[phase][field]=num;
+    const w=commitFinance(v);
+    if(!w.ok){ window.finDrafts.set('scalar:'+field, val); flashBlockedInd(w); return w; }
+    // Semantic-intent verification: the field itself must hold the value (B02).
+    if(!verifyScalarIntent(phase, field, num)){
+      const res={ ok:false, outcome:'POST_WRITE_UNCERTAIN', reason:'intent-not-persisted' };
+      window.finDrafts.set('scalar:'+field, val); flashBlockedInd(res); return res;
+    }
+    window.finDrafts.clear('scalar:'+field);
     renderOutputs();
     flashSavedInd();
     if(typeof bumpChangeCount==='function') bumpChangeCount();
-    return { ok:true };
+    return { ok:true, outcome:'VERIFIED_LOCAL_COMMIT' };
   };
   window.saveFinanceNow=function(){
-    // Re-write and confirm — but only from a trustworthy authority read.
+    // Submit the RETAINED visible intent (drafts), not stale durable bytes,
+    // and only from a trustworthy authority read (B04).
     const auth=readFinanceAuthority();
     if(auth.state==='READ_FAILED'||auth.state==='MALFORMED'){
-      flashBlockedInd(auth.state.toLowerCase());
-      return { ok:false, reason:'finance-authority-'+auth.state.toLowerCase() };
+      const res={ ok:false, outcome:'UNSAFE_AUTHORITY_REFUSAL', reason:'finance-authority-'+auth.state.toLowerCase() };
+      flashBlockedInd(res); return res;
     }
     const v = auth.state==='PRESENT' ? auth.value : financeDefaultClone();
-    const w=saveFinanceGuarded(v);
-    if(!w.ok){ flashBlockedInd(w.reason); return { ok:false, reason:w.reason }; }
+    if(v.russia === undefined) v.russia={};
+    else if(!isPlainObject(v.russia)){
+      const res={ ok:false, outcome:'UNSAFE_AUTHORITY_REFUSAL', reason:'phase-shape' };
+      flashBlockedInd(res); return res;
+    }
+    // Apply retained scalar drafts (the visible attempted edits). No blind
+    // whole-DOM harvest, so unpopulated inputs cannot zero durable fields.
+    const submitted=[];
+    for(const [k,dv] of window.finDrafts.entries()){
+      const m=/^scalar:(.+)$/.exec(k);
+      if(m){ const num=parseFloat(dv)||0; v.russia[m[1]]=num; submitted.push([m[1],num]); }
+    }
+    const w=commitFinance(v);
+    if(!w.ok){ flashBlockedInd(w); return w; }
+    for(const [f,num] of submitted){
+      if(!verifyScalarIntent('russia', f, num)){
+        const res={ ok:false, outcome:'POST_WRITE_UNCERTAIN', reason:'intent-not-persisted' };
+        flashBlockedInd(res); return res;
+      }
+    }
+    submitted.forEach(([f])=>window.finDrafts.clear('scalar:'+f));
     renderOutputs();
     flashSavedInd();
     if(typeof showBackupToast==='function') showBackupToast('✓ Numbers saved on this device — use ☁ Gist sync to share across devices');
     if(typeof renderHome==='function') try{renderHome();}catch(e){}
-    return { ok:true };
+    return { ok:true, outcome:'VERIFIED_LOCAL_COMMIT' };
   };
   window.setFinScenario=function(s,btn){
-    document.querySelectorAll('.fin-scenario').forEach(b=>b.classList.remove('active'));
-    if(btn) btn.classList.add('active');
     const presets={
       conservative:{russia:{salary:130000,rent:30000,food:20000,transport:6000,utilities:4500,phone:1500,family_transfer:0,other:12000,mai:14000}},
       realistic:{russia:{salary:130000,rent:26000,food:16000,transport:5000,utilities:3500,phone:1500,family_transfer:0,other:8000,mai:14000}},
       upside:{russia:{salary:145000,rent:24000,food:14000,transport:4000,utilities:3000,phone:1200,family_transfer:0,other:6000,mai:0}},
     };
-    if(presets[s]){
-      const auth=readFinanceAuthority();
-      if(auth.state==='READ_FAILED'||auth.state==='MALFORMED'){
-        flashBlockedInd(auth.state.toLowerCase());
-        return { ok:false, reason:'finance-authority-'+auth.state.toLowerCase() };
-      }
-      const v = auth.state==='PRESENT' ? auth.value : financeDefaultClone();
-      if(presets[s].russia) v.russia=Object.assign(v.russia||{},presets[s].russia);
-      const w=saveFinanceGuarded(v);
-      if(!w.ok){ flashBlockedInd(w.reason); return { ok:false, reason:w.reason }; }
-      syncInputs();
-      renderOutputs();
-      return { ok:true };
+    if(!presets[s]) return;
+    // Authority + phase admission BEFORE any visible scenario toggle, so a
+    // refused write never leaves the UI implying an applied scenario.
+    const auth=readFinanceAuthority();
+    if(auth.state==='READ_FAILED'||auth.state==='MALFORMED'){
+      const res={ ok:false, outcome:'UNSAFE_AUTHORITY_REFUSAL', reason:'finance-authority-'+auth.state.toLowerCase() };
+      flashBlockedInd(res); return res;
     }
+    const v = auth.state==='PRESENT' ? auth.value : financeDefaultClone();
+    if(v.russia !== undefined && !isPlainObject(v.russia)){
+      const res={ ok:false, outcome:'UNSAFE_AUTHORITY_REFUSAL', reason:'phase-shape' };
+      flashBlockedInd(res); return res;
+    }
+    v.russia=Object.assign(isPlainObject(v.russia)?v.russia:{},presets[s].russia);
+    const w=commitFinance(v);
+    if(!w.ok){ flashBlockedInd(w); return w; }
+    document.querySelectorAll('.fin-scenario').forEach(b=>b.classList.remove('active'));
+    if(btn) btn.classList.add('active');
+    syncInputs();
+    renderOutputs();
+    return { ok:true, outcome:'VERIFIED_LOCAL_COMMIT' };
   };
   document.addEventListener('DOMContentLoaded',()=>{ syncInputs(); renderOutputs(); refreshFinGistStatus(); });
   // Expose hooks so layered modules (e.g. money-custom.js) can drive a re-render
@@ -2045,9 +2149,24 @@ function renderATACoverage(entries){
   window.finRecompute = function(){ try { syncInputs(); renderOutputs(); } catch(e){} };
   window.finGetInputs = getInputs;
   window.finReadAuthority = readFinanceAuthority;
-  // Guarded public write helper: returns { ok } with readback proof so
-  // layered modules (money-custom.js) never treat a no-op/failed write as saved.
-  window.finSaveInputs = function(v){ return saveFinanceGuarded(v); };
+  // Source-bound public writer (owner auth 101 §5): read authority, admit the
+  // submitted object, preservation-merge unknown fields from the authoritative
+  // source so a partial/soft/default caller object cannot destroy extras, then
+  // commit with readback proof. Refuses on unreadable/invalid authority (B01).
+  window.finSaveInputs = function(v){
+    const auth=readFinanceAuthority();
+    if(auth.state==='READ_FAILED'||auth.state==='MALFORMED')
+      return { ok:false, outcome:'UNSAFE_AUTHORITY_REFUSAL', reason:'finance-authority-'+auth.state.toLowerCase() };
+    const adm=admitFinance(v);
+    if(!adm.ok) return { ok:false, outcome:'UNSAFE_AUTHORITY_REFUSAL', reason:adm.reason };
+    const src = auth.state==='PRESENT' ? auth.value : {};
+    if(isPlainObject(src)){
+      for(const k of Object.keys(src)) if(!(k in v)) v[k]=src[k];
+      if(isPlainObject(src.russia) && isPlainObject(v.russia))
+        for(const k of Object.keys(src.russia)) if(!(k in v.russia)) v.russia[k]=src.russia[k];
+    }
+    return commitFinance(v);
+  };
 
   // Reflect Gist sync state in both the Finance pointer and the dedicated Sync section.
   function refreshFinGistStatus(){
@@ -4157,7 +4276,7 @@ window.aptToggleWinner=function(id){
       // S1a: only publish the Gen-2 shadow when the canonical Gen-1 write
       // actually committed. A refused/failed Finance write must not mint a
       // fabricated Store money shadow of an edit that was never durably saved.
-      if (res && res.ok === true && phase === 'russia' && fieldMap[field]) {
+      if (res && res.ok === true && res.outcome === 'VERIFIED_LOCAL_COMMIT' && phase === 'russia' && fieldMap[field]) {
         Store.set(fieldMap[field], parseFloat(val) || 0);
       }
       return res;
@@ -4201,7 +4320,7 @@ window.aptToggleWinner=function(id){
       try { legacy = JSON.parse(localStorage.getItem('dune_finance_v1') || '{}'); }
       catch (e) { return; }
       const r = legacy && legacy.russia;
-      if (!r || typeof r !== 'object') return;
+      if (!r || typeof r !== 'object' || Array.isArray(r)) return;
       for (const [gen1Field, gen2Path] of Object.entries(fieldMap)) {
         const v = r[gen1Field];
         if (typeof v === 'number') Store.set(gen2Path, v);
@@ -4230,6 +4349,10 @@ window.aptToggleWinner=function(id){
       ];
       map.forEach(([id, val]) => {
         const el = document.getElementById(id);
+        // Keep newer refused intent: skip a field that has a pending scalar
+        // draft, so a stale money subscription cannot erase it (B03).
+        const field = id.replace('fin-r-','');
+        if (window.finDrafts && window.finDrafts.has('scalar:'+field)) return;
         if (el && document.activeElement !== el && val != null) el.value = val;
       });
     }

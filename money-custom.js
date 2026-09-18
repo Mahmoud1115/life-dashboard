@@ -96,6 +96,21 @@
     }[c]));
   }
   function uid() { return 'c_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
+  function isPlainObject(o){ return !!o && typeof o === 'object' && !Array.isArray(o); }
+  // Finance-local draft registry accessor: prefer the app.js registry so drafts
+  // are shared with scalar edits; fall back to a local Map only when the hook
+  // is unavailable (degraded init). Not a platform-wide draft store.
+  const _localDrafts = new Map();
+  function drafts() {
+    return global.finDrafts || {
+      set: (k, v) => _localDrafts.set(k, v),
+      clear: (k) => _localDrafts.delete(k),
+      has: (k) => _localDrafts.has(k),
+      get: (k) => _localDrafts.get(k),
+      entries: () => Array.from(_localDrafts.entries()),
+      applyScalars() {}
+    };
+  }
 
   // S1a Finance P0: tri-state authority read. A thrown/malformed read must
   // never be treated as absence and must never authorize a whole-key rewrite.
@@ -119,11 +134,22 @@
     try { return JSON.parse(localStorage.getItem('dune_finance_v1') || '{}'); }
     catch (e) { return {}; }
   }
-  // Guarded write: returns { ok } (readback-proven via app.js when present).
+  // Guarded write: returns a truthful acknowledgement (readback-proven via
+  // app.js when present). The degraded fallback (app hook unavailable) performs
+  // its OWN readback proof and never acknowledges a dropped/no-op write as
+  // saved (B06).
   function saveInputs(v) {
     if (typeof global.finSaveInputs === 'function') return global.finSaveInputs(v);
-    try { localStorage.setItem('dune_finance_v1', JSON.stringify(v)); return { ok: true }; }
-    catch (e) { return { ok: false, reason: 'write-failed' }; }
+    let ser, prev;
+    try { prev = localStorage.getItem('dune_finance_v1'); } catch (e) { prev = '__READ_THREW__'; }
+    try { ser = JSON.stringify(v); } catch (e) { return { ok: false, outcome: 'REFUSED_PRE_WRITE', reason: 'serialize' }; }
+    let wrote = false;
+    try { localStorage.setItem('dune_finance_v1', ser); wrote = true; } catch (e) { /* rejected */ }
+    let rb, rbThrew = false;
+    try { rb = localStorage.getItem('dune_finance_v1'); } catch (e) { rbThrew = true; }
+    if (!rbThrew && rb === ser) return { ok: true, outcome: 'VERIFIED_LOCAL_COMMIT' };
+    if (!rbThrew && rb === prev) return { ok: false, outcome: 'REFUSED_PRE_WRITE', reason: wrote ? 'write-noop' : 'write-failed' };
+    return { ok: false, outcome: 'POST_WRITE_UNCERTAIN', reason: rbThrew ? 'readback-failed' : 'readback-mismatch' };
   }
   function recompute() {
     if (typeof global.finRecompute === 'function') global.finRecompute();
@@ -150,16 +176,25 @@
   // commit through the guarded writer, reporting truthful failure.
   function mutateRussia(mutator) {
     const auth = readAuthority();
-    if (auth.state === 'READ_FAILED' || auth.state === 'MALFORMED') { blockedToast(); return { ok: false, reason: 'finance-authority-' + auth.state.toLowerCase() }; }
+    if (auth.state === 'READ_FAILED' || auth.state === 'MALFORMED') { blockedToast(); return { ok: false, outcome: 'UNSAFE_AUTHORITY_REFUSAL', reason: 'finance-authority-' + auth.state.toLowerCase() }; }
     const all = (auth.state === 'PRESENT') ? auth.value : {};
-    if (!all.russia) all.russia = {};
-    if (!Array.isArray(all.russia.customIncome))   all.russia.customIncome = [];
-    if (!Array.isArray(all.russia.customExpenses)) all.russia.customExpenses = [];
+    // Only a genuinely ABSENT phase key defaults to {}. A present but non-object
+    // russia (null/array/scalar) is REFUSED (evidence preserved), never
+    // normalized — otherwise a malformed phase silently becomes writable (B02).
+    if (!('russia' in all)) all.russia = {};
+    if (!isPlainObject(all.russia)) { blockedToast(); return { ok: false, outcome: 'UNSAFE_AUTHORITY_REFUSAL', reason: 'phase-shape' }; }
+    // Present-but-malformed named collections are refused (evidence preserved),
+    // never normalized to [] (B02). Only ABSENT collections default to [].
+    if ('customIncome' in all.russia && !Array.isArray(all.russia.customIncome)) { blockedToast(); return { ok: false, outcome: 'UNSAFE_AUTHORITY_REFUSAL', reason: 'malformed-collection' }; }
+    if ('customExpenses' in all.russia && !Array.isArray(all.russia.customExpenses)) { blockedToast(); return { ok: false, outcome: 'UNSAFE_AUTHORITY_REFUSAL', reason: 'malformed-collection' }; }
+    if (!('customIncome' in all.russia))   all.russia.customIncome = [];
+    if (!('customExpenses' in all.russia)) all.russia.customExpenses = [];
     const r = mutator(all);
-    if (r === false) return { ok: false, reason: 'noop' };
+    if (r === false) return { ok: false, outcome: 'REFUSED_PRE_WRITE', reason: 'noop' };
     const w = saveInputs(all);
-    if (w && w.ok === false) { blockedToast(); return w; }
-    return { ok: true };
+    // VERIFIED-only success: any non-verified result is a truthful failure.
+    if (!w || w.ok !== true) { blockedToast(); return w || { ok: false, outcome: 'POST_WRITE_UNCERTAIN', reason: 'unknown' }; }
+    return { ok: true, outcome: 'VERIFIED_LOCAL_COMMIT' };
   }
 
   function addRow(kind) {
@@ -183,7 +218,16 @@
       if (idx === -1) return false;
       list[idx] = Object.assign({}, list[idx], patch);
     });
-    if (res.ok) recompute();
+    const d = drafts();
+    if (res.ok) {
+      // committed: the field is durable, drop any retained draft.
+      Object.keys(patch).forEach(f => d.clear('custom:' + kind + ':' + id + ':' + f));
+      recompute();
+    } else if (res.reason !== 'noop') {
+      // refused/uncertain: retain the newer typed intent so a later ordinary
+      // render/recompute cannot erase it (B03).
+      Object.keys(patch).forEach(f => d.set('custom:' + kind + ':' + id + ':' + f, patch[f]));
+    }
     return res;
   }
   function removeRow(kind, id) {
@@ -252,6 +296,23 @@
       blockHTML('income',  all.russia.customIncome) +
       blockHTML('expense', all.russia.customExpenses);
     wireHost(host);
+    applyCustomDrafts(host);
+  }
+  // Re-apply retained custom drafts on top of a freshly-rendered (durable) DOM
+  // so an ordinary render cannot erase newer refused intent (B03). Visual only:
+  // does not dispatch input, so it never re-triggers a mutation.
+  function applyCustomDrafts(host) {
+    const d = drafts();
+    for (const [k, v] of d.entries()) {
+      const m = /^custom:(income|expense):([^:]+):(name|amount)$/.exec(k);
+      if (!m) continue;
+      let row;
+      try { row = host.querySelector('.mc-row[data-id="' + (window.CSS && CSS.escape ? CSS.escape(m[2]) : m[2]) + '"]'); }
+      catch (e) { row = null; }
+      if (!row) continue;
+      const input = row.querySelector(m[3] === 'name' ? '.mc-name' : '.mc-amount');
+      if (input && document.activeElement !== input) input.value = v;
+    }
   }
 
   function wireHost(host) {
