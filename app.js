@@ -3972,10 +3972,13 @@ window.aptToggleWinner=function(id){
         label.textContent = result + ' — ' + _b1SafeText(item.title);
         const remove = document.createElement('button');
         remove.type = 'button'; remove.className = 'pt-outcome-remove'; remove.textContent = 'Remove';
+        remove.setAttribute('aria-label', 'Remove outcome: ' + _b1SafeText(item.title));
         remove.addEventListener('click', function () {
           if (!confirm('Remove this recorded outcome?')) return;
           const decisions = (Store.get('decisions') || []).slice();
-          if (!decisions[entry.realIndex] || decisions[entry.realIndex].kind !== 'outcome') return;
+          const current = decisions[entry.realIndex];
+          // delete only the exact entry that was rendered, even if a non-notifying writer reordered the array
+          if (!current || current.kind !== 'outcome' || current.at !== item.at || current.title !== item.title || current.result !== item.result) return;
           decisions.splice(entry.realIndex, 1);
           Store.set('decisions', decisions);
         });

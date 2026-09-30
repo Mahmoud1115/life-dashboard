@@ -102,3 +102,26 @@ test('Product Tick — a mistaken outcome can be removed without touching decisi
   expect(remaining).toHaveLength(1);
   expect(remaining[0].title).toBe('Keep decision');
 });
+
+test('Product Tick — outcome Remove buttons are individually named and never delete a different entry', async ({ page }) => {
+  const at = new Date().toISOString();
+  await page.evaluate((at) => Store.set('decisions', [
+    { at, title: 'ALPHA', reasoning: '', expected: '', success: '', kind: 'outcome', result: 'done' },
+    { at, title: 'BETA', reasoning: '', expected: '', success: '', kind: 'outcome', result: 'done' }
+  ]), at);
+  await page.getByRole('button', { name: '📓 Weekly Review' }).click();
+  const root = page.locator('#pt-week-outcomes');
+  await expect(root.getByRole('button', { name: 'Remove outcome: ALPHA' })).toHaveCount(1);
+  await expect(root.getByRole('button', { name: 'Remove outcome: BETA' })).toHaveCount(1);
+  // a non-notifying writer swaps the entry at the rendered index: the stale button must not delete it
+  await page.evaluate((at) => {
+    const swapped = [{ at, title: 'SWAPPED', reasoning: '', expected: '', success: '', kind: 'outcome', result: 'done' },
+                     { at, title: 'BETA2', reasoning: '', expected: '', success: '', kind: 'outcome', result: 'done' }];
+    const original = Store.get; window.__origGet = original;
+    Store.get = (key) => key === 'decisions' ? swapped : original.call(Store, key);
+  }, at);
+  page.once('dialog', dialog => dialog.accept());
+  await root.getByRole('button', { name: 'Remove outcome: BETA' }).click();
+  const untouched = await page.evaluate(() => { Store.get = window.__origGet; return Store.get('decisions').map(d => d.title); });
+  expect(untouched).toEqual(['ALPHA', 'BETA']);
+});
