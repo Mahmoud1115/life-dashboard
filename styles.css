@@ -141,6 +141,19 @@ input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px soli
 .card ul li{padding:3px 0 3px 17px;position:relative;font-size:13.5px;color:var(--tx2);line-height:1.6}
 .card ul li::before{content:'→';position:absolute;left:0;color:var(--gold);font-size:11px;top:5px}
 
+/* ── F10 READ-ONLY OBSERVATORY ── */
+.obs-summary{display:flex;align-items:flex-start;justify-content:space-between;gap:24px;padding:22px 0;border-top:1px solid var(--bdr2);border-bottom:1px solid var(--bdr2);margin-bottom:18px}
+.obs-summary-copy{display:flex;align-items:center;gap:14px}.obs-summary-copy p{margin:0;color:var(--tx2);font-size:14px}
+.obs-state{display:inline-flex;align-items:center;justify-content:center;min-width:82px;padding:5px 10px;border-radius:100px;font-family:var(--mono);font-size:9px;font-weight:500;letter-spacing:.7px}
+.obs-healthy{background:var(--green2);color:var(--green)}.obs-degraded,.obs-stale{background:var(--amber2);color:var(--amber)}.obs-failed{background:var(--red2);color:var(--red)}.obs-unknown{background:var(--bg3);color:var(--tx2);border:1px solid var(--bdr2)}
+.obs-meta{font-family:var(--mono);font-size:9px;line-height:1.6;color:var(--tx3);text-align:right;max-width:34ch}
+.obs-toolbar{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-bottom:22px}.obs-toolbar p{font-size:12px;color:var(--tx2);max-width:62ch}.obs-toolbar button{min-height:44px;flex-shrink:0}
+.obs-components{display:flex;flex-direction:column;border-top:1px solid var(--bdr)}
+.obs-component{display:grid;grid-template-columns:minmax(160px,1.2fr) 100px minmax(220px,2fr);gap:18px;align-items:center;padding:17px 0;border-bottom:1px solid var(--bdr)}
+.obs-component h3{font-size:14px;font-weight:500}.obs-component p{font-size:12px;color:var(--tx2);line-height:1.6}.obs-component small{display:block;font-family:var(--mono);font-size:8px;color:var(--tx3);margin-top:4px}
+.obs-evidence{margin-top:30px;padding-top:22px;border-top:1px solid var(--bdr2)}.obs-evidence h3{font-family:var(--serif);font-size:22px;font-weight:400;margin-bottom:14px}.obs-evidence dl>div{display:grid;grid-template-columns:120px 1fr;gap:18px;padding:9px 0;border-bottom:1px solid var(--bdr)}.obs-evidence dt{font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:.7px;color:var(--gold2)}.obs-evidence dd{font-size:12px;color:var(--tx2)}
+@media(max-width:640px){.obs-summary,.obs-toolbar{display:block}.obs-meta{text-align:left;margin-top:12px}.obs-toolbar button{margin-top:12px;width:100%}.obs-component{grid-template-columns:1fr auto;gap:8px 12px}.obs-component p{grid-column:1/-1}.obs-evidence dl>div{grid-template-columns:1fr;gap:3px}}
+
 /* ── DECISIONS & DECORATIVE ── */
 /* keep card hover subtle — not on collapsible headers */
 

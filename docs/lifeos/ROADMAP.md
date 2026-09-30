@@ -71,6 +71,14 @@ to `state.ideas`; NOW remains `state.todayFocus`; outcomes are tagged
 records in `state.decisions` and are kept out of the Decision Journal.
 No new storage key, schema, authority source, or deployment is introduced.
 
+## Active parallel stream — F10 SYSTEM / Observatory
+
+The staged F10 view reads only the static `system-manifest.json`
+contract. The committed placeholder is intentionally `UNKNOWN`; a
+reviewed release scanner may replace it with current PUBLIC_SAFE
+evidence. The view has no Store writer, no runtime API, and no
+browser-to-Mac control path. Missing evidence must never render green.
+
 ---
 
 ## Current active phase — B1.5 preflight

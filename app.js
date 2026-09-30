@@ -694,6 +694,7 @@ const NAV_GROUPS={
   about:     {primary:'aboutyou',       subs:[{id:'timeline',label:'Life Timeline'}]},
   sync:      {primary:'sync',           subs:[]},
   review:    {primary:'review',         subs:[]},
+  system:    {primary:'system',         subs:[]},
 };
 const SEC_TO_GROUP={};
 Object.entries(NAV_GROUPS).forEach(([k,g])=>{

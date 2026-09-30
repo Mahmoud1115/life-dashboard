@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "classification": "PUBLIC_SAFE",
+  "generatedAt": null,
+  "staleAfterSeconds": 86400,
+  "sourceSha": "UNGENERATED",
+  "components": [
+    {"id":"dune-core","label":"DUNE Core","status":"UNKNOWN","observedAt":null,"summary":"No staged release evidence has been published.","evidence":"Awaiting reviewed manifest"},
+    {"id":"hermes","label":"Hermes","status":"UNKNOWN","observedAt":null,"summary":"Runtime activation remains gated.","evidence":"No live probe in this build"},
+    {"id":"telegram","label":"Telegram boundary","status":"UNKNOWN","observedAt":null,"summary":"Live cutover has not been approved.","evidence":"Staged only"},
+    {"id":"backup","label":"Backup and restore","status":"UNKNOWN","observedAt":null,"summary":"Current backup evidence is not embedded in this public build.","evidence":"Private receipt required"},
+    {"id":"memory","label":"Memory and retrieval","status":"UNKNOWN","observedAt":null,"summary":"QMD and Hindsight evidence is awaiting release manifest generation.","evidence":"No public-safe release evidence"}
+  ]
+}

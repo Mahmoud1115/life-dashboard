@@ -60,6 +60,9 @@
       <button class="nmb" data-group="sync" onclick="showGroup('sync')">
         <span class="nmb-emoji">☁</span><span class="nmb-label">Sync</span>
       </button>
+      <button class="nmb" data-group="system" onclick="showGroup('system')">
+        <span class="nmb-emoji">◫</span><span class="nmb-label">System</span>
+      </button>
       <button class="nmb nmb-util" id="privacy-btn" onclick="togglePrivacy()">
         <span class="nmb-emoji">👁</span><span class="nmb-label">Private</span>
       </button>
@@ -595,6 +598,32 @@
 </div>
 </section>
 
+<!-- SYSTEM — READ-ONLY OBSERVATORY -->
+<section class="sec" id="system" aria-labelledby="system-title">
+  <div class="sec-hd">
+    <div class="sec-num">SYSTEM · Read only</div>
+    <h2 class="sec-title" id="system-title">Observatory</h2>
+    <p class="sec-intro">Evidence about the system itself. This view never changes Life OS data and remains available when DUNE or Hermes is offline.</p>
+  </div>
+  <div id="obs-summary" class="obs-summary" role="status" aria-live="polite">
+    <div class="obs-summary-copy"><span class="obs-state obs-unknown">UNKNOWN</span><p>Waiting for a verified public-safe manifest.</p></div>
+    <div class="obs-meta" id="obs-meta">No evidence loaded</div>
+  </div>
+  <div class="obs-toolbar">
+    <p>Missing or expired evidence is shown as UNKNOWN or STALE, never healthy.</p>
+    <button id="obs-refresh" class="fin-save-btn fin-save-gist-quiet" type="button">Refresh evidence</button>
+  </div>
+  <div id="obs-components" class="obs-components" aria-label="System component health"></div>
+  <div class="obs-evidence">
+    <h3>Evidence contract</h3>
+    <dl>
+      <div><dt>Authority</dt><dd>Static, generated manifest. No browser-to-Mac control path.</dd></div>
+      <div><dt>Privacy</dt><dd>PUBLIC_SAFE fields only. No paths, account names, tokens, personal records, or message content.</dd></div>
+      <div><dt>Failure isolation</dt><dd>Life OS keeps running if this manifest, Hermes, or DUNE is unavailable.</dd></div>
+    </dl>
+  </div>
+</section>
+
 </main>
 
 <!-- BACKUP REMINDER PILL -->
@@ -857,5 +886,6 @@
 <script src="mobile-access.js?v=phase5a"></script>
 <script src="money-custom.js?v=phase5c"></script>
 <script src="money-commas.js?v=phase5a"></script>
+<script src="observatory.js?v=f10a"></script>
 </body>
 </html>
