@@ -89,3 +89,16 @@ test('Product Tick — refuses a stale outcome panel after the NOW item changes'
   expect(result.focus).toBe('Changed elsewhere');
   expect(result.outcomes).toHaveLength(0);
 });
+
+test('Product Tick — a mistaken outcome can be removed without touching decisions', async ({ page }) => {
+  await page.evaluate(() => Store.set('decisions', [
+    { at: new Date().toISOString(), title: 'Keep decision', reasoning: '', expected: '', success: '' },
+    { at: new Date().toISOString(), title: 'Mistaken outcome', reasoning: '', expected: '', success: '', kind: 'outcome', result: 'not_done' }
+  ]));
+  await page.getByRole('button', { name: '📓 Weekly Review' }).click();
+  page.once('dialog', dialog => dialog.accept());
+  await page.locator('#pt-week-outcomes').getByRole('button', { name: 'Remove' }).click();
+  const remaining = await page.evaluate(() => Store.get('decisions'));
+  expect(remaining).toHaveLength(1);
+  expect(remaining[0].title).toBe('Keep decision');
+});

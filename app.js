@@ -3944,7 +3944,10 @@ window.aptToggleWinner=function(id){
       const start = localWeekStart(weekInput && weekInput.value);
       if (!start) return [];
       const end = new Date(start); end.setDate(end.getDate() + 7);
-      return (s.decisions || []).filter(function (item) {
+      return (s.decisions || []).map(function (item, index) {
+        return { item: item, realIndex: index };
+      }).filter(function (entry) {
+        const item = entry.item;
         if (!item || item.kind !== 'outcome') return false;
         const at = new Date(item.at);
         return !Number.isNaN(at.getTime()) && at >= start && at < end;
@@ -3961,10 +3964,22 @@ window.aptToggleWinner=function(id){
         root.appendChild(empty); return;
       }
       const list = document.createElement('ul');
-      outcomes.forEach(function (item) {
+      outcomes.forEach(function (entry) {
+        const item = entry.item;
         const li = document.createElement('li');
+        const label = document.createElement('span');
         const result = item.result === 'done' ? 'Done' : (item.result === 'changed' ? 'Changed' : 'Not done');
-        li.textContent = result + ' — ' + _b1SafeText(item.title);
+        label.textContent = result + ' — ' + _b1SafeText(item.title);
+        const remove = document.createElement('button');
+        remove.type = 'button'; remove.className = 'pt-outcome-remove'; remove.textContent = 'Remove';
+        remove.addEventListener('click', function () {
+          if (!confirm('Remove this recorded outcome?')) return;
+          const decisions = (Store.get('decisions') || []).slice();
+          if (!decisions[entry.realIndex] || decisions[entry.realIndex].kind !== 'outcome') return;
+          decisions.splice(entry.realIndex, 1);
+          Store.set('decisions', decisions);
+        });
+        li.append(label, remove);
         list.appendChild(li);
       });
       root.appendChild(list);
@@ -3977,12 +3992,13 @@ window.aptToggleWinner=function(id){
     if (prefill) prefill.addEventListener('click', function () {
       const outcomes = outcomesForWeek({ decisions: Store.get('decisions') || [] });
       if (!outcomes.length) { alert('Record at least one outcome for this week first.'); return; }
-      const done = outcomes.filter(function (item) { return item.result === 'done'; });
-      const other = outcomes.filter(function (item) { return item.result !== 'done'; });
+      const done = outcomes.filter(function (entry) { return entry.item.result === 'done'; });
+      const other = outcomes.filter(function (entry) { return entry.item.result !== 'done'; });
       const wins = document.getElementById('rev-wins');
       const problems = document.getElementById('rev-problems');
-      if (wins && !wins.value.trim()) wins.value = done.map(function (item) { return '• ' + _b1SafeText(item.title); }).join('\n');
-      if (problems && !problems.value.trim()) problems.value = other.map(function (item) {
+      if (wins && !wins.value.trim()) wins.value = done.map(function (entry) { return '• ' + _b1SafeText(entry.item.title); }).join('\n');
+      if (problems && !problems.value.trim()) problems.value = other.map(function (entry) {
+        const item = entry.item;
         return '• ' + _b1SafeText(item.title) + (item.reasoning ? ' — ' + _b1SafeText(item.reasoning) : '');
       }).join('\n');
     });
