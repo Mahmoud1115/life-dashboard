@@ -50,3 +50,42 @@ test('Product Tick — weekly review prefill separates done and unresolved outco
   await expect(page.locator('#rev-wins')).toHaveValue('• Finished item');
   await expect(page.locator('#rev-problems')).toHaveValue('• Changed item — New plan');
 });
+
+test('Product Tick — outcomes stay out of the Decision Journal', async ({ page }) => {
+  await page.evaluate(() => Store.set('decisions', [
+    { at: new Date().toISOString(), title: 'A real decision', reasoning: '', expected: '', success: '' },
+    { at: new Date().toISOString(), title: 'A recorded outcome', reasoning: '', expected: '', success: '', kind: 'outcome', result: 'done' }
+  ]));
+  await page.getByRole('button', { name: '📓 Weekly Review' }).click();
+  await page.getByRole('button', { name: 'Decision Journal' }).click();
+  await expect(page.locator('#decisions-list')).toContainText('A real decision');
+  await expect(page.locator('#decisions-list')).not.toContainText('A recorded outcome');
+});
+
+test('Product Tick — prefill preserves review text already typed by the owner', async ({ page }) => {
+  await page.evaluate(() => Store.set('decisions', [
+    { at: new Date().toISOString(), title: 'Finished item', reasoning: '', expected: '', success: '', kind: 'outcome', result: 'done' },
+    { at: new Date().toISOString(), title: 'Changed item', reasoning: 'New plan', expected: '', success: '', kind: 'outcome', result: 'changed' }
+  ]));
+  await page.getByRole('button', { name: '📓 Weekly Review' }).click();
+  await page.locator('#rev-wins').fill('Owner-authored win');
+  await page.locator('#pt-prefill-review').click();
+  await expect(page.locator('#rev-wins')).toHaveValue('Owner-authored win');
+  await expect(page.locator('#rev-problems')).toHaveValue('• Changed item — New plan');
+});
+
+test('Product Tick — refuses a stale outcome panel after the NOW item changes', async ({ page }) => {
+  await page.locator('input[data-focus-idx="0"]').fill('Original item');
+  await page.waitForTimeout(250);
+  await page.locator('button[data-outcome-idx="0"]').click();
+  await page.evaluate(() => {
+    const focus = Store.get('todayFocus').slice();
+    focus[0] = 'Changed elsewhere';
+    Store.set('todayFocus', focus);
+  });
+  await page.locator('#pt-outcome-save').click();
+  await expect(page.locator('#pt-capture-status')).toHaveText('NOW item changed. Reopen Outcome before saving.');
+  const result = await page.evaluate(() => ({ focus: Store.get('todayFocus')[0], outcomes: Store.get('decisions').filter(d => d.kind === 'outcome') }));
+  expect(result.focus).toBe('Changed elsewhere');
+  expect(result.outcomes).toHaveLength(0);
+});

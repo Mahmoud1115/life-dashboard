@@ -3685,6 +3685,7 @@ window.aptToggleWinner=function(id){
   // ─── DAILY FOCUS ───────────────────────────────────────────
   function wireFocus() {
     let outcomeIndex = null;
+    let outcomeTitleAtOpen = null;
     const captureInput = document.getElementById('pt-capture-input');
     const captureButton = document.getElementById('pt-capture-btn');
     const captureStatus = document.getElementById('pt-capture-status');
@@ -3737,6 +3738,7 @@ window.aptToggleWinner=function(id){
         const title = String((Store.get('todayFocus') || [])[idx] || '').trim();
         if (!title) { setCaptureStatus('Add a NOW item before recording its outcome.'); return; }
         outcomeIndex = idx;
+        outcomeTitleAtOpen = title;
         if (outcomeTitle) outcomeTitle.textContent = title;
         if (outcomeNote) outcomeNote.value = '';
         if (outcomeResult) outcomeResult.value = 'done';
@@ -3747,6 +3749,7 @@ window.aptToggleWinner=function(id){
     const cancel = document.getElementById('pt-outcome-cancel');
     if (cancel) cancel.addEventListener('click', function () {
       outcomeIndex = null;
+      outcomeTitleAtOpen = null;
       if (outcomePanel) outcomePanel.hidden = true;
     });
     const save = document.getElementById('pt-outcome-save');
@@ -3754,7 +3757,10 @@ window.aptToggleWinner=function(id){
       if (outcomeIndex === null) return;
       const focus = (Store.get('todayFocus') || ['','','']).slice();
       const title = String(focus[outcomeIndex] || '').trim();
-      if (!title) { if (outcomePanel) outcomePanel.hidden = true; outcomeIndex = null; return; }
+      if (!title || title !== outcomeTitleAtOpen) {
+        setCaptureStatus('NOW item changed. Reopen Outcome before saving.');
+        return;
+      }
       const decision = {
         at: new Date().toISOString(), title: title,
         reasoning: outcomeNote ? outcomeNote.value.trim() : '', expected: '', success: '',
@@ -3764,6 +3770,7 @@ window.aptToggleWinner=function(id){
       focus[outcomeIndex] = '';
       Store.set('todayFocus', focus);
       outcomeIndex = null;
+      outcomeTitleAtOpen = null;
       if (outcomePanel) outcomePanel.hidden = true;
       setCaptureStatus('Outcome saved. NOW slot cleared.');
     });
@@ -3897,15 +3904,20 @@ window.aptToggleWinner=function(id){
       }).join('');
     }
     function renderDecisions(s) {
-      const list = (s.decisions || []).slice().reverse();
+      const list = (s.decisions || []).map(function (decision, index) {
+        return { decision: decision, realIndex: index };
+      }).filter(function (entry) {
+        return !entry.decision || entry.decision.kind !== 'outcome';
+      }).reverse();
       const el = document.getElementById('decisions-list');
       if (!el) return;
       if (list.length === 0) {
         el.innerHTML = '<div class="lb-empty">No decisions journaled yet.</div>';
         return;
       }
-      el.innerHTML = list.map((d, displayIdx) => {
-        const realIdx = (s.decisions.length - 1) - displayIdx;
+      el.innerHTML = list.map((entry) => {
+        const d = entry.decision || {};
+        const realIdx = entry.realIndex;
         return '<div class="review-entry">' +
           '<div class="review-entry-head">' +
             '<span class="review-date">' + (d.at ? formatDate(d.at) : '') + '</span>' +
@@ -3969,8 +3981,8 @@ window.aptToggleWinner=function(id){
       const other = outcomes.filter(function (item) { return item.result !== 'done'; });
       const wins = document.getElementById('rev-wins');
       const problems = document.getElementById('rev-problems');
-      if (wins) wins.value = done.map(function (item) { return '• ' + _b1SafeText(item.title); }).join('\n');
-      if (problems) problems.value = other.map(function (item) {
+      if (wins && !wins.value.trim()) wins.value = done.map(function (item) { return '• ' + _b1SafeText(item.title); }).join('\n');
+      if (problems && !problems.value.trim()) problems.value = other.map(function (item) {
         return '• ' + _b1SafeText(item.title) + (item.reasoning ? ' — ' + _b1SafeText(item.reasoning) : '');
       }).join('\n');
     });

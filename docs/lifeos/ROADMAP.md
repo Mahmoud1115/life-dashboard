@@ -63,6 +63,14 @@ Items that ripen as later phases need them (see `council/README.md`):
 - Codex worktree setup / Actions buttons / narrow hooks — triggered after CI stable.
 - Project-specific Codex skills — after merging existing `chore/codex-skills` branch.
 
+## Active parallel stream — Product Tick trial
+
+The staged 14-day Product Tick trial adds the existing-storage loop
+Capture → NOW (maximum three) → Outcome → Weekly Review. Capture writes
+to `state.ideas`; NOW remains `state.todayFocus`; outcomes are tagged
+records in `state.decisions` and are kept out of the Decision Journal.
+No new storage key, schema, authority source, or deployment is introduced.
+
 ---
 
 ## Current active phase — B1.5 preflight
