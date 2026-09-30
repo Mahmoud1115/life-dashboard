@@ -9,12 +9,23 @@
     return typeof value === 'string' && SAFE_TEXT.test(value) ? value : fallback;
   }
 
+  const MAX_STALE_AFTER_SECONDS = 7 * 86400;      // a manifest cannot disable staleness by claiming a huge window
+  const MAX_FUTURE_SKEW_MS = 5 * 60 * 1000;       // clock skew tolerated; further in the future is not evidence
+
+  function parseTimestamp(value) {
+    if (typeof value !== 'string' || !/(Z|[+-]\d\d:?\d\d)$/i.test(value)) return NaN;   // require an explicit timezone
+    return new Date(value).getTime();
+  }
+
+  // Health may only be claimed from an explicit, valid, non-future observation time of the COMPONENT itself. The manifest's own
+  // generation time is not an observation: a component without one is UNKNOWN, never HEALTHY.
   function effectiveState(component, generatedAt, staleAfterSeconds, now) {
     const state = ALLOWED_STATES.has(component && component.status) ? component.status : 'UNKNOWN';
     if (state === 'UNKNOWN' || state === 'FAILED') return state;
-    const observed = new Date((component && component.observedAt) || generatedAt || '');
-    if (!Number.isFinite(observed.getTime()) || now - observed.getTime() > staleAfterSeconds * 1000) return 'STALE';
-    return state;
+    const observed = parseTimestamp(component && component.observedAt);
+    if (!Number.isFinite(observed) || observed > now + MAX_FUTURE_SKEW_MS) return 'UNKNOWN';
+    const window = Math.min(Number.isFinite(staleAfterSeconds) && staleAfterSeconds > 0 ? staleAfterSeconds : 86400, MAX_STALE_AFTER_SECONDS);
+    return now - observed > window * 1000 ? 'STALE' : state;
   }
 
   function aggregate(states) {
