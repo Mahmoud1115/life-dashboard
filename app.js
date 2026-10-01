@@ -694,6 +694,7 @@ const NAV_GROUPS={
   about:     {primary:'aboutyou',       subs:[{id:'timeline',label:'Life Timeline'}]},
   sync:      {primary:'sync',           subs:[]},
   review:    {primary:'review',         subs:[]},
+  system:    {primary:'system',         subs:[]},
 };
 const SEC_TO_GROUP={};
 Object.entries(NAV_GROUPS).forEach(([k,g])=>{
@@ -3684,6 +3685,30 @@ window.aptToggleWinner=function(id){
 
   // ─── DAILY FOCUS ───────────────────────────────────────────
   function wireFocus() {
+    let outcomeIndex = null;
+    let outcomeTitleAtOpen = null;
+    const captureInput = document.getElementById('pt-capture-input');
+    const captureButton = document.getElementById('pt-capture-btn');
+    const captureStatus = document.getElementById('pt-capture-status');
+    function setCaptureStatus(message) {
+      if (captureStatus) captureStatus.textContent = message;
+    }
+    function capture() {
+      const title = captureInput ? captureInput.value.trim() : '';
+      if (!title) { setCaptureStatus('Write something first.'); return; }
+      if (!window.IDEAS || typeof window.IDEAS.addIdea !== 'function') {
+        setCaptureStatus('Ideas is not ready. Try again in a moment.');
+        return;
+      }
+      window.IDEAS.addIdea({ title: title, body: '', tag: 'other', status: 'parked' });
+      captureInput.value = '';
+      setCaptureStatus('Captured in Ideas.');
+    }
+    if (captureButton) captureButton.addEventListener('click', capture);
+    if (captureInput) captureInput.addEventListener('keydown', function (event) {
+      if (event.key === 'Enter') { event.preventDefault(); capture(); }
+    });
+
     document.querySelectorAll('input[data-focus-idx]').forEach(inp => {
       const idx = parseInt(inp.dataset.focusIdx, 10);
       let t;
@@ -3703,6 +3728,52 @@ window.aptToggleWinner=function(id){
         const idx = parseInt(inp.dataset.focusIdx, 10);
         if (document.activeElement !== inp) inp.value = focus[idx] || '';
       });
+    });
+    const outcomePanel = document.getElementById('pt-outcome-panel');
+    const outcomeTitle = document.getElementById('pt-outcome-title');
+    const outcomeNote = document.getElementById('pt-outcome-note');
+    const outcomeResult = document.getElementById('pt-outcome-result');
+    document.querySelectorAll('button[data-outcome-idx]').forEach(function (button) {
+      button.addEventListener('click', function () {
+        const idx = parseInt(button.dataset.outcomeIdx, 10);
+        const title = String((Store.get('todayFocus') || [])[idx] || '').trim();
+        if (!title) { setCaptureStatus('Add a NOW item before recording its outcome.'); return; }
+        outcomeIndex = idx;
+        outcomeTitleAtOpen = title;
+        if (outcomeTitle) outcomeTitle.textContent = title;
+        if (outcomeNote) outcomeNote.value = '';
+        if (outcomeResult) outcomeResult.value = 'done';
+        if (outcomePanel) outcomePanel.hidden = false;
+        if (outcomeNote) outcomeNote.focus();
+      });
+    });
+    const cancel = document.getElementById('pt-outcome-cancel');
+    if (cancel) cancel.addEventListener('click', function () {
+      outcomeIndex = null;
+      outcomeTitleAtOpen = null;
+      if (outcomePanel) outcomePanel.hidden = true;
+    });
+    const save = document.getElementById('pt-outcome-save');
+    if (save) save.addEventListener('click', function () {
+      if (outcomeIndex === null) return;
+      const focus = (Store.get('todayFocus') || ['','','']).slice();
+      const title = String(focus[outcomeIndex] || '').trim();
+      if (!title || title !== outcomeTitleAtOpen) {
+        setCaptureStatus('NOW item changed. Reopen Outcome before saving.');
+        return;
+      }
+      const decision = {
+        at: new Date().toISOString(), title: title,
+        reasoning: outcomeNote ? outcomeNote.value.trim() : '', expected: '', success: '',
+        kind: 'outcome', result: outcomeResult ? outcomeResult.value : 'done'
+      };
+      Store.set('decisions', (Store.get('decisions') || []).concat([decision]));
+      focus[outcomeIndex] = '';
+      Store.set('todayFocus', focus);
+      outcomeIndex = null;
+      outcomeTitleAtOpen = null;
+      if (outcomePanel) outcomePanel.hidden = true;
+      setCaptureStatus('Outcome saved. NOW slot cleared.');
     });
   }
 
@@ -3834,15 +3905,20 @@ window.aptToggleWinner=function(id){
       }).join('');
     }
     function renderDecisions(s) {
-      const list = (s.decisions || []).slice().reverse();
+      const list = (s.decisions || []).map(function (decision, index) {
+        return { decision: decision, realIndex: index };
+      }).filter(function (entry) {
+        return !entry.decision || entry.decision.kind !== 'outcome';
+      }).reverse();
       const el = document.getElementById('decisions-list');
       if (!el) return;
       if (list.length === 0) {
         el.innerHTML = '<div class="lb-empty">No decisions journaled yet.</div>';
         return;
       }
-      el.innerHTML = list.map((d, displayIdx) => {
-        const realIdx = (s.decisions.length - 1) - displayIdx;
+      el.innerHTML = list.map((entry) => {
+        const d = entry.decision || {};
+        const realIdx = entry.realIndex;
         return '<div class="review-entry">' +
           '<div class="review-entry-head">' +
             '<span class="review-date">' + (d.at ? formatDate(d.at) : '') + '</span>' +
@@ -3855,8 +3931,81 @@ window.aptToggleWinner=function(id){
         '</div>';
       }).join('');
     }
+    function localWeekStart(value) {
+      const d = value ? new Date(value) : new Date();
+      if (Number.isNaN(d.getTime())) return null;
+      const copy = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+      const day = copy.getDay() || 7;
+      copy.setDate(copy.getDate() - day + 1);
+      copy.setHours(0, 0, 0, 0);
+      return copy;
+    }
+    function outcomesForWeek(s) {
+      const weekInput = document.getElementById('rev-week');
+      const start = localWeekStart(weekInput && weekInput.value);
+      if (!start) return [];
+      const end = new Date(start); end.setDate(end.getDate() + 7);
+      return (s.decisions || []).map(function (item, index) {
+        return { item: item, realIndex: index };
+      }).filter(function (entry) {
+        const item = entry.item;
+        if (!item || item.kind !== 'outcome') return false;
+        const at = new Date(item.at);
+        return !Number.isNaN(at.getTime()) && at >= start && at < end;
+      });
+    }
+    function renderWeekOutcomes(s) {
+      const root = document.getElementById('pt-week-outcomes');
+      if (!root) return;
+      root.replaceChildren();
+      const outcomes = outcomesForWeek(s);
+      if (!outcomes.length) {
+        const empty = document.createElement('p');
+        empty.className = 'pt-empty'; empty.textContent = 'No outcomes recorded for this week yet.';
+        root.appendChild(empty); return;
+      }
+      const list = document.createElement('ul');
+      outcomes.forEach(function (entry) {
+        const item = entry.item;
+        const li = document.createElement('li');
+        const label = document.createElement('span');
+        const result = item.result === 'done' ? 'Done' : (item.result === 'changed' ? 'Changed' : 'Not done');
+        label.textContent = result + ' — ' + _b1SafeText(item.title);
+        const remove = document.createElement('button');
+        remove.type = 'button'; remove.className = 'pt-outcome-remove'; remove.textContent = 'Remove';
+        remove.setAttribute('aria-label', 'Remove outcome: ' + _b1SafeText(item.title));
+        remove.addEventListener('click', function () {
+          if (!confirm('Remove this recorded outcome?')) return;
+          const decisions = (Store.get('decisions') || []).slice();
+          const current = decisions[entry.realIndex];
+          // delete only the exact entry that was rendered, even if a non-notifying writer reordered the array
+          if (!current || current.kind !== 'outcome' || current.at !== item.at || current.title !== item.title || current.result !== item.result) return;
+          decisions.splice(entry.realIndex, 1);
+          Store.set('decisions', decisions);
+        });
+        li.append(label, remove);
+        list.appendChild(li);
+      });
+      root.appendChild(list);
+    }
     Store.subscribe('reviews', renderReviews);
     Store.subscribe('decisions', renderDecisions);
+    Store.subscribe('decisions', renderWeekOutcomes);
+    if (wk) wk.addEventListener('change', function () { renderWeekOutcomes({ decisions: Store.get('decisions') || [] }); });
+    const prefill = document.getElementById('pt-prefill-review');
+    if (prefill) prefill.addEventListener('click', function () {
+      const outcomes = outcomesForWeek({ decisions: Store.get('decisions') || [] });
+      if (!outcomes.length) { alert('Record at least one outcome for this week first.'); return; }
+      const done = outcomes.filter(function (entry) { return entry.item.result === 'done'; });
+      const other = outcomes.filter(function (entry) { return entry.item.result !== 'done'; });
+      const wins = document.getElementById('rev-wins');
+      const problems = document.getElementById('rev-problems');
+      if (wins && !wins.value.trim()) wins.value = done.map(function (entry) { return '• ' + _b1SafeText(entry.item.title); }).join('\n');
+      if (problems && !problems.value.trim()) problems.value = other.map(function (entry) {
+        const item = entry.item;
+        return '• ' + _b1SafeText(item.title) + (item.reasoning ? ' — ' + _b1SafeText(item.reasoning) : '');
+      }).join('\n');
+    });
   }
   window.showReviewTab = function (tab, btn) {
     document.querySelectorAll('.review-tab').forEach(b => b.classList.remove('active'));

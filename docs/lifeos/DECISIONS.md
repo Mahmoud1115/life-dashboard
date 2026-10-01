@@ -2758,3 +2758,24 @@ confirmed rotation, both resolver 404s, production Ideas/BHT immediate saves,
 flush failure/refusal, and edits during all three Save GETs. A corrected exact
 candidate still requires pre-push review and independent Claude Code or human
 review before merge; implementer test results are not independent approval.
+
+---
+
+## ADR-021 — DUNE Foundation: product hierarchy, one-writer authority, and the Hermes/DUNE Core boundary
+
+- **Status**: Proposed (public-safe summary of a private design; requires owner approval and independent review before it is Accepted)
+- **Date**: 2026-09-30
+- **Numbering note**: ADR-016 to ADR-019 are referenced by earlier text but were never written; this log continues at 021.
+- **Context**: Between 2026-09-26 and 2026-09-28 a private local service (DUNE Core: a governed memory/context ledger with an agent adapter and a Telegram transport) and the Hermes agent runtime were built alongside LIFE OS. The canonical roadmap still listed Hermes as a trigger-gated item and Council V1 excluded a memory database, and no ADR recorded the change. Without a written authority map, two documents can each call themselves canonical for the same state.
+- **Decision**:
+  1. **One product, three modes.** LIFE OS is the single product. SYSTEM (evidence, health, recovery, governance views) is a *mode inside LIFE OS*, not a sibling product. A later split requires a demonstrated component that must run outside the browser and serve more than one consumer.
+  2. **LIFE OS owns the Core Loop** (Capture → Clarify → Commit → NOW → Act → Outcome → Review → Adjust). LIFE OS must keep working when Hermes, Telegram or any retrieval projection is unavailable.
+  3. **One canonical writer per state class.** LIFE OS daily-life data: the LIFE OS Store and retained legacy keys per `STORAGE_MAP.md`. Code, schemas, architecture ADRs, tests and reviewed procedures: Git at an exact reviewed SHA. Owner profile, preferences, corrections and governed project/personal context: the private DUNE Core ledger. Secrets: a secret store, referenced only by opaque handle. Backups and projections (notes, indexes, associative recall, agent sessions) are never authority.
+  4. **LIFE OS and DUNE Core never mutate each other's storage.** They exchange owner-initiated, typed snapshots, evidence, proposals, approvals and receipts. LIFE OS's Review Center stays informational (ADR-004): a human applies proposals.
+  5. **Hermes and Telegram are replaceable, non-canonical interfaces.** Native agent memory is disabled for DUNE entry points; no DUNE entry point may fall back to a default agent profile.
+  6. **The private DUNE Core code lives in a separate private repository.** This public repository must never contain personal data, live databases, real backups, raw sessions, personal documents, credentials or their derivatives (ADR-008 stands).
+  7. **Independent review.** High-risk changes need review by someone other than the author at an exact SHA (ADR-012); the never-autonomous list (ADR-013) applies to every agent, including Hermes.
+  8. **Foundation is time-boxed** and ends by acceptance tests or budget, after which work returns to LIFE OS capabilities. Frozen during Foundation: Finance S1a, the cross-tab lost-update investigation, storage migrations, Supabase, Logbook migration.
+- **Rejected alternatives**: a sibling "SYSTEM OS" product (extra storage, deployment and bridge for one user, no runtime boundary that needs it); treating any agent memory or index as canonical; committing the private service into this public repository; automatic cross-store synchronization.
+- **Supersedes / clarifies**: clarifies the ROADMAP "Hermes / any AI-platform orchestrator" trigger row (resolved by the owner's Foundation decision) and the Council V1 statement that it excludes Hermes and a memory database (still true of Council V1 itself; the Foundation is a separate programme). Does not alter ADR-001…015, 020.
+- **Consequences**: an authority map exists in Git; DUNE Core changes are reviewed in a private repository; this log records the boundary; PROJECT.md and ROADMAP.md still need a follow-up update to match (separate docs change).

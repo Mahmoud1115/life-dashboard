@@ -19,7 +19,7 @@ For each domain, exactly **one** is the write-authoritative source. Any migratio
 | About You (profile, values, reminders) | `dune_state_v4.about` (Gen-2) | — | Fully migrated |
 | Today (daily focus) | `dune_state_v4.todayFocus` (Gen-2) | — | Fully migrated |
 | Weekly Reviews | `dune_state_v4.reviews` (Gen-2) | — | Fully migrated; typically empty |
-| Decision Journal | `dune_state_v4.decisions` (Gen-2) | — | Fully migrated; typically empty |
+| Decision Journal + Product Tick outcomes | `dune_state_v4.decisions` (Gen-2) | — | Fully migrated. Journal records retain the legacy shape; Product Tick outcomes are distinguished by `kind: 'outcome'` and `result`, and are rendered in the weekly outcome summary rather than the Decision Journal. |
 | Ideas parking lot | `dune_state_v4.ideas` (Gen-2) | — | Fully migrated |
 | Goals — full record | `dune_state_v4.records.goals` (Gen-2, schema 14) | — | **PRV-0.5 R2 (ADR-015 addendum #1): Gen-2 authoritative.** Migrated from `dune_goals_v1` per-id overrides + `_migration-legacy-records.js`. Legacy overrides merged once by `hydratePreservationRecordsOnce()` in `app.js`, then `dune_goals_v1` becomes read-only historical. Migration-complete state lives in `data.meta.recordsMigration` inside the same coordinated wrapper as the records; the old out-of-band sticky flag `dune_records_hydrated_v1` was removed in R2 (it could survive a durability failure and permanently skip migration). |
 | Deadlines — full record | `dune_state_v4.records.deadlines` (Gen-2) | — | **PRV-0.5 (ADR-015): migrated from tracked seed in `data.js:D.deadlines`.** Legacy `dune_deadlines_ext_v1` extension slot preserved in `BACKUP_KEYS` for historical restore compatibility only. |

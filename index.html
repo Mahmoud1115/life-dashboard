@@ -60,6 +60,9 @@
       <button class="nmb" data-group="sync" onclick="showGroup('sync')">
         <span class="nmb-emoji">☁</span><span class="nmb-label">Sync</span>
       </button>
+      <button class="nmb" data-group="system" onclick="showGroup('system')">
+        <span class="nmb-emoji">◫</span><span class="nmb-label">System</span>
+      </button>
       <button class="nmb nmb-util" id="privacy-btn" onclick="togglePrivacy()">
         <span class="nmb-emoji">👁</span><span class="nmb-label">Private</span>
       </button>
@@ -103,12 +106,34 @@
 
 <!-- Daily Focus -->
 <div class="card today-focus-card">
-  <div class="ctitle">Daily Focus — Your Top 3 Today</div>
-  <p style="font-size:12px;color:var(--tx3);margin:-4px 0 14px">If you only do these three things today, today was a win. Editable. Auto-saves.</p>
+  <div class="ctitle">Core Loop — Capture → NOW → Outcome</div>
+  <div class="pt-capture" aria-labelledby="pt-capture-label">
+    <label id="pt-capture-label" for="pt-capture-input">Capture what is on your mind</label>
+    <div class="pt-capture-row">
+      <input id="pt-capture-input" maxlength="200" placeholder="A task, idea, or loose end…">
+      <button id="pt-capture-btn" class="lb-btn lb-btn-add" type="button">Capture</button>
+    </div>
+    <div id="pt-capture-status" class="pt-status" role="status" aria-live="polite"></div>
+  </div>
+  <div class="pt-now-head">
+    <div>
+      <div class="pt-eyebrow">NOW · maximum three</div>
+      <p>If you only do these three things today, today was a win. Editable. Auto-saves.</p>
+    </div>
+  </div>
   <div class="focus-list">
-    <div class="focus-row"><span class="focus-num">1</span><input class="focus-input" data-focus-idx="0" placeholder="Most important thing today…"></div>
-    <div class="focus-row"><span class="focus-num">2</span><input class="focus-input" data-focus-idx="1" placeholder="Second priority…"></div>
-    <div class="focus-row"><span class="focus-num">3</span><input class="focus-input" data-focus-idx="2" placeholder="Third priority…"></div>
+    <div class="focus-row"><span class="focus-num">1</span><input class="focus-input" data-focus-idx="0" placeholder="Most important thing today…"><button class="pt-outcome-open" data-outcome-idx="0" type="button">Outcome</button></div>
+    <div class="focus-row"><span class="focus-num">2</span><input class="focus-input" data-focus-idx="1" placeholder="Second priority…"><button class="pt-outcome-open" data-outcome-idx="1" type="button">Outcome</button></div>
+    <div class="focus-row"><span class="focus-num">3</span><input class="focus-input" data-focus-idx="2" placeholder="Third priority…"><button class="pt-outcome-open" data-outcome-idx="2" type="button">Outcome</button></div>
+  </div>
+  <div id="pt-outcome-panel" class="pt-outcome-panel" hidden>
+    <div class="pt-eyebrow">Record outcome</div>
+    <div id="pt-outcome-title" class="pt-outcome-title"></div>
+    <label for="pt-outcome-result">Result</label>
+    <select id="pt-outcome-result"><option value="done">Done</option><option value="not_done">Not done</option><option value="changed">Changed</option></select>
+    <label for="pt-outcome-note">What happened?</label>
+    <textarea id="pt-outcome-note" rows="2" placeholder="A short factual note…"></textarea>
+    <div class="pt-actions"><button id="pt-outcome-save" class="lb-btn lb-btn-add" type="button">Save outcome</button><button id="pt-outcome-cancel" class="lb-btn lb-btn-view" type="button">Cancel</button></div>
   </div>
 </div>
 
@@ -200,6 +225,11 @@
 
 <div id="review-weekly" class="review-panel">
   <div class="card"><div class="ctitle">New Weekly Review</div>
+  <div class="pt-week-summary">
+    <div class="pt-eyebrow">This week's outcomes</div>
+    <div id="pt-week-outcomes" class="pt-week-outcomes"></div>
+    <button id="pt-prefill-review" class="lb-btn lb-btn-view" type="button">Prefill review from outcomes</button>
+  </div>
   <div class="review-form">
     <label>Week of</label>
     <input id="rev-week" type="date">
@@ -568,6 +598,32 @@
 </div>
 </section>
 
+<!-- SYSTEM — READ-ONLY OBSERVATORY -->
+<section class="sec" id="system" aria-labelledby="system-title">
+  <div class="sec-hd">
+    <div class="sec-num">SYSTEM · Read only</div>
+    <h2 class="sec-title" id="system-title">Observatory</h2>
+    <p class="sec-intro">Evidence about the system itself. This view never changes Life OS data and remains available when DUNE or Hermes is offline.</p>
+  </div>
+  <div id="obs-summary" class="obs-summary" role="status" aria-live="polite">
+    <div class="obs-summary-copy"><span class="obs-state obs-unknown">UNKNOWN</span><p>Waiting for a verified public-safe manifest.</p></div>
+    <div class="obs-meta" id="obs-meta">No evidence loaded</div>
+  </div>
+  <div class="obs-toolbar">
+    <p>Missing or expired evidence is shown as UNKNOWN or STALE, never healthy.</p>
+    <button id="obs-refresh" class="fin-save-btn fin-save-gist-quiet" type="button">Refresh evidence</button>
+  </div>
+  <div id="obs-components" class="obs-components" aria-label="System component health"></div>
+  <div class="obs-evidence">
+    <h3>Evidence contract</h3>
+    <dl>
+      <div><dt>Authority</dt><dd>Static, generated manifest. No browser-to-Mac control path.</dd></div>
+      <div><dt>Privacy</dt><dd>PUBLIC_SAFE fields only. No paths, account names, tokens, personal records, or message content.</dd></div>
+      <div><dt>Failure isolation</dt><dd>Life OS keeps running if this manifest, Hermes, or DUNE is unavailable.</dd></div>
+    </dl>
+  </div>
+</section>
+
 </main>
 
 <!-- BACKUP REMINDER PILL -->
@@ -830,5 +886,6 @@
 <script src="mobile-access.js?v=phase5a"></script>
 <script src="money-custom.js?v=phase5c"></script>
 <script src="money-commas.js?v=phase5a"></script>
+<script src="observatory.js?v=f10a"></script>
 </body>
 </html>

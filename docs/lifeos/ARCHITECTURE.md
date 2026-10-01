@@ -9,6 +9,16 @@ Snapshot of how the code actually works today. Update when reality changes, not 
 - Deployment: push to `main` → GitHub Pages rebuilds and serves from `/`.
 - PWA manifest is present (`manifest.json`) — installable, but **no service worker exists** so it is not offline-capable.
 
+### SYSTEM / Observatory boundary
+
+The `#system` section is a read-only projection of `system-manifest.json`.
+The manifest is static, schema-versioned, and restricted to
+`PUBLIC_SAFE` status evidence. The browser has no runtime API or local
+control path into DUNE, Hermes, Telegram, backup tooling, or the Mac.
+Invalid or unavailable manifests render `UNKNOWN`; expired evidence
+renders `STALE`; the rest of Life OS continues from its normal local
+Store even when every system component is unavailable.
+
 ## Two coexisting storage generations
 
 ### Gen-1 (legacy, still live)
