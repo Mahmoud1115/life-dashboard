@@ -1040,6 +1040,112 @@ test.describe('lifecycle persistence (§C amendment)', () => {
     expect(res.ok).toBe(true);
     expect(res.kind).toBe('saved');
   });
+
+  test('G-C3-MOBILE-NO-BASE: visible phone overlay bootstraps safely before enabling Save/Load', async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 812 });
+    const gistId = 'g_mobile_legacy';
+    const mock = await installGitHubMock(page, [
+      makeGistFixture({ id:gistId, backupData:{ _placeholder:true }, revision:'rev_bootstrapped' })
+    ]);
+    await page.goto('/');
+    await waitReady(page);
+    const { data:bootData } = await bootBaseline(page);
+    setRemoteFileToData(mock, gistId, bootData);
+
+    const before = await page.evaluate(({ gistId }) => {
+      localStorage.setItem('dune_github_token_v1', 'BOOT_TOKEN');
+      localStorage.setItem('dune_gist_id_v1', gistId);
+      localStorage.setItem('dune_last_gist_sync_v1', JSON.stringify('2026-09-09T10:57:58.000Z'));
+      localStorage.removeItem('dune_gist_sync_base_v1');
+      window.updateGistUI();
+      window.openBackupPanel();
+      return {
+        overlayStatus:document.getElementById('gist-status')?.textContent,
+        tokenText:document.getElementById('gist-token-section')?.textContent,
+        dedicatedClass:document.getElementById('sync-gist-status')?.className,
+        manualConnectPresent:!!document.getElementById('gist-id-manual'),
+      };
+    }, { gistId });
+
+    const overlay = page.locator('#backup-panel');
+    const overlaySave = page.locator('#backup-save-gist-btn');
+    const overlayLoad = page.locator('#backup-load-gist-btn');
+    const overlayBootstrap = page.locator('#backup-sync-bootstrap-btn');
+    const overlayChoices = page.locator('#backup-sync-bootstrap-choice-row');
+    await expect(overlay).toBeVisible();
+    await expect(overlaySave).toBeVisible();
+    await expect(overlaySave).toBeDisabled();
+    await expect(overlayLoad).toBeVisible();
+    await expect(overlayLoad).toBeDisabled();
+    await expect(overlayBootstrap).toBeVisible();
+    await expect(overlayChoices).toBeHidden();
+    expect(before.overlayStatus).toContain('Bootstrap required before Save');
+    expect(before.tokenText).toContain('Historical sync only');
+    expect(before.dedicatedClass).toContain('fgs-warn');
+    expect(before.manualConnectPresent).toBe(false);
+
+    await overlayBootstrap.click();
+    await page.waitForFunction((id) => !!window.GistSync.effectiveBaseFor(id), gistId);
+    await expect(overlaySave).toBeEnabled();
+    await expect(overlayLoad).toBeEnabled();
+    await expect(overlayBootstrap).toBeHidden();
+  });
+
+  test('G-C4-MOBILE-NO-ID: token-only device exposes bootstrap instead of unusable Save/Load', async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 812 });
+    const gistId = 'g_mobile_no_id';
+    const mock = await installGitHubMock(page, [
+      makeGistFixture({ id: gistId, backupData: { _placeholder:true }, revision:'rev_mobile_no_id' })
+    ]);
+    await page.goto('/');
+    await waitReady(page);
+    const { data: bootData } = await bootBaseline(page);
+    setRemoteFileToData(mock, gistId, bootData);
+    await page.evaluate(() => {
+      localStorage.setItem('dune_github_token_v1', 'BOOT_TOKEN');
+      localStorage.removeItem('dune_gist_id_v1');
+      localStorage.removeItem('dune_gist_sync_base_v1');
+      window.updateGistUI();
+      window.openBackupPanel();
+    });
+
+    await expect(page.locator('#backup-save-gist-btn')).toBeDisabled();
+    await expect(page.locator('#backup-load-gist-btn')).toBeDisabled();
+    await expect(page.locator('#backup-sync-bootstrap-btn')).toBeVisible();
+    await expect(page.locator('#backup-sync-bootstrap-choice-row')).toBeHidden();
+    await expect(page.locator('#gist-status')).toContainText('No connected backup');
+    await expect(page.locator('#backup-sync-bootstrap-hint')).toContainText('No backup is connected to this browser');
+    await expect(page.locator('#sync-gist-status')).toHaveClass(/fgs-warn/);
+
+    await page.locator('#backup-sync-bootstrap-btn').click();
+    await page.waitForFunction((id) => !!window.GistSync.effectiveBaseFor(id), gistId);
+    await expect(page.locator('#backup-save-gist-btn')).toBeEnabled();
+    await expect(page.locator('#backup-load-gist-btn')).toBeEnabled();
+  });
+
+  test('G-C5-MOBILE-NO-MATCH: overlay bootstrap fails safely when the token has no backup Gist', async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 812 });
+    await installGitHubMock(page, []);
+    await page.goto('/');
+    await waitReady(page);
+    await page.evaluate(() => {
+      localStorage.setItem('dune_github_token_v1', 'BOOT_TOKEN');
+      localStorage.removeItem('dune_gist_id_v1');
+      localStorage.removeItem('dune_gist_sync_base_v1');
+      window.openBackupPanel();
+    });
+
+    await page.locator('#backup-sync-bootstrap-btn').click();
+    await expect(page.locator('#gist-status')).toContainText('No backup Gist found');
+    await expect(page.locator('#backup-save-gist-btn')).toBeDisabled();
+    await expect(page.locator('#backup-load-gist-btn')).toBeDisabled();
+    const authority = await page.evaluate(() => ({
+      id: window.GistSync.readConnectedGistId(),
+      base: localStorage.getItem('dune_gist_sync_base_v1'),
+    }));
+    expect(authority.id).toBe('');
+    expect(authority.base).toBe(null);
+  });
 });
 
 // ── INITIAL BOOTSTRAP (§4) ───────────────────────────────────────────────────
@@ -1085,6 +1191,7 @@ test.describe('initial bootstrap (§4 amendment)', () => {
   });
 
   test('G-BOOTSTRAP-02: local ≠ remote at bootstrap → connected-diverged (no silent overwrite)', async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 812 });
     const mock = await installGitHubMock(page, [
       makeGistFixture({ id: gistId, backupData: { _placeholder:true }, revision:'rev_seed' })
     ]);
@@ -1106,6 +1213,18 @@ test.describe('initial bootstrap (§4 amendment)', () => {
     const base = await page.evaluate(() => localStorage.getItem('dune_gist_sync_base_v1'));
     expect(base).toBe(null);
     expect(mock.patches).toBe(0);
+    const choiceVisibility = await page.evaluate(() => ({
+      dedicated:document.getElementById('sync-bootstrap-choice-row')?.style.display,
+      overlay:document.getElementById('backup-sync-bootstrap-choice-row')?.style.display,
+    }));
+    expect(choiceVisibility.dedicated).toBe('flex');
+    expect(choiceVisibility.overlay).toBe('flex');
+
+    await page.evaluate(() => {
+      window.closeBackupPanel();
+      window.openBackupPanel();
+    });
+    await expect(page.locator('#backup-sync-bootstrap-choice-row')).toBeVisible();
   });
 });
 
@@ -1151,7 +1270,7 @@ test.describe('Round-2 strict accepted-base authority', () => {
       expect(out.read).toBe(null);
       expect(out.effective).toBe(null);
       expect(out.reconnect).not.toBe('none');
-      expect(out.choices).toBe('flex');
+      expect(out.choices).toBe('none');
     });
   }
 

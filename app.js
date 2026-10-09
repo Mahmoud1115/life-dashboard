@@ -1999,11 +1999,20 @@ function renderATACoverage(entries){
     const token=LS.get('dune_github_token_v1','');
     const gistId=LS.get('dune_gist_id_v1','');
     const lastSync=LS.get('dune_last_gist_sync_v1','');
+    const baseOk=!!(gistId&&window.GistSync
+      && typeof window.GistSync.effectiveBaseFor==='function'
+      && window.GistSync.effectiveBaseFor(gistId));
 
     let cls, html, disabled;
     if(!token){
       cls='fin-gist-status fgs-warn';
       html='⚠ No GitHub token saved yet — open <strong>📦 Backup</strong> in the top-right nav to add one (needs the <code>gist</code> scope).';
+      disabled=true;
+    } else if(!baseOk){
+      cls='fin-gist-status fgs-warn';
+      html=gistId
+        ? '⚠ Bootstrap required before Save'+(lastSync?' · Historical sync only: '+new Date(lastSync).toLocaleString():'')
+        : '⚠ No connected backup — use <strong>Reconnect / bootstrap sync</strong> to find your existing Gist.';
       disabled=true;
     } else if(lastSync){
       const when=new Date(lastSync);
@@ -2713,6 +2722,8 @@ function gistUpdatedLabel(gist){
   return gist&&gist.updated_at?new Date(gist.updated_at).toLocaleString():'unknown time';
 }
 
+let gistBootstrapDivergedPending=false;
+
 function updateGistUI(){
   const sec=document.getElementById('gist-token-section');
   const btns=document.getElementById('gist-action-btns');
@@ -2724,6 +2735,10 @@ function updateGistUI(){
     ? window.GistSync.readConnectedGistId()
     : LS.get('dune_gist_id_v1','');
   const lastSync=LS.get('dune_last_gist_sync_v1','');
+  const baseOk=!!(gistId&&window.GistSync
+    && typeof window.GistSync.effectiveBaseFor==='function'
+    && window.GistSync.effectiveBaseFor(gistId));
+  const needsBootstrap=!!token&&!baseOk;
 
   if(token){
     sec.innerHTML=`<div class="gist-token-saved">
@@ -2731,7 +2746,7 @@ function updateGistUI(){
       <button class="icl-small-btn icl-del-btn" onclick="clearGistToken()">✕ Remove</button>
     </div>
     ${gistId?`<div class="gist-id-display">Connected backup: <code>${gistId.slice(0,12)}…</code></div>`:''}
-    ${lastSync?`<div class="gist-sync-time">Last synced: ${new Date(lastSync).toLocaleString()}</div>`:''}`;
+    ${lastSync?`<div class="gist-sync-time">${baseOk?'Last synced':'Historical sync only'}: ${new Date(lastSync).toLocaleString()}</div>`:''}`;
     if(btns) btns.style.display='flex';
   } else {
     sec.innerHTML=`<div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
@@ -2740,6 +2755,24 @@ function updateGistUI(){
     </div>`;
     if(btns) btns.style.display='none';
   }
+  const overlaySave=document.getElementById('backup-save-gist-btn');
+  const overlayLoad=document.getElementById('backup-load-gist-btn');
+  const overlayBootstrap=document.getElementById('backup-sync-bootstrap-row');
+  const overlayChoices=document.getElementById('backup-sync-bootstrap-choice-row');
+  const overlayHint=document.getElementById('backup-sync-bootstrap-hint');
+  if(overlaySave) overlaySave.disabled=needsBootstrap;
+  if(overlayLoad) overlayLoad.disabled=needsBootstrap;
+  if(overlayBootstrap) overlayBootstrap.style.display=needsBootstrap?'flex':'none';
+  if(overlayChoices) overlayChoices.style.display=(needsBootstrap&&gistBootstrapDivergedPending)?'flex':'none';
+  if(overlayHint){
+    overlayHint.style.display=needsBootstrap?'block':'none';
+    overlayHint.textContent=gistId
+      ? 'This browser has a connected backup but no verified sync history. Bootstrap is required before ordinary Save or Load.'
+      : 'No backup is connected to this browser. Use Reconnect / bootstrap sync to find an existing backup before ordinary Save or Load.';
+  }
+  if(needsBootstrap) setGistStatus(gistId
+    ? '⚠ Sync history has not been established for this backup. Bootstrap required before Save.'
+    : '⚠ No connected backup. Use Reconnect / bootstrap sync to find your existing Gist.','warn');
   // Mirror the same status into the inline Finance save panel.
   if(typeof window._refreshFinGistStatus==='function') try{window._refreshFinGistStatus();}catch(e){}
   // Reveal Restore / Reconnect controls based on capsule presence + sync-base
@@ -2759,11 +2792,11 @@ function updateGistUI(){
       const baseOk=!!(window.GistSync
         && typeof window.GistSync.effectiveBaseFor==='function'
         && window.GistSync.effectiveBaseFor(connectedId));
-      const showRec=!!token && connectedId && !baseOk;
+      const showRec=!!token && !baseOk;
       if(cur) cur.style.display=hasCur?'':'none';
       if(prv) prv.style.display=hasPrv?'':'none';
       if(rec) rec.style.display=showRec?'':'none';
-      if(bootstrapChoices) bootstrapChoices.style.display=showRec?'flex':'none';
+      if(bootstrapChoices) bootstrapChoices.style.display=(showRec&&gistBootstrapDivergedPending)?'flex':'none';
       row.style.display=(hasCur||hasPrv||showRec)?'flex':'none';
     }
   }catch(_){/*non-fatal UI wiring*/}
@@ -2775,14 +2808,18 @@ try{
     const r=document.getElementById('sync-conflict-row'); if(r) r.style.display='flex';
   });
   window.addEventListener('lifeos:gist-sync-base-updated',()=>{
+    gistBootstrapDivergedPending=false;
     const r=document.getElementById('sync-conflict-row'); if(r) r.style.display='none';
     const b=document.getElementById('sync-bootstrap-choice-row'); if(b) b.style.display='none';
+    const ob=document.getElementById('backup-sync-bootstrap-choice-row'); if(ob) ob.style.display='none';
+    updateGistUI();
   });
-  window.addEventListener('lifeos:gist-sync-base-cleared',()=>updateGistUI());
-  window.addEventListener('lifeos:gist-id-updated',()=>updateGistUI());
-  window.addEventListener('lifeos:gist-reconnect-required',()=>updateGistUI());
+  window.addEventListener('lifeos:gist-sync-base-cleared',()=>{gistBootstrapDivergedPending=false;updateGistUI();});
+  window.addEventListener('lifeos:gist-id-updated',()=>{gistBootstrapDivergedPending=false;updateGistUI();});
+  window.addEventListener('lifeos:gist-reconnect-required',()=>{gistBootstrapDivergedPending=false;updateGistUI();});
   window.addEventListener('lifeos:gist-bootstrap-diverged',()=>{
-    const b=document.getElementById('sync-bootstrap-choice-row'); if(b) b.style.display='flex';
+    gistBootstrapDivergedPending=true;
+    updateGistUI();
   });
 }catch(_){/*non-fatal*/}
 
