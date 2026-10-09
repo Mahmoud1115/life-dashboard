@@ -74,7 +74,12 @@ test('backup panel Close stays reachable on a phone viewport', async ({ page }) 
   // Populate a saved Gist token so the panel renders its longest form (the
   // Gist Sync block with connected-backup rows), matching the owner's state.
   await page.evaluate(() => {
-    try { localStorage.setItem('dune_github_token_v1', 'ghp_test_sentinel_token'); } catch (_) {}
+    try {
+      localStorage.setItem('dune_github_token_v1', 'ghp_test_sentinel_token');
+      localStorage.setItem('dune_gist_id_v1', 'g_mobile_scroll');
+      localStorage.setItem('dune_last_gist_sync_v1', JSON.stringify('2026-09-09T10:57:58.000Z'));
+      localStorage.removeItem('dune_gist_sync_base_v1');
+    } catch (_) {}
   });
 
   await page.evaluate(() => window.openBackupPanel());
@@ -100,8 +105,11 @@ test('backup panel Close stays reachable on a phone viewport', async ({ page }) 
   //    the Gist section). The header — and Close — must remain pinned in view.
   const body = overlay.locator('.backup-panel-body');
   await body.evaluate((el) => { el.scrollTop = el.scrollHeight; });
-  const gistSummary = overlay.getByText('Connect using a Gist ID', { exact: false });
+  const gistSummary = overlay.getByText('Bootstrap is required before ordinary Save or Load.', { exact: false });
+  const bootstrapBtn = overlay.locator('#backup-sync-bootstrap-btn');
   await expect(gistSummary).toBeVisible();
+  await expect(bootstrapBtn).toBeVisible();
+  await expect(bootstrapBtn).toBeInViewport({ ratio: 1 });
   await expect(closeBtn).toBeInViewport({ ratio: 1 });
 
   // 4) Close actually closes the panel (proves the button is clickable, not
