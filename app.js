@@ -1893,6 +1893,14 @@ function renderATACoverage(entries){
 /* ═══════════════════════════════════════════
    FINANCE SIMULATOR
    ═══════════════════════════════════════════ */
+let gistBootstrapDivergedPending=false;
+
+function gistBootstrapDivergedMessage(gistId){
+  const shortId=typeof gistId==='string'?gistId.slice(0,12):'';
+  return (shortId?'Connected to backup '+shortId+'…. ':'')+
+    'Local differs from remote — choose Load Remote or Use Local explicitly.';
+}
+
 (function(){
   const STORE='dune_finance_v1';
   function getInputs(){return LS.get(STORE,D.finance);}
@@ -2003,16 +2011,21 @@ function renderATACoverage(entries){
       && typeof window.GistSync.effectiveBaseFor==='function'
       && window.GistSync.effectiveBaseFor(gistId));
 
-    let cls, html, disabled;
+    let cls, html, disabled, plainText=false;
     if(!token){
       cls='fin-gist-status fgs-warn';
       html='⚠ No GitHub token saved yet — open <strong>📦 Backup</strong> in the top-right nav to add one (needs the <code>gist</code> scope).';
       disabled=true;
     } else if(!baseOk){
       cls='fin-gist-status fgs-warn';
-      html=gistId
-        ? '⚠ Bootstrap required before Save'+(lastSync?' · Historical sync only: '+new Date(lastSync).toLocaleString():'')
-        : '⚠ No connected backup — use <strong>Reconnect / bootstrap sync</strong> to find your existing Gist.';
+      if(gistBootstrapDivergedPending){
+        html=gistBootstrapDivergedMessage(gistId);
+        plainText=true;
+      } else {
+        html=gistId
+          ? '⚠ Bootstrap required before Save'+(lastSync?' · Historical sync only: '+new Date(lastSync).toLocaleString():'')
+          : '⚠ No connected backup — use <strong>Reconnect / bootstrap sync</strong> to find your existing Gist.';
+      }
       disabled=true;
     } else if(lastSync){
       const when=new Date(lastSync);
@@ -2028,7 +2041,11 @@ function renderATACoverage(entries){
     // paint every status mirror that exists on the page
     ['fin-gist-status','sync-gist-status'].forEach(id=>{
       const el=document.getElementById(id);
-      if(el){ el.className=cls; el.innerHTML=html; }
+      if(el){
+        el.className=cls;
+        if(plainText) el.textContent=html;
+        else el.innerHTML=html;
+      }
     });
     ['fin-save-gist-btn','sync-save-gist-btn','fin-load-gist-btn','sync-load-gist-btn'].forEach(id=>{
       const b=document.getElementById(id);
@@ -2722,8 +2739,6 @@ function gistUpdatedLabel(gist){
   return gist&&gist.updated_at?new Date(gist.updated_at).toLocaleString():'unknown time';
 }
 
-let gistBootstrapDivergedPending=false;
-
 function updateGistUI(){
   const sec=document.getElementById('gist-token-section');
   const btns=document.getElementById('gist-action-btns');
@@ -2765,14 +2780,16 @@ function updateGistUI(){
   if(overlayBootstrap) overlayBootstrap.style.display=needsBootstrap?'flex':'none';
   if(overlayChoices) overlayChoices.style.display=(needsBootstrap&&gistBootstrapDivergedPending)?'flex':'none';
   if(overlayHint){
-    overlayHint.style.display=needsBootstrap?'block':'none';
+    overlayHint.style.display=(needsBootstrap&&!gistBootstrapDivergedPending)?'block':'none';
     overlayHint.textContent=gistId
       ? 'This browser has a connected backup but no verified sync history. Bootstrap is required before ordinary Save or Load.'
       : 'No backup is connected to this browser. Use Reconnect / bootstrap sync to find an existing backup before ordinary Save or Load.';
   }
-  if(needsBootstrap) setGistStatus(gistId
-    ? '⚠ Sync history has not been established for this backup. Bootstrap required before Save.'
-    : '⚠ No connected backup. Use Reconnect / bootstrap sync to find your existing Gist.','warn');
+  if(needsBootstrap) setGistStatus(gistBootstrapDivergedPending
+    ? gistBootstrapDivergedMessage(gistId)
+    : gistId
+      ? '⚠ Sync history has not been established for this backup. Bootstrap required before Save.'
+      : '⚠ No connected backup. Use Reconnect / bootstrap sync to find your existing Gist.','warn');
   // Mirror the same status into the inline Finance save panel.
   if(typeof window._refreshFinGistStatus==='function') try{window._refreshFinGistStatus();}catch(e){}
   // Reveal Restore / Reconnect controls based on capsule presence + sync-base

@@ -12,7 +12,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="Dune">
-<link rel="stylesheet" href="styles.css?v=polish1">
+<link rel="stylesheet" href="styles.css?v=gistui2">
 <link rel="stylesheet" href="styles-glass.css?v=polish1">
 </head>
 <body>
@@ -556,7 +556,7 @@
   <!-- Dedicated no-base bootstrap choices. Normal Save/Load deliberately refuse until one succeeds. -->
   <div id="sync-bootstrap-choice-row" style="margin-top:12px;display:none;flex-wrap:wrap;gap:8px">
     <span style="font-family:var(--mono);font-size:11px;color:var(--tx3);width:100%;margin-bottom:4px">Connected backup and local data differ, but no accepted sync history exists. Choose the source of truth:</span>
-    <button class="fin-save-btn fin-save-gist" id="sync-bootstrap-use-local-btn" type="button" onclick="gistBootstrapUseLocal()">↑ Use Local (overwrite remote)</button>
+    <button class="fin-save-btn fin-save-danger" id="sync-bootstrap-use-local-btn" type="button" onclick="gistBootstrapUseLocal()">↑ Use Local (overwrite remote)</button>
     <button class="fin-save-btn fin-save-gist-quiet" id="sync-bootstrap-load-remote-btn" type="button" onclick="gistBootstrapLoadRemote()">↓ Load Remote (preserve local first)</button>
   </div>
 
@@ -669,7 +669,7 @@
         <div class="backup-btns">
           <button class="lb-btn lb-btn-view" id="recovery-restore-snapshot" data-testid="recovery-restore-snapshot" onclick="recoveryRestoreSnapshot()">💾 Restore latest snapshot</button>
           <button class="lb-btn lb-btn-view" id="recovery-import-backup"    data-testid="recovery-import-backup"    onclick="triggerImportFile()">⬆ Import backup file</button>
-          <button class="lb-btn lb-btn-add"  id="recovery-reset-lifeos"     data-testid="recovery-reset-lifeos"     onclick="recoveryResetLifeOS()">♻ Reset LIFE OS</button>
+          <button class="lb-btn lb-btn-danger" id="recovery-reset-lifeos" data-testid="recovery-reset-lifeos" onclick="recoveryResetLifeOS()">♻ Reset LIFE OS</button>
         </div>
         <p class="backup-hint" style="margin-top:10px">Reset replaces the Store&apos;s structured records (<code>dune_state_v4</code>) with a fresh default; legacy tab-owned sources (EASA, Apartments, Logbook Tracker + Builder, Money-Russia) and Gist credentials, snapshots, and recovery capsules are preserved. Snapshot restore rolls back to the most recent good state. Backup import replaces the backup-managed keys with the contents of the file you pick.</p>
       </div>
@@ -685,16 +685,16 @@
         <div class="backup-btns" id="gist-action-btns" style="display:none">
           <button class="lb-btn lb-btn-add" id="backup-save-gist-btn" onclick="saveToGist()">☁ Save to Gist</button>
           <button class="lb-btn lb-btn-view" id="backup-load-gist-btn" onclick="loadFromGist()">☁ Load latest</button>
+          <p class="backup-hint" id="backup-sync-bootstrap-hint" style="display:none;width:100%;margin:0">This browser has a connected backup but no verified sync history. Bootstrap is required before ordinary Save or Load.</p>
         </div>
         <div id="backup-sync-bootstrap-row" class="backup-btns" style="display:none;margin-top:10px">
           <button class="lb-btn lb-btn-add" id="backup-sync-bootstrap-btn" type="button" onclick="gistBootstrap()">🔗 Reconnect / bootstrap sync</button>
         </div>
         <div id="backup-sync-bootstrap-choice-row" class="backup-btns" style="display:none;margin-top:10px">
           <p class="backup-hint" style="width:100%;margin:0 0 4px">Local and remote data differ. Choose the source of truth only after keeping a downloaded JSON backup.</p>
-          <button class="lb-btn lb-btn-add" id="backup-sync-use-local-btn" type="button" onclick="gistBootstrapUseLocal()">↑ Use Local (overwrite remote)</button>
+          <button class="lb-btn lb-btn-danger" id="backup-sync-use-local-btn" type="button" onclick="gistBootstrapUseLocal()">↑ Use Local (overwrite remote)</button>
           <button class="lb-btn lb-btn-view" id="backup-sync-load-remote-btn" type="button" onclick="gistBootstrapLoadRemote()">↓ Load Remote (preserve local first)</button>
         </div>
-        <p class="backup-hint" id="backup-sync-bootstrap-hint" style="display:none;margin-top:10px">This browser has a connected backup but no verified sync history. Bootstrap is required before ordinary Save or Load.</p>
         <p class="backup-hint" style="margin-top:10px">One-time setup: go to <strong>github.com/settings/tokens</strong> → Generate new token (classic) → tick only <strong>gist</strong> scope → copy and paste below. Token is saved locally in your browser.</p>
       </div>
     </div>
@@ -874,7 +874,7 @@
 <script src="data.js?v=prv05"></script>
 <script src="core.js?v=phase5d"></script>
 <script src="bht.js?v=phase4a"></script>
-<script src="app.js?v=gistsync1"></script>
+<script src="app.js?v=gistsync4"></script>
 <script src="gist-sync.js?v=p1baseaware1"></script>
 <script src="bht-ui.js?v=polish1"></script>
 <script src="bht-components.js?v=phase4c"></script>
