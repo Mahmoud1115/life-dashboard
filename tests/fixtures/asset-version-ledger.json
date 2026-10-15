@@ -1,0 +1,82 @@
+{
+  "_migration-legacy-records.js": {
+    "version": "prv05",
+    "sha256": "38fce3a86fbf0e19e5602eb2debc45f52d9778c1c5864cd3760c74ea37b42914"
+  },
+  "app.js": {
+    "version": "gistsync2",
+    "sha256": "60a19172eb628fa9e38acc26e4c76d4088be1ca485f22e91219d7b90f99a5bbe"
+  },
+  "bht-analytics.js": {
+    "version": "phase5a",
+    "sha256": "d51ca7b237644dfc02553a0e38d7ace1e948d7a33b835a2c17958902313fc56e"
+  },
+  "bht-bridge.js": {
+    "version": "phase4f",
+    "sha256": "26ac900aad32cb42d389a8cf8642f8e0199433a5d5d1635c53f6a84bfebad7ec"
+  },
+  "bht-coach.js": {
+    "version": "phase4e",
+    "sha256": "ba4c81b78e693e263706f292bda4022af36556bf2ca577e5faf37c38240ea32a"
+  },
+  "bht-components.js": {
+    "version": "phase4c",
+    "sha256": "b2cc9bcd293222512ab7ab4200cddad38cef3e2fd7d417b2509e134fbf5aee6b"
+  },
+  "bht-duku.js": {
+    "version": "phase5b",
+    "sha256": "b619a0c38e6af2f29ea87b811dd827f65c0ef0a65aa8e05bec836514dc76a50e"
+  },
+  "bht-grid.js": {
+    "version": "phase5c",
+    "sha256": "2da4e5f9c645f888ad445ecba708c24537e8d7a6d6b46c5fa562744acf43d724"
+  },
+  "bht-ui.js": {
+    "version": "polish1",
+    "sha256": "4569779e1cf3535bf0ba02ec02b9a15c4af8d1508d6d69cd5361472323607d42"
+  },
+  "bht.js": {
+    "version": "phase4a",
+    "sha256": "94950ddb40fa4c9fca5b8220d2bc8d4dba689e49a15499771094208b46f3c1a0"
+  },
+  "core.js": {
+    "version": "phase5d",
+    "sha256": "63e6bb72eccd548187004161cc01438a43540a5461f9af510581795e301aa2f2"
+  },
+  "data.js": {
+    "version": "prv05",
+    "sha256": "f4996b4651e2897068de0492fbc04552efbc92becd835eaa70968ce31ee7e755"
+  },
+  "gist-sync.js": {
+    "version": "p1baseaware1",
+    "sha256": "0c093b50df87196459b7d12c32ccfe17fb3b9f4d3e49b5fac5296028384359fe"
+  },
+  "ideas.js": {
+    "version": "phase5b",
+    "sha256": "63ed61120457c3fa94fca93053a50665b7f17c13f744c5c2e1ae64494b0b4fc7"
+  },
+  "mobile-access.js": {
+    "version": "phase5a",
+    "sha256": "c357d72210fc114bc3e1ea52d4830291415c569a5456412e115dc1f1a8578a0f"
+  },
+  "money-commas.js": {
+    "version": "phase5a",
+    "sha256": "5e4945a02937540cc2c1a985fba4b53f07969291527c61920e878e9a34665827"
+  },
+  "money-custom.js": {
+    "version": "phase5c",
+    "sha256": "8a8cce60e5f6fbd6ec62869c8c6370abe949cb650184e685a06824ea3d959a52"
+  },
+  "observatory.js": {
+    "version": "f10a",
+    "sha256": "0a199903107cd63ca752403cd29ac4caff3d509b258181a0d5cf052e0f8a0855"
+  },
+  "styles-glass.css": {
+    "version": "polish1",
+    "sha256": "54d41562925ddde017449508e3b75302cba6e848e62d58cef88e4e5cda622b5f"
+  },
+  "styles.css": {
+    "version": "gistui1",
+    "sha256": "90497b0921934c3176840aba722d0b0797cab6f67fd2763b81e4d490c6e1d0a8"
+  }
+}

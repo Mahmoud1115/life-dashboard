@@ -65,7 +65,7 @@ async function waitForAppReady(page) {
 // A phone viewport small enough that the full backup-panel content (export,
 // import, recovery, and the GitHub Gist Sync block) overflows it — this is
 // the condition that hid the Close button before the fix.
-test.use({ viewport: { width: 390, height: 720 } });
+test.use({ viewport: { width: 390, height: 844 } });
 
 test('backup panel Close stays reachable on a phone viewport', async ({ page }) => {
   await page.goto(LOCAL_ORIGIN + '/');
@@ -108,6 +108,16 @@ test('backup panel Close stays reachable on a phone viewport', async ({ page }) 
   const gistSummary = overlay.getByText('Bootstrap is required before ordinary Save or Load.', { exact: false });
   const bootstrapBtn = overlay.locator('#backup-sync-bootstrap-btn');
   await expect(gistSummary).toBeVisible();
+  await expect(gistSummary.locator('xpath=..')).toHaveAttribute('id', 'gist-action-btns');
+  const saveBtn = overlay.locator('#backup-save-gist-btn');
+  const loadBtn = overlay.locator('#backup-load-gist-btn');
+  await expect(saveBtn).toBeDisabled();
+  await expect(loadBtn).toBeDisabled();
+  await expect(saveBtn).toHaveCSS('cursor', 'not-allowed');
+  await expect(saveBtn).toHaveCSS('opacity', '0.58');
+  await expect(loadBtn).toHaveCSS('cursor', 'not-allowed');
+  await expect(loadBtn).toHaveCSS('opacity', '0.58');
+  await expect(overlay.locator('#recovery-reset-lifeos')).toHaveClass(/lb-btn-danger/);
   await expect(bootstrapBtn).toBeVisible();
   await expect(bootstrapBtn).toBeInViewport({ ratio: 1 });
   await expect(closeBtn).toBeInViewport({ ratio: 1 });

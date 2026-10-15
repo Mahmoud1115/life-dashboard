@@ -2770,9 +2770,11 @@ function updateGistUI(){
       ? 'This browser has a connected backup but no verified sync history. Bootstrap is required before ordinary Save or Load.'
       : 'No backup is connected to this browser. Use Reconnect / bootstrap sync to find an existing backup before ordinary Save or Load.';
   }
-  if(needsBootstrap) setGistStatus(gistId
-    ? '⚠ Sync history has not been established for this backup. Bootstrap required before Save.'
-    : '⚠ No connected backup. Use Reconnect / bootstrap sync to find your existing Gist.','warn');
+  if(needsBootstrap) setGistStatus(gistBootstrapDivergedPending
+    ? 'Connected to backup '+gistId.slice(0,12)+'…. Local differs from remote — choose Load Remote or Use Local explicitly.'
+    : gistId
+      ? '⚠ Sync history has not been established for this backup. Bootstrap required before Save.'
+      : '⚠ No connected backup. Use Reconnect / bootstrap sync to find your existing Gist.','warn');
   // Mirror the same status into the inline Finance save panel.
   if(typeof window._refreshFinGistStatus==='function') try{window._refreshFinGistStatus();}catch(e){}
   // Reveal Restore / Reconnect controls based on capsule presence + sync-base

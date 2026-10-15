@@ -1091,6 +1091,36 @@ test.describe('lifecycle persistence (§C amendment)', () => {
     await expect(overlayBootstrap).toBeHidden();
   });
 
+  test('G-C3B-RECONNECT-DIVERGED: overlay keeps the explicit source-of-truth message after Reconnect', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    const gistId = 'g_reconnect_diverged';
+    const mock = await installGitHubMock(page, [
+      makeGistFixture({ id:gistId, backupData:{ _placeholder:true }, revision:'rev_diverged' })
+    ]);
+    await page.goto('/');
+    await waitReady(page);
+    const { data:bootData } = await bootBaseline(page);
+    setRemoteFileToData(mock, gistId, { ...bootData, dune_finance_v1:{ syntheticRemote:'different' } });
+
+    await page.evaluate(({ gistId }) => {
+      localStorage.setItem('dune_github_token_v1', 'BOOT_TOKEN');
+      localStorage.setItem('dune_gist_id_v1', gistId);
+      localStorage.removeItem('dune_gist_sync_base_v1');
+      window.updateGistUI();
+      window.openBackupPanel();
+    }, { gistId });
+
+    await page.locator('#backup-sync-bootstrap-btn').click();
+    await expect(page.locator('#backup-sync-bootstrap-choice-row')).toBeVisible();
+    await expect(page.locator('#gist-status')).toContainText(
+      'Local differs from remote — choose Load Remote or Use Local'
+    );
+    await expect(page.locator('#backup-sync-use-local-btn')).toHaveClass(/lb-btn-danger/);
+    await expect(page.locator('#sync-bootstrap-use-local-btn')).toHaveClass(/fin-save-danger/);
+    await expect(page.locator('#sync-save-gist-btn')).toHaveCSS('cursor', 'not-allowed');
+    await expect(page.locator('#sync-save-gist-btn')).toHaveCSS('opacity', '0.58');
+  });
+
   test('G-C4-MOBILE-NO-ID: token-only device exposes bootstrap instead of unusable Save/Load', async ({ page }) => {
     await page.setViewportSize({ width: 375, height: 812 });
     const gistId = 'g_mobile_no_id';
