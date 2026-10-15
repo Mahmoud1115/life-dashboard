@@ -1103,8 +1103,8 @@ test.describe('lifecycle persistence (§C amendment)', () => {
     setRemoteFileToData(mock, gistId, { ...bootData, dune_finance_v1:{ syntheticRemote:'different' } });
 
     await page.evaluate(({ gistId }) => {
-      localStorage.setItem('dune_github_token_v1', 'BOOT_TOKEN');
-      localStorage.setItem('dune_gist_id_v1', gistId);
+      localStorage.setItem('dune_github_token_v1', JSON.stringify('BOOT_TOKEN'));
+      localStorage.setItem('dune_gist_id_v1', JSON.stringify(gistId));
       localStorage.removeItem('dune_gist_sync_base_v1');
       window.updateGistUI();
       window.openBackupPanel();
@@ -1115,10 +1115,26 @@ test.describe('lifecycle persistence (§C amendment)', () => {
     await expect(page.locator('#gist-status')).toContainText(
       'Local differs from remote — choose Load Remote or Use Local'
     );
+    await expect(page.locator('#sync-gist-status')).toContainText(
+      'Local differs from remote — choose Load Remote or Use Local'
+    );
+    await expect(page.locator('#sync-gist-status')).not.toContainText(
+      'Bootstrap required before Save'
+    );
     await expect(page.locator('#backup-sync-use-local-btn')).toHaveClass(/lb-btn-danger/);
     await expect(page.locator('#sync-bootstrap-use-local-btn')).toHaveClass(/fin-save-danger/);
     await expect(page.locator('#sync-save-gist-btn')).toHaveCSS('cursor', 'not-allowed');
     await expect(page.locator('#sync-save-gist-btn')).toHaveCSS('opacity', '0.58');
+
+    const resolved = await page.evaluate(() => window.GistSync.resolveBootstrapUseLocal({ confirmed:true }));
+    expect(resolved.ok, JSON.stringify(resolved)).toBe(true);
+    await expect(page.locator('#sync-gist-status')).not.toContainText(
+      'Local differs from remote — choose Load Remote or Use Local'
+    );
+    await expect(page.locator('#sync-gist-status')).not.toContainText(
+      'Bootstrap required before Save'
+    );
+    await expect(page.locator('#sync-save-gist-btn')).toBeEnabled();
   });
 
   test('G-C4-MOBILE-NO-ID: token-only device exposes bootstrap instead of unusable Save/Load', async ({ page }) => {

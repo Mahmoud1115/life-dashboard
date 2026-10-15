@@ -6,7 +6,7 @@ tooling boundary and ADR-002 for the runtime boundary.
 ## What this suite is
 
 - **Playwright Test** runner (`@playwright/test` pinned at `1.62.1`), Chromium only.
-- Six smoke checks. Not exhaustive coverage — a floor, not a ceiling.
+- Seven checks. Not exhaustive coverage — a floor, not a ceiling.
 - Runs against a local `node tools/test-server.js` on `127.0.0.1:4173`. **Never against production GitHub Pages.**
 - All data is synthetic. Isolated Playwright browser contexts (one per test) guarantee no bleed into the developer's real `localStorage`.
 
@@ -81,7 +81,7 @@ so the fixture never depends on real internet availability:
 - **Aborted:** `fonts.googleapis.com` and `fonts.gstatic.com` — the one
   Google Fonts stylesheet in `index.html`. Response time varies enough
   to destabilize load-state waits. The site's fallback font stack renders
-  correctly without it and none of the six checks depend on which glyphs
+  correctly without it and none of the seven checks depend on which glyphs
   paint.
 - **Fulfilled with a synthetic 200:** the one specific request
   [`app.js:31`](../../app.js#L31) makes. The route handler catches every
@@ -142,6 +142,13 @@ load is a real product-behavior observation worth revisiting separately
    cross-module coupling and no `validate()` dependency. The synthetic
    marker is generated in test-runner scope, not in `window`, so it
    survives reload conceptually.
+7. **Local asset cache-bust ledger.**
+   Hashes every local script and stylesheet referenced by `index.html` and
+   compares its SHA-256 plus `?v=` value with the committed ledger. When
+   `origin/main` contains a ledger, the test also enforces that content changed
+   from that base must have a changed `?v=` value. In a checkout where Git,
+   `origin/main`, or the base ledger is unavailable, that second comparison is
+   skipped with a Playwright annotation; the current-ledger check still runs.
 
 ## Rules
 
@@ -153,3 +160,7 @@ load is a real product-behavior observation worth revisiting separately
 - If a test exposes an existing application problem, fix the underlying
   problem — do not silence the test or edit unrelated runtime code to
   make it pass.
+- After changing a local script or stylesheet, bump its `?v=` in `index.html`,
+  then run `node tools/update-asset-ledger.js`. The tool refuses to write when
+  content changed without a version bump. Use
+  `node tools/update-asset-ledger.js --check` for a read-only freshness check.
