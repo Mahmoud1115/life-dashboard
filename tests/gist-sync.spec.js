@@ -1112,6 +1112,7 @@ test.describe('lifecycle persistence (§C amendment)', () => {
 
     await page.locator('#backup-sync-bootstrap-btn').click();
     await expect(page.locator('#backup-sync-bootstrap-choice-row')).toBeVisible();
+    await expect(page.locator('#backup-sync-bootstrap-hint')).toBeHidden();
     await expect(page.locator('#gist-status')).toContainText(
       'Local differs from remote — choose Load Remote or Use Local'
     );

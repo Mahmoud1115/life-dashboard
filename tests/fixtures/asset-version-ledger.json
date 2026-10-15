@@ -4,8 +4,8 @@
     "sha256": "38fce3a86fbf0e19e5602eb2debc45f52d9778c1c5864cd3760c74ea37b42914"
   },
   "app.js": {
-    "version": "gistsync3",
-    "sha256": "185604caff5bcded24ca28fac36acd6db7aadd0acd7195403409f29c2a6f9018"
+    "version": "gistsync4",
+    "sha256": "be4d57cca0b0b26fafbd11817d92e34a36241ded38acb3c927e129476eecc291"
   },
   "bht-analytics.js": {
     "version": "phase5a",

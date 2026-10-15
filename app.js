@@ -2780,7 +2780,7 @@ function updateGistUI(){
   if(overlayBootstrap) overlayBootstrap.style.display=needsBootstrap?'flex':'none';
   if(overlayChoices) overlayChoices.style.display=(needsBootstrap&&gistBootstrapDivergedPending)?'flex':'none';
   if(overlayHint){
-    overlayHint.style.display=needsBootstrap?'block':'none';
+    overlayHint.style.display=(needsBootstrap&&!gistBootstrapDivergedPending)?'block':'none';
     overlayHint.textContent=gistId
       ? 'This browser has a connected backup but no verified sync history. Bootstrap is required before ordinary Save or Load.'
       : 'No backup is connected to this browser. Use Reconnect / bootstrap sync to find an existing backup before ordinary Save or Load.';
