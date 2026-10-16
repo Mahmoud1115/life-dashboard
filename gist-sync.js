@@ -43,6 +43,7 @@
   let _fetch = (typeof fetch === 'function') ? fetch.bind(globalThis) : null;
   let _now   = () => new Date().toISOString();
   let _syncBaseInvalidated = false;
+  let _gistReadNonce = 0;
 
   // ── SHA-256 availability (single stable hash identity; no FNV fallback) ──
   function sha256Available(){
@@ -126,8 +127,31 @@
     return normalized;
   }
 
+  // Hash the value GitHub will actually receive, not an in-memory object that
+  // JSON.stringify may transform (for example object-valued `undefined`, Date,
+  // or a custom toJSON implementation). Production backup data is normally
+  // already JSON-derived from localStorage; keeping this boundary explicit
+  // prevents future callers from creating a pre-PATCH/post-PATCH hash split.
+  function transportBackupData(dataObject){
+    // Preserve canonicalStringify's fail-closed rejection of non-finite
+    // numbers, functions, symbols, and bigint before JSON can silently coerce
+    // or drop them.
+    canonicalStringify(dataObject);
+    let serialized;
+    try { serialized = JSON.stringify(dataObject); }
+    catch(e){
+      const error = new Error('BACKUP_DATA_NOT_JSON_SERIALIZABLE');
+      error.cause = e;
+      throw error;
+    }
+    if (serialized === undefined){
+      throw new Error('BACKUP_DATA_NOT_JSON_SERIALIZABLE');
+    }
+    return JSON.parse(serialized);
+  }
+
   function backupDataHash(dataObject){
-    return canonicalHash(semanticBackupData(dataObject));
+    return canonicalHash(semanticBackupData(transportBackupData(dataObject)));
   }
 
   // ── sync-base persistence ────────────────────────────────────────────────
@@ -331,7 +355,14 @@
   // ── network helpers ──────────────────────────────────────────────────────
   async function fetchConnectedGist(token, gistId){
     if (!_fetch) throw new Error('FETCH_UNAVAILABLE');
-    const res = await _fetch('https://api.github.com/gists/' + encodeURIComponent(gistId), {
+    // Every exact-Gist read is a concurrency observation. Do not let a browser
+    // HTTP cache satisfy it with the pre-PATCH representation (notably on
+    // mobile Safari). The nonce also protects callers whose fetch/cache layer
+    // ignores Request.cache. It contains no user data or credential material.
+    const readUrl = 'https://api.github.com/gists/' + encodeURIComponent(gistId)
+      + '?_lifeos_sync_read=' + (++_gistReadNonce);
+    const res = await _fetch(readUrl, {
+      cache: 'no-store',
       headers: { 'Authorization': 'Bearer ' + token, 'Accept': 'application/vnd.github+json' }
     });
     if (!res.ok){
@@ -455,7 +486,7 @@
       const error = new Error('Local changes remain unsaved or blocked — resolve local persistence before syncing.');
       error.code = 'local-persistence-unsettled'; throw error;
     }
-    return window.getAllBackupData();
+    return transportBackupData(window.getAllBackupData());
   }
 
   // Synchronous final check: do not flush edits that arrived after capture
@@ -464,7 +495,7 @@
     try {
       if (readConnectedGistId() === gistId
           && !window.Store.hasUnsavedWork()
-          && canonicalStringify(semanticBackupData(window.getAllBackupData()))
+          && canonicalStringify(semanticBackupData(transportBackupData(window.getAllBackupData())))
             === canonicalStringify(semanticBackupData(localData))) return null;
     } catch(_) { /* fail closed */ }
     const error = 'Local data or the connection changed during sync. Review and sync again; newer edits were not acknowledged.';
@@ -1254,7 +1285,7 @@
   // ── public surface ───────────────────────────────────────────────────────
   const publicAPI = {
     // pure helpers
-    canonicalStringify, canonicalHash, semanticBackupData, backupDataHash, sha256Available,
+    canonicalStringify, canonicalHash, semanticBackupData, transportBackupData, backupDataHash, sha256Available,
     validateSyncBaseRecord, parseSyncBase,
     readSyncBase, writeSyncBase, clearSyncBase, effectiveBaseFor, writeConnectedGistId,
     readConnectedGistId, hasStoredToken,
