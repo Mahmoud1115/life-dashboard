@@ -519,6 +519,13 @@
     try { localStorage.setItem(key, val); return true; } catch(_){ return false; }
   }
 
+  // Display metadata read by app.js through LS.get (JSON.parse). A raw ISO
+  // string would parse to null there and leave the Backup pill red after a
+  // successful sync, so store the JSON form (a quoted string), like LS.set.
+  function writeDisplayDate(key){
+    return safeSet(key, JSON.stringify(new Date().toISOString()));
+  }
+
   function readConnectedGistId(){ return safeGet(GIST_ID_KEY, ''); }
   function hasStoredToken(){ return !!safeGet(TOKEN_KEY, ''); }
 
@@ -695,6 +702,12 @@
 
     switch (state.kind){
       case 'synced':
+        // Local and remote hash identically: the connected backup holds this
+        // exact data right now. Refresh the display metadata (never authoritative).
+        writeDisplayDate(LAST_SYNC_KEY);
+        writeDisplayDate(LAST_BACKUP_KEY);
+        safeSet(CHANGE_COUNT_KEY, '0');
+        refreshUI();
         setStatus('✓ Already in sync — nothing to save.', 'ok');
         return { ok:true, kind:'noop' };
 
@@ -769,8 +782,8 @@
           return saved;
         }
         // Display metadata (never authoritative)
-        safeSet(LAST_SYNC_KEY, new Date().toISOString());
-        safeSet(LAST_BACKUP_KEY, new Date().toISOString());
+        writeDisplayDate(LAST_SYNC_KEY);
+        writeDisplayDate(LAST_BACKUP_KEY);
         safeSet(CHANGE_COUNT_KEY, '0');
         refreshUI();
         setStatus('✓ Saved to the connected backup.', 'ok');
@@ -934,7 +947,7 @@
       return { ok:false, reason:'unacknowledged', detail:w };
     }
 
-    safeSet(LAST_SYNC_KEY, new Date().toISOString());
+    writeDisplayDate(LAST_SYNC_KEY);
     refreshUI();
     setStatus('✓ Loaded from the connected backup.', 'ok');
     return { ok:true, kind:'loaded', base:w.base };
@@ -1018,8 +1031,8 @@
       }
       return saved;
     }
-    safeSet(LAST_SYNC_KEY, new Date().toISOString());
-    safeSet(LAST_BACKUP_KEY, new Date().toISOString());
+    writeDisplayDate(LAST_SYNC_KEY);
+    writeDisplayDate(LAST_BACKUP_KEY);
     refreshUI();
     setStatus('✓ Keep Local resolved conflict — remote overwritten. Prior remote revision preserved for audit.', 'ok');
     return { ok:true, kind:'keep-local-resolved', priorRemoteVersion: remote.revision, base:saved.base };
@@ -1203,8 +1216,8 @@
       saved.reason === 'remote-changed-before-write' ? 'warn' : 'error');
       return saved;
     }
-    safeSet(LAST_SYNC_KEY, new Date().toISOString());
-    safeSet(LAST_BACKUP_KEY, new Date().toISOString());
+    writeDisplayDate(LAST_SYNC_KEY);
+    writeDisplayDate(LAST_BACKUP_KEY);
     safeSet(CHANGE_COUNT_KEY, '0');
     refreshUI();
     setStatus('✓ Connected using local data; remote result verified.', 'ok');
