@@ -2291,7 +2291,10 @@ function checkBackupReminder(){
   if(daysSince>7||changes>10){
     const rem=document.getElementById('backup-reminder');
     if(rem){
-      rem.textContent=last?`📦 Last backed up ${daysSince}d ago · ${changes} changes — Export?`:'📦 No backup yet — export your data';
+      // Write into the text span only: setting textContent on the container
+      // would delete the Export now / dismiss buttons.
+      const remText=document.getElementById('backup-reminder-text');
+      if(remText) remText.textContent=last?`📦 Last backed up ${daysSince}d ago · ${changes} changes — Export?`:'📦 No backup yet — export your data';
       rem.style.display='flex';
     }
   }
