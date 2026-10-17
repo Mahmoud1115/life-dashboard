@@ -383,6 +383,51 @@ test.describe('saveConnected (four-state)', () => {
     expect(mock.patches).toBe(0);
   });
 
+  test('G-SAVE-01B: verified no-op Save refreshes the last-backup date and turns the pill green', async ({ page }) => {
+    const { mock } = await primeSynced(page);
+    // Fresh browser after a JSON import: no last-backup date, red pill, stale change counter.
+    await page.evaluate(() => {
+      localStorage.removeItem('dune_last_backup_v1');
+      localStorage.setItem('dune_change_count_v1', '7');
+      window.updateBackupPill();
+    });
+    await expect(page.locator('#backup-pill')).toHaveClass(/bp-red/);
+    const before = Date.now();
+    const res = await page.evaluate(() => window.GistSync.saveConnected());
+    expect(res.ok).toBe(true);
+    expect(res.kind).toBe('noop');
+    expect(mock.patches).toBe(0);
+    const meta = await page.evaluate(() => ({
+      last: localStorage.getItem('dune_last_backup_v1'),
+      sync: localStorage.getItem('dune_last_gist_sync_v1'),
+      changes: localStorage.getItem('dune_change_count_v1'),
+    }));
+    expect(meta.last).toBeTruthy();
+    expect(Date.parse(JSON.parse(meta.last))).toBeGreaterThanOrEqual(before - 1000); // must be JSON, as app.js LS.get expects
+    expect(meta.changes).toBe('0');
+    await expect(page.locator('#backup-pill')).toHaveClass(/bp-green/);
+  });
+
+  test('G-SAVE-02B: a Save that really uploads also turns the pill green (display dates must be readable by app.js LS.get)', async ({ page }) => {
+    const { mock } = await primeSynced(page);
+    await page.evaluate(() => {
+      localStorage.removeItem('dune_last_backup_v1');
+      window.updateBackupPill();
+      localStorage.setItem('dune_finance_v1', JSON.stringify({ dirty:true }));
+    });
+    const res = await page.evaluate(() => window.GistSync.saveConnected());
+    expect(res.kind).toBe('saved');
+    expect(mock.patches).toBe(1);
+    // app.js reads these with LS.get (JSON.parse): a raw ISO string would parse to null.
+    const read = await page.evaluate(() => ({
+      backup: LS.get('dune_last_backup_v1', null),
+      sync: LS.get('dune_last_gist_sync_v1', null),
+    }));
+    expect(typeof read.backup).toBe('string');
+    expect(typeof read.sync).toBe('string');
+    await expect(page.locator('#backup-pill')).toHaveClass(/bp-green/);
+  });
+
   test('G-SAVE-02: local-only change → PATCH, reread verify, base advances (§12 cases 2/3)', async ({ page }) => {
     const { mock, bootHash } = await primeSynced(page);
     await page.evaluate(() => localStorage.setItem('dune_finance_v1', JSON.stringify({ dirty:true })));
