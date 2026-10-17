@@ -1312,7 +1312,9 @@ body.public-mode [data-private="true"]{display:none !important}
 
   /* 4) Backup toast: clear the bottom mobile nav (≈54px) */
   .backup-reminder{bottom:calc(54px + env(safe-area-inset-bottom,0px) + 14px);
-    max-width:calc(100vw - 24px);white-space:normal;text-align:center;font-size:10.5px}
+    max-width:calc(100vw - 24px);white-space:normal;text-align:center;font-size:10.5px;
+    width:max-content;flex-wrap:wrap;justify-content:center;border-radius:18px;row-gap:8px}
+  .backup-reminder #backup-reminder-text{flex:1 1 100%}
 
   /* 5) Sub-nav breadcrumb pill: tighter on narrow screens */
   .nav-sub{padding-top:6px}

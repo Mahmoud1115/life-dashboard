@@ -4,8 +4,8 @@
     "sha256": "38fce3a86fbf0e19e5602eb2debc45f52d9778c1c5864cd3760c74ea37b42914"
   },
   "app.js": {
-    "version": "gistsync4",
-    "sha256": "be4d57cca0b0b26fafbd11817d92e34a36241ded38acb3c927e129476eecc291"
+    "version": "bannerfix2",
+    "sha256": "0976e757200456403f6b31bb381ea8b31c14b70a237884e3eb97750fdc0dc903"
   },
   "bht-analytics.js": {
     "version": "phase5a",
@@ -76,7 +76,7 @@
     "sha256": "54d41562925ddde017449508e3b75302cba6e848e62d58cef88e4e5cda622b5f"
   },
   "styles.css": {
-    "version": "gistui2",
-    "sha256": "1db8b93ce194048197b4a9eb2562ef2630a8968d219d2c27354b2adb1554f777"
+    "version": "bannerfix2",
+    "sha256": "94e101930901b5e263e299d408ee3a1b375f414edaf49eed68180cf11cc5eee4"
   }
 }
