@@ -4006,12 +4006,13 @@
   // ──────────────────────────────────────────────
   const derive = {
     monthlyExpenses(s) {
-      const e = (s || state).money.expenses;
-      return (e.rent||0)+(e.food||0)+(e.transport||0)+(e.utilities||0)+(e.phone||0)+(e.family_transfer||0)+(e.other||0)+(e.mai||0);
+      const money = (s || state).money;
+      const e = money.expenses;
+      return (e.rent||0)+(e.food||0)+(e.transport||0)+(e.utilities||0)+(e.phone||0)+(e.family_transfer||0)+(e.other||0)+(e.mai||0)+(money.custom_expense_total||0);
     },
     monthlySurplus(s) {
       s = s || state;
-      return s.money.salary_net - derive.monthlyExpenses(s);
+      return s.money.salary_net + (s.money.custom_income_total||0) - derive.monthlyExpenses(s);
     },
     saveTargetHitPct(s) {
       s = s || state;

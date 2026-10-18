@@ -1305,6 +1305,7 @@ function renderMetricCards(){
   // EASA
   const easaSt=LS.get('dune_easa_v1',{});
   const easaDone=D.easa.filter(m=>{const s=easaSt[m.id]||{};return (s.status||m.status)==='done';}).length;
+  const easaTotal=D.easa.length;
 
   // Logbook — R7-safe: filter to real object rows so a malformed
   // imported member (null / primitive / hostile toString) cannot
@@ -1344,8 +1345,8 @@ function renderMetricCards(){
       mSav>0?targetPct+'% of target · ≈ $'+mSavUSD+'/mo':'Set numbers in Finance tab',
       mSav>=target?'var(--green)':mSav>=target*0.7?'var(--amber)':mSav>0?'var(--red)':'var(--tx3)',true),
     card('📚','EASA B1.1',
-      easaDone+'/15',
-      easaDone===0?'M15 in progress · exam-ready Oct':easaDone+' done · '+(15-easaDone)+' remaining',
+      easaDone+'/'+easaTotal,
+      easaDone===0?'M15 in progress · exam-ready Oct':easaDone+' done · '+(easaTotal-easaDone)+' remaining',
       easaDone>=10?'var(--green)':easaDone>=5?'var(--amber)':'var(--tx3)',false),
     card('⏱','M15 Target',
       dM15<0?'✓':dM15+'d',
@@ -1438,12 +1439,13 @@ if(window.Store){
   function liveGoalsHTML(){
     if(!window.Store) return '';
     const s=Store.raw(), d=Store.derive;
+    const easa=d.easaProgress(s);
     const cards=[
       {title:'55k Monthly Savings',pct:Math.min(100,d.saveTargetHitPct(s)),
         sub:d.monthlySurplus(s).toLocaleString()+' ₽ surplus / '+ (s.money.save_target).toLocaleString()+' ₽ target',
         link:'finance'},
-      {title:'EASA Part-66 B1.1',pct:d.easaProgress(s).pct,
-        sub:d.easaProgress(s).done+' of 15 modules done',link:'easa'}
+      {title:'EASA Part-66 B1.1',pct:easa.pct,
+        sub:easa.done+' of '+easa.total+' modules done',link:'easa'}
     ];
     return '<div class="live-goals-banner">⚡ Live goals — computed automatically from your Money &amp; EASA data</div>'+
       cards.map(c=>'<div class="goal-card goal-card-live" onclick="show(\''+c.link+'\')" style="cursor:pointer">'+
@@ -1523,6 +1525,9 @@ if(window.Store){
 (function(){
   const STORE='dune_easa_v1';
   function getStored(){return LS.get(STORE,{});}
+  function refreshStore(stored){
+    if(window.Store&&typeof window.Store.set==='function') window.Store.set('easa',stored);
+  }
   function renderEasa(){
     const stored=getStored();
     const container=document.getElementById('easa-grid');
@@ -1532,13 +1537,14 @@ if(window.Store){
     // stats
     const totalDone=D.easa.filter(m=>{ const s=stored[m.id]||{}; return (s.status||m.status)==='done'; }).length;
     const totalStudying=D.easa.filter(m=>{ const s=stored[m.id]||{}; return (s.status||m.status)==='studying'; }).length;
-    const totalPct=Math.round(D.easa.reduce((a,m)=>{ const s=stored[m.id]||{}; return a+(s.progress!==undefined?s.progress:m.progress); },0)/D.easa.length);
+    const totalModules=D.easa.length;
+    const totalPct=totalModules?Math.round(D.easa.reduce((a,m)=>{ const s=stored[m.id]||{}; return a+(s.progress!==undefined?s.progress:m.progress); },0)/totalModules):0;
     const statsEl=document.getElementById('easa-stats');
     if(statsEl) statsEl.innerHTML=
-      '<div class="lb-stat"><div class="lb-stat-val">'+totalDone+'/15</div><div class="lb-stat-label">Modules Done</div></div>'+
+      '<div class="lb-stat"><div class="lb-stat-val">'+totalDone+'/'+totalModules+'</div><div class="lb-stat-label">Modules Done</div></div>'+
       '<div class="lb-stat"><div class="lb-stat-val">'+totalStudying+'</div><div class="lb-stat-label">Studying</div></div>'+
       '<div class="lb-stat"><div class="lb-stat-val">'+totalPct+'%</div><div class="lb-stat-label">Avg Progress</div></div>'+
-      '<div class="lb-stat"><div class="lb-stat-val">'+(15-totalDone-totalStudying)+'</div><div class="lb-stat-label">Not Started</div></div>';
+      '<div class="lb-stat"><div class="lb-stat-val">'+(totalModules-totalDone-totalStudying)+'</div><div class="lb-stat-label">Not Started</div></div>';
     container.innerHTML=D.easa.map(m=>{
       const s=stored[m.id]||{};
       const pct=s.progress!==undefined?s.progress:m.progress;
@@ -1566,6 +1572,7 @@ if(window.Store){
     if(!d[id])d[id]={};
     d[id].progress=Math.min(100,Math.max(0,parseInt(val)||0));
     if(!LS.set('dune_easa_v1',d)){showStorageWriteFailure();return;}
+    refreshStore(d);
     renderEasa();
   };
   window.updateEasaStatus=function(id,val){
@@ -1574,6 +1581,7 @@ if(window.Store){
     d[id].status=val;
     if(val==='done') d[id].progress=100;
     if(!LS.set('dune_easa_v1',d)){showStorageWriteFailure();return;}
+    refreshStore(d);
     renderEasa();
   };
   document.addEventListener('DOMContentLoaded',renderEasa);
@@ -1992,10 +2000,11 @@ function gistBootstrapDivergedMessage(gistId){
     const v=getInputs();
     if(!v[phase]) v[phase]={};
     v[phase][field]=parseFloat(val)||0;
-    if(!saveInputs(v)){showStorageWriteFailure();return;}
+    if(!saveInputs(v)){showStorageWriteFailure();return false;}
     renderOutputs();
     flashSavedInd();
     if(typeof bumpChangeCount==='function') bumpChangeCount();
+    return true;
   };
   window.saveFinanceNow=function(){
     // values are already persisted on every keystroke — this re-writes and confirms
@@ -4280,7 +4289,7 @@ window.aptToggleWinner=function(id){
         {emoji:'💰', label:'Monthly Surplus', value: (surplus >= 0 ? '+' : '') + surplus.toLocaleString() + ' ₽',
           sub: targetPct + '% of 55k target',
           color: surplus >= target ? 'var(--green)' : surplus >= target*0.7 ? 'var(--amber)' : 'var(--red)'},
-        {emoji:'📚', label:'EASA B1.1', value: easa.done + '/15',
+        {emoji:'📚', label:'EASA B1.1', value: easa.done + '/' + easa.total,
           sub: easa.pct + '% average progress',
           color: easa.done >= 10 ? 'var(--green)' : easa.done >= 5 ? 'var(--amber)' : 'var(--tx3)'},
         {emoji:'✈️', label:'Career', value: careerM + ' mo',
@@ -4314,7 +4323,7 @@ window.aptToggleWinner=function(id){
         { name: '55k Monthly Savings', pct: surplusPct,
           sub: surplus.toLocaleString() + ' ₽ surplus · target ' + target.toLocaleString() + ' ₽' },
         { name: 'EASA Part-66 B1.1', pct: easa.pct,
-          sub: easa.done + ' of 15 modules done · ' + (15 - easa.done) + ' to go' },
+          sub: easa.done + ' of ' + easa.total + ' modules done · ' + (easa.total - easa.done) + ' to go' },
       ];
       el.innerHTML = items.map(g =>
         '<div class="today-goal-row">' +
@@ -4367,10 +4376,17 @@ window.aptToggleWinner=function(id){
     };
     const orig = window.finInputChange;
     window.finInputChange = function (phase, field, val) {
-      if (typeof orig === 'function') orig.call(this, phase, field, val);
+      const saved = typeof orig === 'function' ? orig.call(this, phase, field, val) : false;
+      if (saved !== true) return false;
       if (phase === 'russia' && fieldMap[field]) {
         Store.set(fieldMap[field], parseFloat(val) || 0);
       }
+      return true;
+    };
+    const origRecompute = window.finRecompute;
+    window.finRecompute = function () {
+      if (typeof origRecompute === 'function') origRecompute.apply(this, arguments);
+      seedGen2FromGen1();
     };
 
     // Narrow one-time bootstrap: if the canonical Gen-1 key is genuinely
@@ -4416,6 +4432,11 @@ window.aptToggleWinner=function(id){
         const v = r[gen1Field];
         if (typeof v === 'number') Store.set(gen2Path, v);
       }
+      const sumRows = rows => Array.isArray(rows)
+        ? rows.reduce((sum, row) => sum + (parseFloat(row && row.amount) || 0), 0)
+        : 0;
+      Store.set('money.custom_income_total', sumRows(r.customIncome));
+      Store.set('money.custom_expense_total', sumRows(r.customExpenses));
     }
     seedGen2FromGen1();
 
