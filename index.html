@@ -27,7 +27,7 @@
     <div class="stat"><div class="sv" data-private-val="130K ₽" data-mask="[•••]">130K ₽</div><div class="sl">net / month</div></div>
     <div class="stat"><div class="sv" data-private-val="55K ₽" data-mask="[•••]">55K ₽</div><div class="sl">saved / month</div></div>
     <div class="stat"><div class="sv" data-private-val="660K ₽" data-mask="[•••]">660K ₽</div><div class="sl">saved / year</div></div>
-    <div class="stat"><div class="sv">15</div><div class="sl">EASA modules</div></div>
+    <div class="stat"><div class="sv">15</div><div class="sl">Training Log Book modules</div></div>
     <div class="stat"><div class="sv">CFM56</div><div class="sl">engine mastery</div></div>
   </div>
 </div>
@@ -408,7 +408,7 @@
 
 <!-- EASA MODULE TRACKER -->
 <section class="sec" id="easa">
-<div class="sec-hd"><div class="sec-num">Live OS — EASA</div><h2 class="sec-title">EASA Part-66 —<br><em>Module Tracker</em></h2><p class="sec-intro">Track all 15 modules toward your B1.1 license. Update progress and status directly from here.</p></div>
+<div class="sec-hd"><div class="sec-num">Live OS — Training Log Book</div><h2 class="sec-title">Training Log Book —<br><em>Module Tracker</em></h2><p class="sec-intro">Track all 15 modules toward your B1.1 license. Update progress and status directly from here.</p></div>
 <div id="easa-stats" class="lb-stats-grid"></div>
 <div id="easa-grid" class="easa-grid"></div>
 </section>
@@ -671,7 +671,7 @@
           <button class="lb-btn lb-btn-view" id="recovery-import-backup"    data-testid="recovery-import-backup"    onclick="triggerImportFile()">⬆ Import backup file</button>
           <button class="lb-btn lb-btn-danger" id="recovery-reset-lifeos" data-testid="recovery-reset-lifeos" onclick="recoveryResetLifeOS()">♻ Reset LIFE OS</button>
         </div>
-        <p class="backup-hint" style="margin-top:10px">Reset replaces the Store&apos;s structured records (<code>dune_state_v4</code>) with a fresh default; legacy tab-owned sources (EASA, Apartments, Logbook Tracker + Builder, Money-Russia) and Gist credentials, snapshots, and recovery capsules are preserved. Snapshot restore rolls back to the most recent good state. Backup import replaces the backup-managed keys with the contents of the file you pick.</p>
+        <p class="backup-hint" style="margin-top:10px">Reset replaces the Store&apos;s structured records (<code>dune_state_v4</code>) with a fresh default; legacy tab-owned sources (Training Log Book, Apartments, Logbook Tracker + Builder, Money-Russia) and Gist credentials, snapshots, and recovery capsules are preserved. Snapshot restore rolls back to the most recent good state. Backup import replaces the backup-managed keys with the contents of the file you pick.</p>
       </div>
 
       <div class="backup-divider"></div>
@@ -740,7 +740,7 @@
       var friendly = {
         bht: 'Habits', logbook: 'Logbook', career: 'Career', ideas: 'Ideas',
         money: 'Finance', reviews: 'Reviews', decisions: 'Decisions',
-        timeline: 'Timeline', qatarVisit: 'Qatar visit', easa: 'EASA',
+        timeline: 'Timeline', qatarVisit: 'Qatar visit', easa: 'Training Log Book',
         goals: 'Goals', todayFocus: 'Today focus', apartments: 'Apartments',
         about: 'About', sbTasks: 'Study blocks', meta: 'App metadata'
       };
@@ -874,7 +874,7 @@
 <script src="data.js?v=prv05"></script>
 <script src="core.js?v=phase5e"></script>
 <script src="bht.js?v=phase4a"></script>
-<script src="app.js?v=derivedlinks5"></script>
+<script src="app.js?v=traininglogbook1"></script>
 <script src="gist-sync.js?v=pillfix1"></script>
 <script src="bht-ui.js?v=polish1"></script>
 <script src="bht-components.js?v=phase4c"></script>

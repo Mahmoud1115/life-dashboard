@@ -715,7 +715,7 @@ const NAV_GROUPS={
   home:      {primary:'home',           subs:[]},
   money:     {primary:'finance',        subs:[]},
   goals:     {primary:'progress',       subs:[]},
-  career:    {primary:'career-tracker', subs:[{id:'easa',label:'EASA Modules'},{id:'logbook',label:'Logbook'}]},
+  career:    {primary:'career-tracker', subs:[{id:'easa',label:'Training Log Book'},{id:'logbook',label:'Logbook'}]},
   documents: {primary:'passport',       subs:[{id:'claims',label:'Claims'},{id:'deadlines',label:'Deadlines'}]},
   about:     {primary:'aboutyou',       subs:[{id:'timeline',label:'Life Timeline'}]},
   sync:      {primary:'sync',           subs:[]},
@@ -1127,7 +1127,7 @@ const SEC_LABELS={
   home:'📅 Today',
   progress:'🎯 All Goals',
   'career-tracker':'✈️ Career Tracker',
-  easa:'✈️ EASA Modules',
+  easa:'✈️ Training Log Book',
   logbook:'✈️ Logbook',
   passport:'🛂 Documents',
   claims:'🛂 Claims Register',
@@ -1140,7 +1140,7 @@ const SEC_LABELS={
 };
 
 const GROUP_PILLS={
-  'career-tracker':[{id:'easa',label:'EASA Modules'},{id:'logbook',label:'Logbook'}],
+  'career-tracker':[{id:'easa',label:'Training Log Book'},{id:'logbook',label:'Logbook'}],
   passport:[{id:'claims',label:'Claims'},{id:'deadlines',label:'Deadlines'}],
   // aboutyou intentionally omitted — the top sub-nav already exposes Life Timeline,
   // and duplicating the pill inside the dark reading-mode band looks orphaned.
@@ -1344,7 +1344,7 @@ function renderMetricCards(){
       mSav>0?'₽'+Math.round(mSav/1000)+'k':'₽—',
       mSav>0?targetPct+'% of target · ≈ $'+mSavUSD+'/mo':'Set numbers in Finance tab',
       mSav>=target?'var(--green)':mSav>=target*0.7?'var(--amber)':mSav>0?'var(--red)':'var(--tx3)',true),
-    card('📚','EASA B1.1',
+    card('📚','Training Log Book',
       easaDone+'/'+easaTotal,
       easaDone===0?'M15 in progress · exam-ready Oct':easaDone+' done · '+(easaTotal-easaDone)+' remaining',
       easaDone>=10?'var(--green)':easaDone>=5?'var(--amber)':'var(--tx3)',false),
@@ -1376,7 +1376,7 @@ function renderHome(){
   const foundationEnd=new Date('2026-09-01');
   let phase,phaseSub;
   if(now<foundationEnd){phase='Foundation';phaseSub='АэроТраст start · 55k system live · logbook day one · MAI application';}
-  else{phase='Build Mode';phaseSub='CFM56 mastery · EASA modules · certificates · 55k every month';}
+  else{phase='Build Mode';phaseSub='CFM56 mastery · Training Log Book · certificates · 55k every month';}
   const phEl=document.getElementById('home-phase-name');
   const phSub=document.getElementById('home-phase-sub');
   if(phEl) phEl.textContent=phase;
@@ -1444,10 +1444,10 @@ if(window.Store){
       {title:'55k Monthly Savings',pct:Math.min(100,d.saveTargetHitPct(s)),
         sub:d.monthlySurplus(s).toLocaleString()+' ₽ surplus / '+ (s.money.save_target).toLocaleString()+' ₽ target',
         link:'finance'},
-      {title:'EASA Part-66 B1.1',pct:easa.pct,
+      {title:'Training Log Book',pct:easa.pct,
         sub:easa.done+' of '+easa.total+' modules done',link:'easa'}
     ];
-    return '<div class="live-goals-banner">⚡ Live goals — computed automatically from your Money &amp; EASA data</div>'+
+    return '<div class="live-goals-banner">⚡ Live goals — computed automatically from your Money &amp; Training Log Book data</div>'+
       cards.map(c=>'<div class="goal-card goal-card-live" onclick="show(\''+c.link+'\')" style="cursor:pointer">'+
         '<div class="goal-status-dot gs-active"></div>'+
         '<div class="goal-main">'+
@@ -2433,7 +2433,7 @@ window.recoveryResetLifeOS=async function(){
   if(!window.Store||typeof window.Store.reset!=='function'){
     showBackupToast('⚠ Reset unavailable');return false;
   }
-  const confirmed=confirm('Reset LIFE OS structured state?\n\nThis replaces the Store\'s structured records (dune_state_v4 — BHT, Career, About, Today, Reviews, Decisions, Ideas, Timeline, Goals/Deadlines/Claims/Risks) with a fresh default. Legacy tab-owned sources (EASA, Apartments, Logbook Tracker + Builder, Money-Russia) are NOT erased. Gist credentials, sync base, snapshots, and recovery capsules are also preserved. Cannot be undone for the parts it does clear. Export a backup first if you might want any of the affected data back.');
+  const confirmed=confirm('Reset LIFE OS structured state?\n\nThis replaces the Store\'s structured records (dune_state_v4 — BHT, Career, About, Today, Reviews, Decisions, Ideas, Timeline, Goals/Deadlines/Claims/Risks) with a fresh default. Legacy tab-owned sources (Training Log Book, Apartments, Logbook Tracker + Builder, Money-Russia) are NOT erased. Gist credentials, sync base, snapshots, and recovery capsules are also preserved. Cannot be undone for the parts it does clear. Export a backup first if you might want any of the affected data back.');
   if(!confirmed) return false;
   const dispatched=window.Store.reset({force:true});
   if(!dispatched){
@@ -4289,7 +4289,7 @@ window.aptToggleWinner=function(id){
         {emoji:'💰', label:'Monthly Surplus', value: (surplus >= 0 ? '+' : '') + surplus.toLocaleString() + ' ₽',
           sub: targetPct + '% of 55k target',
           color: surplus >= target ? 'var(--green)' : surplus >= target*0.7 ? 'var(--amber)' : 'var(--red)'},
-        {emoji:'📚', label:'EASA B1.1', value: easa.done + '/' + easa.total,
+        {emoji:'📚', label:'Training Log Book', value: easa.done + '/' + easa.total,
           sub: easa.pct + '% average progress',
           color: easa.done >= 10 ? 'var(--green)' : easa.done >= 5 ? 'var(--amber)' : 'var(--tx3)'},
         {emoji:'✈️', label:'Career', value: careerM + ' mo',
@@ -4322,7 +4322,7 @@ window.aptToggleWinner=function(id){
       const items = [
         { name: '55k Monthly Savings', pct: surplusPct,
           sub: surplus.toLocaleString() + ' ₽ surplus · target ' + target.toLocaleString() + ' ₽' },
-        { name: 'EASA Part-66 B1.1', pct: easa.pct,
+        { name: 'Training Log Book', pct: easa.pct,
           sub: easa.done + ' of ' + easa.total + ' modules done · ' + (easa.total - easa.done) + ' to go' },
       ];
       el.innerHTML = items.map(g =>
@@ -4342,7 +4342,7 @@ window.aptToggleWinner=function(id){
       if (phEl) phEl.textContent = now < foundationEnd ? 'Foundation' : 'Build Mode';
       if (subEl) subEl.textContent = now < foundationEnd
         ? 'АэроТраст start · 55k system live · logbook day one · MAI application'
-        : 'CFM56 mastery · EASA modules · certificates · 55k every month';
+        : 'CFM56 mastery · Training Log Book · certificates · 55k every month';
     }
     Store.subscribe('*', s => {
       try { renderMetrics(s); renderGoalsStrip(s); renderPhase(s); }
