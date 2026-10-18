@@ -126,6 +126,9 @@ test('C-03b — EASA progress restored into storage reaches Today and Goals afte
   const moduleCount = await page.evaluate(() => D.easa.length);
   await expect(page.locator('#today-goals-strip .today-goal-row').filter({ hasText: 'EASA Part-66' }))
     .toContainText(`2 of ${moduleCount} modules done`);
+  // Make sure the Store wrapper is durably written, so the next boot loads it as-is (no legacy re-derivation).
+  await page.waitForFunction(() => !!localStorage.getItem('dune_state_v4'));
+  await page.waitForTimeout(800);
   // Simulate a restore/import that rewrites the Gen-1 key behind the Store's back.
   await page.evaluate(() => localStorage.setItem('dune_easa_v1', JSON.stringify({ ea01: { status: 'done', progress: 100 } })));
   await page.reload();

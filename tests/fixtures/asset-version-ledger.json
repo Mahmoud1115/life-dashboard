@@ -4,8 +4,8 @@
     "sha256": "38fce3a86fbf0e19e5602eb2debc45f52d9778c1c5864cd3760c74ea37b42914"
   },
   "app.js": {
-    "version": "derivedlinks2",
-    "sha256": "1ffca79722fa40c951949dfe2a805d38f9775287248ecdac55f352262af38a7f"
+    "version": "derivedlinks4",
+    "sha256": "a2ae852539b200ed47b24cd0ff90dd0a4ed73f84c069c978c795fe7873135e15"
   },
   "bht-analytics.js": {
     "version": "phase5a",

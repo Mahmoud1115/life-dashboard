@@ -4505,6 +4505,13 @@ window.aptToggleWinner=function(id){
     Store.subscribe('about', inject);
   }
 
+  // Boot/restore reconciliation for EASA: dune_easa_v1 (Gen-1) is the writer, state.easa the shadow Today/Goals read.
+  // Store.set is a no-op when equal, so this is safe on every load.
+  function bridgeEasa() {
+    const stored = LS.get('dune_easa_v1', {});
+    if (stored && typeof stored === 'object' && !Array.isArray(stored)) Store.set('easa', stored);
+  }
+
   // ─── INIT ──────────────────────────────────────────────────
   function init() {
     try { wireFocus(); } catch (e) { console.error(e); }
@@ -4513,6 +4520,7 @@ window.aptToggleWinner=function(id){
     try { wireTimeline(); } catch (e) { console.error(e); }
     try { wireToday(); } catch (e) { console.error(e); }
     try { bridgeFinance(); } catch (e) { console.error(e); }
+    try { bridgeEasa(); } catch (e) { console.error(e); }
     try { if (window.LOGBOOK && window.LOGBOOK.reconcile) window.LOGBOOK.reconcile(); } catch (e) { console.error(e); }
     try { wireAboutMeta(); } catch (e) { console.error(e); }
     console.log('[Phase1] reactive modules wired. Schema v' + Store.SCHEMA_VERSION);
