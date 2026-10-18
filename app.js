@@ -13,6 +13,11 @@ function showStorageWriteFailure(){
   if(typeof showBackupToast==='function') showBackupToast('⚠ Storage write failed — your input is still here. Free browser storage and try again.');
 }
 
+let _commitBusy=false;
+function showStorageRollbackFailure(){
+  if(typeof showBackupToast==='function') showBackupToast('⚠ Storage write failed and could not be undone. Reload the page before saving again.');
+}
+
 async function commitStoreWrite(path,value){
   const before=Store.get(path);
   const accepted=Store.set(path,value);
@@ -25,8 +30,8 @@ async function commitStoreWrite(path,value){
   // Store writes are optimistic. Put the visible state back and collapse the
   // failed CAS pair so a retry cannot duplicate the retained form input.
   const rolledBack=Store.set(path,before);
-  if(rolledBack&&rolledBack.ok===true){ try{await Store.flushNow();}catch(e){} }
-  showStorageWriteFailure();
+  if(rolledBack&&rolledBack.ok===true){ try{await Store.flushNow();}catch(e){} showStorageWriteFailure(); }
+  else showStorageRollbackFailure();
   return false;
 }
 
@@ -4125,40 +4130,48 @@ window.aptToggleWinner=function(id){
     if (d) d.hidden = tab !== 'decisions';
   };
   window.saveReview = async function () {
-    const r = {
-      at: new Date().toISOString(),
-      week: document.getElementById('rev-week').value,
-      wins: document.getElementById('rev-wins').value.trim(),
-      problems: document.getElementById('rev-problems').value.trim(),
-      lessons: document.getElementById('rev-lessons').value.trim(),
-      next: document.getElementById('rev-next').value.trim()
-    };
-    if (!r.wins && !r.problems && !r.lessons && !r.next) {
-      alert('Add at least one note before saving.');
-      return;
-    }
-    const cur = Store.get('reviews') || [];
-    if(!await commitStoreWrite('reviews',cur.concat([r]))) return;
-    ['rev-wins','rev-problems','rev-lessons','rev-next'].forEach(id => {
-      const e = document.getElementById(id); if (e) e.value = '';
-    });
-    flashInd('review-saved-ind');
+    if (_commitBusy) return;
+    _commitBusy = true;
+    try {
+      const r = {
+        at: new Date().toISOString(),
+        week: document.getElementById('rev-week').value,
+        wins: document.getElementById('rev-wins').value.trim(),
+        problems: document.getElementById('rev-problems').value.trim(),
+        lessons: document.getElementById('rev-lessons').value.trim(),
+        next: document.getElementById('rev-next').value.trim()
+      };
+      if (!r.wins && !r.problems && !r.lessons && !r.next) {
+        alert('Add at least one note before saving.');
+        return;
+      }
+      const cur = Store.get('reviews') || [];
+      if(!await commitStoreWrite('reviews',cur.concat([r]))) return;
+      ['rev-wins','rev-problems','rev-lessons','rev-next'].forEach(id => {
+        const e = document.getElementById(id); if (e) e.value = '';
+      });
+      flashInd('review-saved-ind');
+    } finally { _commitBusy = false; }
   };
   window.saveDecision = async function () {
-    const d = {
-      at: new Date().toISOString(),
-      title: document.getElementById('dec-title').value.trim(),
-      reasoning: document.getElementById('dec-reasoning').value.trim(),
-      expected: document.getElementById('dec-expected').value.trim(),
-      success: document.getElementById('dec-success').value.trim()
-    };
-    if (!d.title) { alert('Add a title for the decision.'); return; }
-    const cur = Store.get('decisions') || [];
-    if(!await commitStoreWrite('decisions',cur.concat([d]))) return;
-    ['dec-title','dec-reasoning','dec-expected','dec-success'].forEach(id => {
-      const e = document.getElementById(id); if (e) e.value = '';
-    });
-    flashInd('decision-saved-ind');
+    if (_commitBusy) return;
+    _commitBusy = true;
+    try {
+      const d = {
+        at: new Date().toISOString(),
+        title: document.getElementById('dec-title').value.trim(),
+        reasoning: document.getElementById('dec-reasoning').value.trim(),
+        expected: document.getElementById('dec-expected').value.trim(),
+        success: document.getElementById('dec-success').value.trim()
+      };
+      if (!d.title) { alert('Add a title for the decision.'); return; }
+      const cur = Store.get('decisions') || [];
+      if(!await commitStoreWrite('decisions',cur.concat([d]))) return;
+      ['dec-title','dec-reasoning','dec-expected','dec-success'].forEach(id => {
+        const e = document.getElementById(id); if (e) e.value = '';
+      });
+      flashInd('decision-saved-ind');
+    } finally { _commitBusy = false; }
   };
   window.deleteReview = function (i) {
     if (!confirm('Delete this review?')) return;
