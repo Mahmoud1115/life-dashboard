@@ -472,9 +472,16 @@ if (window.Store && typeof window.Store.onSave === 'function') {
   // invocation by setting `window.__prv05DisableBootHydration = true`
   // in an `addInitScript`. Production runs never touch this global.
   if (window.__prv05DisableBootHydration !== true) {
-    hydratePreservationRecordsOnce().catch((e) => {
-      try { console.warn('[PRV-0.5 R2 hydrate] boot init exception', e); } catch (_) {}
-    });
+    const startBootHydration = () => {
+      hydratePreservationRecordsOnce().catch((e) => {
+        try { console.warn('[PRV-0.5 R2 hydrate] boot init exception', e); } catch (_) {}
+      });
+    };
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', startBootHydration, { once: true });
+    } else {
+      startBootHydration();
+    }
   }
 }
 

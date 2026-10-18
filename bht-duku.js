@@ -27,17 +27,26 @@
   // ONE-TIME MIGRATION · consolidate to a single DUKU habit
   // ──────────────────────────────────────────────
   function migrateToDuku() {
+    if (typeof global.Store.getDurabilityBlocker === 'function'
+        && global.Store.getDurabilityBlocker()) {
+      return { ok: false, deferred: true };
+    }
+
     const slice = global.Store.get('bht') || {};
-    if (slice.meta && slice.meta.dukuMigrated) return;
+    if (slice.meta && slice.meta.dukuMigrated) return { ok: true, skipped: true };
 
     let habits = (slice.habits || []).slice();
+    let entries = (slice.entries || []).slice();
     if (habits.length === 0) {
       // No habits at all — create DUKU from scratch
-      const newHabit = global.BHT.addHabit({
+      const newHabit = {
+        id: 'b_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
         name: HABIT_NAME,
         category: 'focus',
-        severityWeight: 3
-      });
+        severityWeight: 3,
+        archived: false,
+        createdAt: new Date().toISOString()
+      };
       habits = [newHabit];
     } else {
       // Pick a keeper: first non-archived, else first
@@ -55,20 +64,26 @@
         });
         return Object.assign({}, h, { archived: true });
       });
-      const entries = (slice.entries || []).map(e =>
+      entries = entries.map(e =>
         Object.assign({}, e, { habitId: keeperId }));
-
-      global.Store.set('bht.habits', habits);
-      global.Store.set('bht.entries', entries);
     }
 
-    const meta = global.Store.get('bht.meta') || {};
+    const habitsWrite = global.Store.set('bht.habits', habits);
+    if (!habitsWrite || !habitsWrite.ok) return habitsWrite || { ok: false };
+    const entriesWrite = global.Store.set('bht.entries', entries);
+    if (!entriesWrite || !entriesWrite.ok) return entriesWrite || { ok: false };
+
+    const meta = Object.assign({}, global.Store.get('bht.meta') || {});
     meta.dukuMigrated = true;
     meta.initialized = true;
-    global.Store.set('bht.meta', meta);
+    const metaWrite = global.Store.set('bht.meta', meta);
+    if (!metaWrite || !metaWrite.ok) return metaWrite || { ok: false };
+    return { ok: true };
   }
 
-  // Run synchronously at script load — before any boot() defers
+  // Run synchronously at script load — before any boot() defers. If a
+  // legacy conversion is pending, leave the one-time migration untouched;
+  // the next page load retries after the converted wrapper is authoritative.
   migrateToDuku();
 
   // ──────────────────────────────────────────────

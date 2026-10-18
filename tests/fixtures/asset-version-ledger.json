@@ -4,8 +4,8 @@
     "sha256": "38fce3a86fbf0e19e5602eb2debc45f52d9778c1c5864cd3760c74ea37b42914"
   },
   "app.js": {
-    "version": "storagefix5",
-    "sha256": "5facadb5fdaf7d6876756f2a973310c1d06a796ecc1bd294a955a946de3df11a"
+    "version": "bootorder1",
+    "sha256": "23ddfe899ff68e5f857f48d03819fcfad8726044225c64a5b225fab71877c891"
   },
   "bht-analytics.js": {
     "version": "phase5b",
@@ -24,8 +24,8 @@
     "sha256": "b5922d59896021105af90783c2a887e5d471545e465429613d63653a28fd9065"
   },
   "bht-duku.js": {
-    "version": "phase5c",
-    "sha256": "92e525a8841662f48b68d5ee341a5c29f8031569fe25a4af91d2cbf366f9d6d5"
+    "version": "bootorder1",
+    "sha256": "cd1c49ca0e026344e9b010706294d268c4f5332528ef54b1ecf6b855c073b861"
   },
   "bht-grid.js": {
     "version": "phase5c",
