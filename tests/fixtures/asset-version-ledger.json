@@ -4,8 +4,8 @@
     "sha256": "38fce3a86fbf0e19e5602eb2debc45f52d9778c1c5864cd3760c74ea37b42914"
   },
   "app.js": {
-    "version": "bannerfix2",
-    "sha256": "0976e757200456403f6b31bb381ea8b31c14b70a237884e3eb97750fdc0dc903"
+    "version": "storagefix4",
+    "sha256": "629214456126e6156607181b33c43c4bca04cea08c52b138588331e7312d7001"
   },
   "bht-analytics.js": {
     "version": "phase5a",
@@ -64,8 +64,8 @@
     "sha256": "5e4945a02937540cc2c1a985fba4b53f07969291527c61920e878e9a34665827"
   },
   "money-custom.js": {
-    "version": "phase5c",
-    "sha256": "8a8cce60e5f6fbd6ec62869c8c6370abe949cb650184e685a06824ea3d959a52"
+    "version": "storagefix1",
+    "sha256": "a4840376cd8cea4b53bcfbe211231d86d62094d11a7a2df2162099ad6aebb555"
   },
   "observatory.js": {
     "version": "f10a",

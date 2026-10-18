@@ -6,8 +6,34 @@
    ═══════════════════════════════════════════ */
 const LS = {
   get:(k,def)=>{ try{ const v=localStorage.getItem(k); return v===null?def:JSON.parse(v); }catch(e){return def;} },
-  set:(k,v)=>{ try{ localStorage.setItem(k,JSON.stringify(v)); }catch(e){} }
+  set:(k,v)=>{ try{ localStorage.setItem(k,JSON.stringify(v)); return true; }catch(e){ return false; } }
 };
+
+function showStorageWriteFailure(){
+  if(typeof showBackupToast==='function') showBackupToast('⚠ Storage write failed — your input is still here. Free browser storage and try again.');
+}
+
+let _commitBusy=false;
+function showStorageRollbackFailure(){
+  if(typeof showBackupToast==='function') showBackupToast('⚠ Storage write failed and could not be undone. Reload the page before saving again.');
+}
+
+async function commitStoreWrite(path,value){
+  const before=Store.get(path);
+  const accepted=Store.set(path,value);
+  if(!accepted||accepted.ok!==true){ showStorageWriteFailure(); return false; }
+  if(accepted.noop) return true;
+  try{
+    const durable=await Store.flushNow();
+    if(durable&&(durable.committed===true||durable.reason==='IDEMPOTENT'||durable.reason==='NOOP')) return true;
+  }catch(e){}
+  // Store writes are optimistic. Put the visible state back and collapse the
+  // failed CAS pair so a retry cannot duplicate the retained form input.
+  const rolledBack=Store.set(path,before);
+  if(rolledBack&&rolledBack.ok===true){ try{await Store.flushNow();}catch(e){} showStorageWriteFailure(); }
+  else showStorageRollbackFailure();
+  return false;
+}
 
 /* ═══════════════════════════════════════════
    PRV-0.5 Round 2 — Preservation hydration (ADR-015 addendum #1).
@@ -1539,7 +1565,7 @@ if(window.Store){
     const d=getStored();
     if(!d[id])d[id]={};
     d[id].progress=Math.min(100,Math.max(0,parseInt(val)||0));
-    LS.set('dune_easa_v1',d);
+    if(!LS.set('dune_easa_v1',d)){showStorageWriteFailure();return;}
     renderEasa();
   };
   window.updateEasaStatus=function(id,val){
@@ -1547,7 +1573,7 @@ if(window.Store){
     if(!d[id])d[id]={};
     d[id].status=val;
     if(val==='done') d[id].progress=100;
-    LS.set('dune_easa_v1',d);
+    if(!LS.set('dune_easa_v1',d)){showStorageWriteFailure();return;}
     renderEasa();
   };
   document.addEventListener('DOMContentLoaded',renderEasa);
@@ -1607,7 +1633,7 @@ function renderATACoverage(entries){
   let showForm=false;
   let view='table';
   function getEntries(){return LS.get(STORE,[]);}
-  function saveEntries(arr){LS.set(STORE,arr);}
+  function saveEntries(arr){return LS.set(STORE,arr);}
   function renderStats(entries){
     const statsEl=document.getElementById('lb-stats');
     if(!statsEl) return;
@@ -1760,7 +1786,7 @@ function renderATACoverage(entries){
     };
     const entries=getEntries();
     entries.push(entry);
-    saveEntries(entries);
+    if(!saveEntries(entries)){showStorageWriteFailure();return;}
     if (window.LOGBOOK && typeof window.LOGBOOK.reconcile === 'function') {
       try { window.LOGBOOK.reconcile(); } catch (e) { /* mirror is best-effort */ }
     }
@@ -1773,7 +1799,7 @@ function renderATACoverage(entries){
     if(!confirm('Delete this entry?'))return;
     const entries=getEntries();
     entries.splice(idx,1);
-    saveEntries(entries);
+    if(!saveEntries(entries)){showStorageWriteFailure();return;}
     if (window.LOGBOOK && typeof window.LOGBOOK.reconcile === 'function') {
       try { window.LOGBOOK.reconcile(); } catch (e) { /* mirror is best-effort */ }
     }
@@ -1904,7 +1930,7 @@ function gistBootstrapDivergedMessage(gistId){
 (function(){
   const STORE='dune_finance_v1';
   function getInputs(){return LS.get(STORE,D.finance);}
-  function saveInputs(v){LS.set(STORE,v);}
+  function saveInputs(v){return LS.set(STORE,v);}
   function calcRussia(v){
     const customInc=Array.isArray(v.customIncome)?v.customIncome.reduce((a,c)=>a+(parseFloat(c.amount)||0),0):0;
     const customExp=Array.isArray(v.customExpenses)?v.customExpenses.reduce((a,c)=>a+(parseFloat(c.amount)||0),0):0;
@@ -1966,14 +1992,14 @@ function gistBootstrapDivergedMessage(gistId){
     const v=getInputs();
     if(!v[phase]) v[phase]={};
     v[phase][field]=parseFloat(val)||0;
-    saveInputs(v);
+    if(!saveInputs(v)){showStorageWriteFailure();return;}
     renderOutputs();
     flashSavedInd();
     if(typeof bumpChangeCount==='function') bumpChangeCount();
   };
   window.saveFinanceNow=function(){
     // values are already persisted on every keystroke — this re-writes and confirms
-    saveInputs(getInputs());
+    if(!saveInputs(getInputs())){showStorageWriteFailure();return;}
     renderOutputs();
     flashSavedInd();
     if(typeof showBackupToast==='function') showBackupToast('✓ Numbers saved on this device — use ☁ Gist sync to share across devices');
@@ -1990,7 +2016,7 @@ function gistBootstrapDivergedMessage(gistId){
     if(presets[s]){
       const v=getInputs();
       if(presets[s].russia) v.russia=Object.assign(v.russia||{},presets[s].russia);
-      saveInputs(v);
+      if(!saveInputs(v)){showStorageWriteFailure();return;}
       syncInputs();
       renderOutputs();
     }
@@ -2715,6 +2741,17 @@ function showBackupToast(msg){
   setTimeout(()=>t.classList.remove('show'),3000);
 }
 
+if(window.Store&&typeof Store.onError==='function'){
+  Store.onError(function(err){
+    const code=err&&err.code;
+    if(code==='STORE_SNAPSHOT_DEGRADED'){
+      showBackupToast('⚠ Saved, but the recovery snapshot could not be updated.');
+      return;
+    }
+    showStorageWriteFailure();
+  });
+}
+
 /* ── GITHUB GIST SYNC ── */
 const GIST_BACKUP_DESCRIPTION='Dune Life OS — Auto Backup';
 
@@ -3118,7 +3155,7 @@ window.lbbSaveEntry=function(){
   // Phase A: destructive 50-entry cap removed. Every builder record now
   // survives so the Gen-2 canonical mirror can be complete. Presentation
   // pagination, if needed later, is a UI concern — not a storage one.
-  LS.set('dune_logbook_entries_v1',entries);
+  if(!LS.set('dune_logbook_entries_v1',entries)){showStorageWriteFailure();return;}
   if (window.LOGBOOK && typeof window.LOGBOOK.reconcile === 'function') {
     try { window.LOGBOOK.reconcile(); } catch (e) { /* mirror is best-effort in Phase A */ }
   }
@@ -3137,7 +3174,7 @@ window.lbbDeleteEntry=function(id){
     if(!_b1SafeObject(e)) return true; // preserve malformed rows
     return e.id!==id;
   });
-  LS.set('dune_logbook_entries_v1',entries);
+  if(!LS.set('dune_logbook_entries_v1',entries)){showStorageWriteFailure();return;}
   if (window.LOGBOOK && typeof window.LOGBOOK.reconcile === 'function') {
     try { window.LOGBOOK.reconcile(); } catch (e) { /* mirror is best-effort */ }
   }
@@ -3650,7 +3687,7 @@ window.aptSave=function(){
     notes:document.getElementById('apt-notes')?.value.trim()||'',
     added:new Date().toISOString().slice(0,10)
   });
-  LS.set('dune_apartments_v1',apts);
+  if(!LS.set('dune_apartments_v1',apts)){showStorageWriteFailure();return;}
   bumpChangeCount();
   aptCloseForm();
   renderApartments();
@@ -3692,7 +3729,7 @@ window.aptDelete=function(id){
     if(!_isActionableApartment(a)) return true;
     return a.id!==id;
   });
-  LS.set('dune_apartments_v1',apts);
+  if(!LS.set('dune_apartments_v1',apts)){showStorageWriteFailure();return;}
   renderApartments();
 };
 window.aptToggleWinner=function(id){
@@ -3706,7 +3743,7 @@ window.aptToggleWinner=function(id){
     const winnerVal = a.id===id ? !a.winner : false;
     return _cloneApartmentWithWinner(a, winnerVal);
   });
-  LS.set('dune_apartments_v1',apts);
+  if(!LS.set('dune_apartments_v1',apts)){showStorageWriteFailure();return;}
   renderApartments();
 };
 
@@ -3811,7 +3848,7 @@ window.aptToggleWinner=function(id){
       if (outcomePanel) outcomePanel.hidden = true;
     });
     const save = document.getElementById('pt-outcome-save');
-    if (save) save.addEventListener('click', function () {
+    if (save) save.addEventListener('click', async function () {
       if (outcomeIndex === null) return;
       const focus = (Store.get('todayFocus') || ['','','']).slice();
       const title = String(focus[outcomeIndex] || '').trim();
@@ -3824,9 +3861,29 @@ window.aptToggleWinner=function(id){
         reasoning: outcomeNote ? outcomeNote.value.trim() : '', expected: '', success: '',
         kind: 'outcome', result: outcomeResult ? outcomeResult.value : 'done'
       };
-      Store.set('decisions', (Store.get('decisions') || []).concat([decision]));
+      const decisionsBefore = Store.get('decisions') || [];
+      const decisionWrite = Store.set('decisions', decisionsBefore.concat([decision]));
       focus[outcomeIndex] = '';
-      Store.set('todayFocus', focus);
+      const focusBefore = Store.get('todayFocus') || ['','',''];
+      const focusWrite = Store.set('todayFocus', focus);
+      if (!decisionWrite || !decisionWrite.ok || !focusWrite || !focusWrite.ok) {
+        if (decisionWrite && decisionWrite.ok) Store.set('decisions', decisionsBefore);
+        if (focusWrite && focusWrite.ok) Store.set('todayFocus', focusBefore);
+        try { await Store.flushNow(); } catch (e) {}
+        showStorageWriteFailure();
+        setCaptureStatus('Storage write failed. Outcome input kept open.');
+        return;
+      }
+      let durable;
+      try { durable = await Store.flushNow(); } catch (e) {}
+      if (!durable || (durable.committed !== true && durable.reason !== 'IDEMPOTENT' && durable.reason !== 'NOOP')) {
+        Store.set('decisions', decisionsBefore);
+        Store.set('todayFocus', focusBefore);
+        try { await Store.flushNow(); } catch (e) {}
+        showStorageWriteFailure();
+        setCaptureStatus('Storage write failed. Outcome input kept open.');
+        return;
+      }
       outcomeIndex = null;
       outcomeTitleAtOpen = null;
       if (outcomePanel) outcomePanel.hidden = true;
@@ -4072,41 +4129,49 @@ window.aptToggleWinner=function(id){
     if (w) w.hidden = tab !== 'weekly';
     if (d) d.hidden = tab !== 'decisions';
   };
-  window.saveReview = function () {
-    const r = {
-      at: new Date().toISOString(),
-      week: document.getElementById('rev-week').value,
-      wins: document.getElementById('rev-wins').value.trim(),
-      problems: document.getElementById('rev-problems').value.trim(),
-      lessons: document.getElementById('rev-lessons').value.trim(),
-      next: document.getElementById('rev-next').value.trim()
-    };
-    if (!r.wins && !r.problems && !r.lessons && !r.next) {
-      alert('Add at least one note before saving.');
-      return;
-    }
-    const cur = Store.get('reviews') || [];
-    Store.set('reviews', cur.concat([r]));
-    ['rev-wins','rev-problems','rev-lessons','rev-next'].forEach(id => {
-      const e = document.getElementById(id); if (e) e.value = '';
-    });
-    flashInd('review-saved-ind');
+  window.saveReview = async function () {
+    if (_commitBusy) return;
+    _commitBusy = true;
+    try {
+      const r = {
+        at: new Date().toISOString(),
+        week: document.getElementById('rev-week').value,
+        wins: document.getElementById('rev-wins').value.trim(),
+        problems: document.getElementById('rev-problems').value.trim(),
+        lessons: document.getElementById('rev-lessons').value.trim(),
+        next: document.getElementById('rev-next').value.trim()
+      };
+      if (!r.wins && !r.problems && !r.lessons && !r.next) {
+        alert('Add at least one note before saving.');
+        return;
+      }
+      const cur = Store.get('reviews') || [];
+      if(!await commitStoreWrite('reviews',cur.concat([r]))) return;
+      ['rev-wins','rev-problems','rev-lessons','rev-next'].forEach(id => {
+        const e = document.getElementById(id); if (e) e.value = '';
+      });
+      flashInd('review-saved-ind');
+    } finally { _commitBusy = false; }
   };
-  window.saveDecision = function () {
-    const d = {
-      at: new Date().toISOString(),
-      title: document.getElementById('dec-title').value.trim(),
-      reasoning: document.getElementById('dec-reasoning').value.trim(),
-      expected: document.getElementById('dec-expected').value.trim(),
-      success: document.getElementById('dec-success').value.trim()
-    };
-    if (!d.title) { alert('Add a title for the decision.'); return; }
-    const cur = Store.get('decisions') || [];
-    Store.set('decisions', cur.concat([d]));
-    ['dec-title','dec-reasoning','dec-expected','dec-success'].forEach(id => {
-      const e = document.getElementById(id); if (e) e.value = '';
-    });
-    flashInd('decision-saved-ind');
+  window.saveDecision = async function () {
+    if (_commitBusy) return;
+    _commitBusy = true;
+    try {
+      const d = {
+        at: new Date().toISOString(),
+        title: document.getElementById('dec-title').value.trim(),
+        reasoning: document.getElementById('dec-reasoning').value.trim(),
+        expected: document.getElementById('dec-expected').value.trim(),
+        success: document.getElementById('dec-success').value.trim()
+      };
+      if (!d.title) { alert('Add a title for the decision.'); return; }
+      const cur = Store.get('decisions') || [];
+      if(!await commitStoreWrite('decisions',cur.concat([d]))) return;
+      ['dec-title','dec-reasoning','dec-expected','dec-success'].forEach(id => {
+        const e = document.getElementById(id); if (e) e.value = '';
+      });
+      flashInd('decision-saved-ind');
+    } finally { _commitBusy = false; }
   };
   window.deleteReview = function (i) {
     if (!confirm('Delete this review?')) return;

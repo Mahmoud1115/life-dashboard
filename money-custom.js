@@ -104,7 +104,11 @@
   }
   function saveInputs(v) {
     if (typeof global.finSaveInputs === 'function') return global.finSaveInputs(v);
-    try { localStorage.setItem('dune_finance_v1', JSON.stringify(v)); } catch (e) {}
+    try { localStorage.setItem('dune_finance_v1', JSON.stringify(v)); return true; }
+    catch (e) { return false; }
+  }
+  function storageFailure() {
+    if (typeof global.showStorageWriteFailure === 'function') global.showStorageWriteFailure();
   }
   function recompute() {
     if (typeof global.finRecompute === 'function') global.finRecompute();
@@ -122,7 +126,7 @@
     const all = getRussia();
     const list = kind === 'income' ? all.russia.customIncome : all.russia.customExpenses;
     list.push({ id: uid(), name: '', amount: 0 });
-    saveInputs(all);
+    if (!saveInputs(all)) { storageFailure(); return; }
     render();
     // Focus the newly-added name input
     setTimeout(() => {
@@ -137,7 +141,7 @@
     const idx = list.findIndex(r => r.id === id);
     if (idx === -1) return;
     list[idx] = Object.assign({}, list[idx], patch);
-    saveInputs(all);
+    if (!saveInputs(all)) { storageFailure(); return; }
     recompute();
   }
   function removeRow(kind, id) {
@@ -147,7 +151,7 @@
     } else {
       all.russia.customExpenses = all.russia.customExpenses.filter(r => r.id !== id);
     }
-    saveInputs(all);
+    if (!saveInputs(all)) { storageFailure(); return; }
     render();
     recompute();
   }
@@ -231,7 +235,7 @@
     if (all.russia.customIncome.length || all.russia.customExpenses.length) {
       // User already added something — mark seeded and bail
       all.russia.customSeeded = true;
-      saveInputs(all);
+      if (!saveInputs(all)) storageFailure();
       return;
     }
     all.russia.customIncome = [
@@ -243,7 +247,7 @@
       { id: uid(), name: 'Engine certifications',  amount: 0 }
     ];
     all.russia.customSeeded = true;
-    saveInputs(all);
+    if (!saveInputs(all)) storageFailure();
   }
 
   function boot() {
