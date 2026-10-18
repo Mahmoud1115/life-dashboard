@@ -149,3 +149,18 @@ test('C-04b — a non-finite custom amount is ignored instead of poisoning the t
   await page.evaluate(() => window.finRecompute());
   expect(await page.evaluate(() => window.Store.get('money.custom_income_total'))).toBe(5000);
 });
+
+test('C-03c — a missing Gen-1 EASA key does not wipe the Store shadow at boot', async ({ page }) => {
+  await seedLegacy(page, {
+    easa: { ea02: { status: 'done', progress: 100 }, ea03: { status: 'done', progress: 100 } },
+    russia: syntheticFinance(),
+  });
+  await page.goto('/');
+  await waitForDerivedViews(page);
+  await page.waitForFunction(() => !!localStorage.getItem('dune_state_v4'));
+  await page.waitForTimeout(800);
+  await page.evaluate(() => localStorage.removeItem('dune_easa_v1')); // e.g. an import whose backup lacks the key
+  await page.reload();
+  await waitForDerivedViews(page);
+  expect(await page.evaluate(() => Object.keys(window.Store.get('easa') || {}).sort())).toEqual(['ea02', 'ea03']);
+});

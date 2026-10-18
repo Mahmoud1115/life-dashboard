@@ -4508,6 +4508,7 @@ window.aptToggleWinner=function(id){
   // Boot/restore reconciliation for EASA: dune_easa_v1 (Gen-1) is the writer, state.easa the shadow Today/Goals read.
   // Store.set is a no-op when equal, so this is safe on every load.
   function bridgeEasa() {
+    if (localStorage.getItem('dune_easa_v1') === null) return; // absent key: keep the Store shadow (e.g. import without it)
     const stored = LS.get('dune_easa_v1', {});
     if (stored && typeof stored === 'object' && !Array.isArray(stored)) Store.set('easa', stored);
   }
