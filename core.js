@@ -4067,7 +4067,10 @@
     },
     careerMonths(s) {
       s = s || state;
-      const start = new Date(s.career.started);
+      const started = s.career && s.career.started;
+      if (typeof started !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(started)) return null;
+      const start = new Date(started + 'T00:00:00');
+      if (Number.isNaN(start.getTime())) return null;
       const now = new Date();
       return Math.max(0, (now.getFullYear()-start.getFullYear())*12 + (now.getMonth()-start.getMonth()));
     },
