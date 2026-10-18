@@ -104,10 +104,26 @@
   }
 
   function nextShiftStart(fromKey) {
+    var now = new Date();
+    var todayStatus = statusForDate(state.anchor, fromKey, state.overrides);
+    if (todayStatus === 'ON' || todayStatus === 'EXTRA') {
+      var todayParts = parseDateKey(fromKey);
+      var startHour = Number(DEFAULTS.startTime.slice(0, 2));
+      var start = new Date(todayParts.year, todayParts.month - 1, todayParts.day, startHour, 0, 0, 0);
+      var end = new Date(start.getTime() + DEFAULTS.shiftLengthHours * 60 * 60 * 1000);
+      if (now >= start && now < end) {
+        var endTime = pad2(end.getHours()) + ':' + pad2(end.getMinutes());
+        return 'In progress, ends ' + endTime;
+      }
+    }
     for (var offset = 0; offset <= 370; offset += 1) {
       var key = addDays(fromKey, offset);
       var status = statusForDate(state.anchor, key, state.overrides);
-      if (status === 'ON' || status === 'EXTRA') return formatLongDate(key) + ' · ' + DEFAULTS.startTime;
+      if (status === 'ON' || status === 'EXTRA') {
+        var parts = parseDateKey(key);
+        var candidate = new Date(parts.year, parts.month - 1, parts.day, Number(DEFAULTS.startTime.slice(0, 2)), 0, 0, 0);
+        if (candidate > now) return formatLongDate(key) + ' · ' + DEFAULTS.startTime;
+      }
     }
     return '—';
   }

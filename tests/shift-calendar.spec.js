@@ -82,7 +82,7 @@ test('synthetic month summary totals use the named shift length default', async 
 });
 
 test('Shifts tab is reachable and remains empty until an anchor is chosen', async ({ page }) => {
-  await page.getByRole('button', { name: 'Shifts' }).click();
+  await page.locator('.nmb[data-group="shifts"]').click();
   await expect(page.locator('#shifts')).toHaveClass(/\bactive\b/);
   await expect(page.locator('#shift-empty')).toBeVisible();
   await expect(page.locator('#shift-calendar-grid')).toBeEmpty();
@@ -93,7 +93,7 @@ test('Shifts tab is reachable and remains empty until an anchor is chosen', asyn
 });
 
 test('day controls set EXTRA and OFF overrides in memory', async ({ page }) => {
-  await page.getByRole('button', { name: 'Shifts' }).click();
+  await page.locator('.nmb[data-group="shifts"]').click();
   await page.locator('#shift-anchor').fill('2028-02-01');
   await page.locator('#shift-calendar-grid [data-date="2028-02-03"]').click();
   await page.getByRole('button', { name: 'Mark selected day EXTRA' }).click();
@@ -106,7 +106,7 @@ test('day controls set EXTRA and OFF overrides in memory', async ({ page }) => {
 
 test('mobile 390x844 has no horizontal overflow', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.getByRole('button', { name: 'Shifts' }).click();
+  await page.locator('.nmb[data-group="shifts"]').click();
   await page.locator('#shift-anchor').fill('2028-02-01');
   const widths = await page.evaluate(() => ({
     viewport: document.documentElement.clientWidth,
@@ -126,7 +126,7 @@ test('Shifts tab interactions do not write localStorage', async ({ page }) => {
       .map((key) => [key, localStorage.getItem(key)]),
   ));
 
-  await page.getByRole('button', { name: 'Shifts' }).click();
+  await page.locator('.nmb[data-group="shifts"]').click();
   await page.locator('#shift-anchor').fill('2028-02-01');
   await page.locator('#shift-calendar-grid [data-date="2028-02-03"]').click();
   await page.getByRole('button', { name: 'Mark selected day EXTRA' }).click();
