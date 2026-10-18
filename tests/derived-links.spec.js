@@ -115,3 +115,34 @@ test('C-04 — custom income and expense update Today/Goals and survive reload',
   await expect(page.locator('#goals-list .goal-card-live').filter({ hasText: 'Monthly Savings' }))
     .toContainText('93,000 ₽ surplus');
 });
+
+test('C-03b — EASA progress restored into storage reaches Today and Goals after reload, with no edit', async ({ page }) => {
+  await seedLegacy(page, {
+    easa: { ea02: { status: 'done', progress: 100 }, ea03: { status: 'done', progress: 100 } },
+    russia: syntheticFinance(),
+  });
+  await page.goto('/');
+  await waitForDerivedViews(page);
+  const moduleCount = await page.evaluate(() => D.easa.length);
+  await expect(page.locator('#today-goals-strip .today-goal-row').filter({ hasText: 'EASA Part-66' }))
+    .toContainText(`2 of ${moduleCount} modules done`);
+  // Simulate a restore/import that rewrites the Gen-1 key behind the Store's back.
+  await page.evaluate(() => localStorage.setItem('dune_easa_v1', JSON.stringify({ ea01: { status: 'done', progress: 100 } })));
+  await page.reload();
+  await waitForDerivedViews(page);
+  await expect(page.locator('#today-goals-strip .today-goal-row').filter({ hasText: 'EASA Part-66' }))
+    .toContainText(`1 of ${moduleCount} modules done`);
+  await expect(page.locator('#goals-list .goal-card-live').filter({ hasText: 'EASA Part-66' }))
+    .toContainText(`1 of ${moduleCount} modules done`);
+});
+
+test('C-04b — a non-finite custom amount is ignored instead of poisoning the totals', async ({ page }) => {
+  const fin = syntheticFinance();
+  fin.customIncome = [{ id: 'c_a', name: 'Synthetic ok', amount: 5000 }, { id: 'c_b', name: 'Synthetic huge', amount: '1e999' }];
+  await seedLegacy(page, { easa: {}, russia: fin });
+  await page.goto('/');
+  await waitForDerivedViews(page);
+  await page.evaluate(() => window.show('finance'));
+  await page.evaluate(() => window.finRecompute());
+  expect(await page.evaluate(() => window.Store.get('money.custom_income_total'))).toBe(5000);
+});

@@ -4433,7 +4433,10 @@ window.aptToggleWinner=function(id){
         if (typeof v === 'number') Store.set(gen2Path, v);
       }
       const sumRows = rows => Array.isArray(rows)
-        ? rows.reduce((sum, row) => sum + (parseFloat(row && row.amount) || 0), 0)
+        ? rows.reduce((sum, row) => {
+            const n = parseFloat(row && row.amount);
+            return Number.isFinite(n) ? sum + n : sum;
+          }, 0)
         : 0;
       Store.set('money.custom_income_total', sumRows(r.customIncome));
       Store.set('money.custom_expense_total', sumRows(r.customExpenses));

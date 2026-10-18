@@ -4,8 +4,8 @@
     "sha256": "38fce3a86fbf0e19e5602eb2debc45f52d9778c1c5864cd3760c74ea37b42914"
   },
   "app.js": {
-    "version": "storagefix5",
-    "sha256": "7a349bab49596617c9c2b2f968e8ca97e20a14bdb1d4c979f6bfd8db1b528906"
+    "version": "derivedlinks2",
+    "sha256": "1ffca79722fa40c951949dfe2a805d38f9775287248ecdac55f352262af38a7f"
   },
   "bht-analytics.js": {
     "version": "phase5a",
