@@ -116,6 +116,9 @@ test('mobile 390x844 has no horizontal overflow', async ({ page }) => {
 });
 
 test('Shifts tab interactions do not write localStorage', async ({ page }) => {
+  // The app's own "last updated" fetch writes dune_last_commit_cache_v1 in the background; block it so only Shifts activity can change storage.
+  await page.context().route(/^https?:\/\/api\.github\.com\//, route => route.abort());
+  await page.reload();
   await page.evaluate(async () => {
     if (window.Store && window.Store.flushNow) await window.Store.flushNow();
   });
