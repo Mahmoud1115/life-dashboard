@@ -510,7 +510,7 @@
         <div class="bht-r-pair">
           <div>
             <div class="bht-r-label">Coping method used</div>
-            <input class="bht-r-input" type="text" data-field="copingMethod" value="${escapeHtml(entry.copingMethod)}" list="bht-r-coping-list" placeholder="${vocab.coping.slice(0,3).join(' · ')}…">
+            <input class="bht-r-input" type="text" data-field="copingMethod" value="${escapeHtml(entry.copingMethod)}" list="bht-r-coping-list" placeholder="${escapeHtml(vocab.coping.slice(0,3).join(' · '))}…">
             <datalist id="bht-r-coping-list">
               ${vocab.coping.map(c => `<option value="${escapeHtml(c)}">`).join('')}
             </datalist>

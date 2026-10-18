@@ -306,14 +306,16 @@
         <details class="bht-duku-recent" ${recent.length <= 5 ? 'open' : ''}>
           <summary>Recent entries · ${entries.length} total · click ✕ to remove</summary>
           <div class="bht-duku-recent-list">
-            ${recent.map(e => `
+            ${recent.map(e => {
+              const severityClass = ['minor','moderate','major'].includes(e.severity) ? e.severity : 'minor';
+              return `
               <div class="bht-duku-recent-row" data-entry-id="${esc(e.id)}">
                 <span class="bht-duku-r-when">${esc(fmtRelDate(e.date))}</span>
-                <span class="bht-duku-r-sev ${esc(e.severity)}">${esc(e.severity)}</span>
+                <span class="bht-duku-r-sev ${severityClass}">${esc(e.severity)}</span>
                 <span class="bht-duku-r-tod">${esc(e.timeOfDay)}</span>
                 <button class="bht-duku-r-rm" type="button" data-rm="${esc(e.id)}" aria-label="Remove this entry">✕</button>
               </div>
-            `).join('')}
+            `; }).join('')}
           </div>
           <div class="bht-duku-recent-foot">
             <button class="bht-duku-rm-all" type="button" id="bht-duku-rm-all">
