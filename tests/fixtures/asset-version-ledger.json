@@ -4,8 +4,8 @@
     "sha256": "38fce3a86fbf0e19e5602eb2debc45f52d9778c1c5864cd3760c74ea37b42914"
   },
   "app.js": {
-    "version": "bootorder1",
-    "sha256": "23ddfe899ff68e5f857f48d03819fcfad8726044225c64a5b225fab71877c891"
+    "version": "bootorder2",
+    "sha256": "746106144d76f49c130818cc3cce49afe2eeb2450eed191a610beefa9dfa4ed6"
   },
   "bht-analytics.js": {
     "version": "phase5b",

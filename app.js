@@ -1587,10 +1587,10 @@ if(window.Store){
         '<div class="easa-title">'+escapeHTML(m.title)+'</div>'+
         '<div class="easa-bar-wrap"><div class="easa-bar-fill" style="transform:scaleX('+(pct/100)+')"></div></div>'+
         '<div class="easa-meta">'+
-          '<select class="easa-status-select" onchange="updateEasaStatus(\''+m.id+'\',this.value)">'+
+          '<select class="easa-status-select" data-easa-id="'+escapeHTML(m.id)+'" onchange="updateEasaStatus(this.dataset.easaId,this.value)">'+
             unknownStatus+knownStatuses.map(st=>'<option value="'+st+'"'+(status===st&&!unknownStatus?' selected':'')+'>'+st.replace('_',' ')+'</option>').join('')+
           '</select>'+
-          '<input class="easa-pct-input" type="number" min="0" max="100" value="'+pct+'" title="Progress %" onchange="updateEasaPct(\''+m.id+'\',this.value)" />'+
+          '<input class="easa-pct-input" type="number" min="0" max="100" value="'+pct+'" title="Progress %" data-easa-id="'+escapeHTML(m.id)+'" onchange="updateEasaPct(this.dataset.easaId,this.value)" />'+
           '<span class="easa-priority '+priClass+'">'+escapeHTML(m.priority)+'</span>'+
         '</div>'+
         (m.note?'<div class="easa-note">'+escapeHTML(m.note)+'</div>':'')+
@@ -1887,7 +1887,7 @@ function renderATACoverage(entries){
         '<div class="dl-body">'+
           '<div class="dl-title">'+escapeHTML(d.title)+'</div>'+
           '<div class="dl-meta">'+
-            '<span class="dl-date">'+dateStr+'</span>'+
+            '<span class="dl-date">'+escapeHTML(dateStr)+'</span>'+
             catBadge(d.cat)+
             '<span class="dl-cat-badge" style="background:var(--bg3);color:var(--tx3)">'+escapeHTML(d.importance)+'</span>'+
           '</div>'+

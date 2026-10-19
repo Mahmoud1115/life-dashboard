@@ -119,3 +119,20 @@ test('CSP meta restricts connections to self and GitHub API', async ({ page }) =
   const connect = content.split(';').map((part) => part.trim()).find((part) => part.startsWith('connect-src '));
   expect(connect).toBe("connect-src 'self' https://api.github.com http://localhost:11434 http://127.0.0.1:11434");
 });
+
+test('EASA module id cannot break out of the inline onchange handler', async ({ page }) => {
+  await page.goto('/');
+  await page.evaluate(() => { window.__xss = undefined; window.show('easa'); });
+  await page.evaluate(() => {
+    const other = D.easa[1].id;
+    D.easa[0].id = "a');window.__xss=1;//";
+    window.updateEasaPct(other, 10); // re-renders the grid with the hostile id
+  });
+  // fire change on every module select, so the result does not depend on grid order
+  const fired = await page.locator('#easa-grid .easa-status-select').evaluateAll((els) => {
+    els.forEach((el) => el.dispatchEvent(new Event('change', { bubbles: true })));
+    return els.length;
+  });
+  expect(fired).toBeGreaterThan(1);
+  expect(await page.evaluate(() => window.__xss)).toBeUndefined();
+});
