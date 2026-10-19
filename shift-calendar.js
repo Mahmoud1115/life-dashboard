@@ -169,7 +169,6 @@
     if (key === state.selectedDate) button.classList.add('is-selected');
     if (hasOverride) button.classList.add('is-override');
     button.dataset.date = key;
-    button.setAttribute('role', 'gridcell');
     button.setAttribute('aria-label', formatLongDate(key) + ', ' + status + (hasOverride ? ', manual override' : ''));
 
     var number = document.createElement('span');

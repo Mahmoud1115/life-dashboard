@@ -72,15 +72,15 @@
     "sha256": "0a199903107cd63ca752403cd29ac4caff3d509b258181a0d5cf052e0f8a0855"
   },
   "shift-calendar.js": {
-    "version": "shiftp2",
-    "sha256": "8cab92d2d9836efea7cf50fbe52e4a476cb8a71d34ac2e5ec46a5250d0945396"
+    "version": "shiftp4",
+    "sha256": "54e26f37f49b89cabfb5c31ea05124fbcdaa49711306006800749a640fa133c0"
   },
   "styles-glass.css": {
     "version": "polish1",
     "sha256": "54d41562925ddde017449508e3b75302cba6e848e62d58cef88e4e5cda622b5f"
   },
   "styles.css": {
-    "version": "shiftp2",
-    "sha256": "ec6c4166f70d93acc8634741d3109d761ff8890ac360dc9631ef58ba4c3c07de"
+    "version": "shiftp4",
+    "sha256": "544dc73066bb8306a2c561b6cadf369eaaa26914fda185099c7f6fbe00086436"
   }
 }

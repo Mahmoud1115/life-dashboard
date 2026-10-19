@@ -98,6 +98,7 @@ test('day controls set EXTRA and OFF overrides in memory', async ({ page }) => {
   await page.locator('#shift-calendar-grid [data-date="2028-02-03"]').click();
   await page.getByRole('button', { name: 'Mark selected day EXTRA' }).click();
   await expect(page.locator('#shift-calendar-grid [data-date="2028-02-03"]')).toContainText('EXTRA');
+  await expect(page.locator('#shift-summary')).toContainText('192'); // 16 working days after EXTRA alone
   await page.locator('#shift-calendar-grid [data-date="2028-02-05"]').click();
   await page.getByRole('button', { name: 'Mark selected day OFF' }).click();
   await expect(page.locator('#shift-calendar-grid [data-date="2028-02-05"]')).toContainText('OFF');
