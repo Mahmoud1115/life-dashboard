@@ -4,8 +4,8 @@
     "sha256": "38fce3a86fbf0e19e5602eb2debc45f52d9778c1c5864cd3760c74ea37b42914"
   },
   "app.js": {
-    "version": "datesfix1",
-    "sha256": "d7e5c0a75d75d2878f03083f3fbff2b23c006c2670d09277ab1835301f3cb2ef"
+    "version": "traininglogbook2",
+    "sha256": "569615d952f112a5b6c44ddda3fe1385680350a305eeac34799abf88ebb95aa5"
   },
   "bht-analytics.js": {
     "version": "phase5b",
@@ -40,8 +40,8 @@
     "sha256": "bb46a5f868bb4549e6e42fb8fd3d9f4e0612970075dabd725e86ae88dd2a8a38"
   },
   "core.js": {
-    "version": "phase5f",
-    "sha256": "071f01646e83da7a16b4f3e0cf9797d713a23211f83a6b68a2a1c85e00178a97"
+    "version": "phase5g",
+    "sha256": "e1a8c6d70e131b78da12be9eda628065950e81305e53c778344872ce126092e8"
   },
   "data.js": {
     "version": "prv05",

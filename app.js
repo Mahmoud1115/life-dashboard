@@ -720,7 +720,7 @@ const NAV_GROUPS={
   home:      {primary:'home',           subs:[]},
   money:     {primary:'finance',        subs:[]},
   goals:     {primary:'progress',       subs:[]},
-  career:    {primary:'career-tracker', subs:[{id:'easa',label:'EASA Modules'},{id:'logbook',label:'Logbook'}]},
+  career:    {primary:'career-tracker', subs:[{id:'easa',label:'Training Log Book'},{id:'logbook',label:'Logbook'}]},
   documents: {primary:'passport',       subs:[{id:'claims',label:'Claims'},{id:'deadlines',label:'Deadlines'}]},
   about:     {primary:'aboutyou',       subs:[{id:'timeline',label:'Life Timeline'}]},
   sync:      {primary:'sync',           subs:[]},
@@ -1132,7 +1132,7 @@ const SEC_LABELS={
   home:'📅 Today',
   progress:'🎯 All Goals',
   'career-tracker':'✈️ Career Tracker',
-  easa:'✈️ EASA Modules',
+  easa:'✈️ Training Log Book',
   logbook:'✈️ Logbook',
   passport:'🛂 Documents',
   claims:'🛂 Claims Register',
@@ -1145,7 +1145,7 @@ const SEC_LABELS={
 };
 
 const GROUP_PILLS={
-  'career-tracker':[{id:'easa',label:'EASA Modules'},{id:'logbook',label:'Logbook'}],
+  'career-tracker':[{id:'easa',label:'Training Log Book'},{id:'logbook',label:'Logbook'}],
   passport:[{id:'claims',label:'Claims'},{id:'deadlines',label:'Deadlines'}],
   // aboutyou intentionally omitted — the top sub-nav already exposes Life Timeline,
   // and duplicating the pill inside the dark reading-mode band looks orphaned.
@@ -1310,6 +1310,7 @@ function renderMetricCards(){
   // EASA
   const easaSt=LS.get('dune_easa_v1',{});
   const easaDone=D.easa.filter(m=>{const s=easaSt[m.id]||{};return (s.status||m.status)==='done';}).length;
+  const easaTotal=D.easa.length;
 
   // Logbook — R7-safe: filter to real object rows so a malformed
   // imported member (null / primitive / hostile toString) cannot
@@ -1348,9 +1349,9 @@ function renderMetricCards(){
       mSav>0?'₽'+Math.round(mSav/1000)+'k':'₽—',
       mSav>0?targetPct+'% of target · ≈ $'+mSavUSD+'/mo':'Set numbers in Finance tab',
       mSav>=target?'var(--green)':mSav>=target*0.7?'var(--amber)':mSav>0?'var(--red)':'var(--tx3)',true),
-    card('📚','EASA B1.1',
-      easaDone+'/15',
-      easaDone===0?'M15 in progress · exam-ready Oct':easaDone+' done · '+(15-easaDone)+' remaining',
+    card('📚','Training Log Book',
+      easaDone+'/'+easaTotal,
+      easaDone===0?'M15 in progress · exam-ready Oct':easaDone+' done · '+(easaTotal-easaDone)+' remaining',
       easaDone>=10?'var(--green)':easaDone>=5?'var(--amber)':'var(--tx3)',false),
     card('⏱','M15 Target',
       dM15<0?'✓':dM15+'d',
@@ -1380,7 +1381,7 @@ function renderHome(){
   const foundationEnd=new Date('2026-09-01');
   let phase,phaseSub;
   if(now<foundationEnd){phase='Foundation';phaseSub='АэроТраст start · 55k system live · logbook day one · MAI application';}
-  else{phase='Build Mode';phaseSub='CFM56 mastery · EASA modules · certificates · 55k every month';}
+  else{phase='Build Mode';phaseSub='CFM56 mastery · Training Log Book · certificates · 55k every month';}
   const phEl=document.getElementById('home-phase-name');
   const phSub=document.getElementById('home-phase-sub');
   if(phEl) phEl.textContent=phase;
@@ -1443,14 +1444,15 @@ if(window.Store){
   function liveGoalsHTML(){
     if(!window.Store) return '';
     const s=Store.raw(), d=Store.derive;
+    const easa=d.easaProgress(s);
     const cards=[
       {title:'55k Monthly Savings',pct:Math.min(100,d.saveTargetHitPct(s)),
         sub:d.monthlySurplus(s).toLocaleString()+' ₽ surplus / '+ (s.money.save_target).toLocaleString()+' ₽ target',
         link:'finance'},
-      {title:'EASA Part-66 B1.1',pct:d.easaProgress(s).pct,
-        sub:d.easaProgress(s).done+' of 15 modules done',link:'easa'}
+      {title:'Training Log Book',pct:easa.pct,
+        sub:easa.done+' of '+easa.total+' modules done',link:'easa'}
     ];
-    return '<div class="live-goals-banner">⚡ Live goals — computed automatically from your Money &amp; EASA data</div>'+
+    return '<div class="live-goals-banner">⚡ Live goals — computed automatically from your Money &amp; Training Log Book data</div>'+
       cards.map(c=>'<div class="goal-card goal-card-live" onclick="show(\''+c.link+'\')" style="cursor:pointer">'+
         '<div class="goal-status-dot gs-active"></div>'+
         '<div class="goal-main">'+
@@ -1528,6 +1530,9 @@ if(window.Store){
 (function(){
   const STORE='dune_easa_v1';
   function getStored(){return LS.get(STORE,{});}
+  function refreshStore(stored){
+    if(window.Store&&typeof window.Store.set==='function') window.Store.set('easa',stored);
+  }
   function renderEasa(){
     const stored=getStored();
     const container=document.getElementById('easa-grid');
@@ -1537,13 +1542,14 @@ if(window.Store){
     // stats
     const totalDone=D.easa.filter(m=>{ const s=stored[m.id]||{}; return (s.status||m.status)==='done'; }).length;
     const totalStudying=D.easa.filter(m=>{ const s=stored[m.id]||{}; return (s.status||m.status)==='studying'; }).length;
-    const totalPct=Math.round(D.easa.reduce((a,m)=>{ const s=stored[m.id]||{}; return a+(s.progress!==undefined?s.progress:m.progress); },0)/D.easa.length);
+    const totalModules=D.easa.length;
+    const totalPct=totalModules?Math.round(D.easa.reduce((a,m)=>{ const s=stored[m.id]||{}; return a+(s.progress!==undefined?s.progress:m.progress); },0)/totalModules):0;
     const statsEl=document.getElementById('easa-stats');
     if(statsEl) statsEl.innerHTML=
-      '<div class="lb-stat"><div class="lb-stat-val">'+totalDone+'/15</div><div class="lb-stat-label">Modules Done</div></div>'+
+      '<div class="lb-stat"><div class="lb-stat-val">'+totalDone+'/'+totalModules+'</div><div class="lb-stat-label">Modules Done</div></div>'+
       '<div class="lb-stat"><div class="lb-stat-val">'+totalStudying+'</div><div class="lb-stat-label">Studying</div></div>'+
       '<div class="lb-stat"><div class="lb-stat-val">'+totalPct+'%</div><div class="lb-stat-label">Avg Progress</div></div>'+
-      '<div class="lb-stat"><div class="lb-stat-val">'+(15-totalDone-totalStudying)+'</div><div class="lb-stat-label">Not Started</div></div>';
+      '<div class="lb-stat"><div class="lb-stat-val">'+(totalModules-totalDone-totalStudying)+'</div><div class="lb-stat-label">Not Started</div></div>';
     container.innerHTML=D.easa.map(m=>{
       const s=stored[m.id]||{};
       const pct=s.progress!==undefined?s.progress:m.progress;
@@ -1571,6 +1577,7 @@ if(window.Store){
     if(!d[id])d[id]={};
     d[id].progress=Math.min(100,Math.max(0,parseInt(val)||0));
     if(!LS.set('dune_easa_v1',d)){showStorageWriteFailure();return;}
+    refreshStore(d);
     renderEasa();
   };
   window.updateEasaStatus=function(id,val){
@@ -1579,6 +1586,7 @@ if(window.Store){
     d[id].status=val;
     if(val==='done') d[id].progress=100;
     if(!LS.set('dune_easa_v1',d)){showStorageWriteFailure();return;}
+    refreshStore(d);
     renderEasa();
   };
   document.addEventListener('DOMContentLoaded',renderEasa);
@@ -1997,10 +2005,11 @@ function gistBootstrapDivergedMessage(gistId){
     const v=getInputs();
     if(!v[phase]) v[phase]={};
     v[phase][field]=parseFloat(val)||0;
-    if(!saveInputs(v)){showStorageWriteFailure();return;}
+    if(!saveInputs(v)){showStorageWriteFailure();return false;}
     renderOutputs();
     flashSavedInd();
     if(typeof bumpChangeCount==='function') bumpChangeCount();
+    return true;
   };
   window.saveFinanceNow=function(){
     // values are already persisted on every keystroke — this re-writes and confirms
@@ -2429,7 +2438,7 @@ window.recoveryResetLifeOS=async function(){
   if(!window.Store||typeof window.Store.reset!=='function'){
     showBackupToast('⚠ Reset unavailable');return false;
   }
-  const confirmed=confirm('Reset LIFE OS structured state?\n\nThis replaces the Store\'s structured records (dune_state_v4 — BHT, Career, About, Today, Reviews, Decisions, Ideas, Timeline, Goals/Deadlines/Claims/Risks) with a fresh default. Legacy tab-owned sources (EASA, Apartments, Logbook Tracker + Builder, Money-Russia) are NOT erased. Gist credentials, sync base, snapshots, and recovery capsules are also preserved. Cannot be undone for the parts it does clear. Export a backup first if you might want any of the affected data back.');
+  const confirmed=confirm('Reset LIFE OS structured state?\n\nThis replaces the Store\'s structured records (dune_state_v4 — BHT, Career, About, Today, Reviews, Decisions, Ideas, Timeline, Goals/Deadlines/Claims/Risks) with a fresh default. Legacy tab-owned sources (Training Log Book, Apartments, Logbook Tracker + Builder, Money-Russia) are NOT erased. Gist credentials, sync base, snapshots, and recovery capsules are also preserved. Cannot be undone for the parts it does clear. Export a backup first if you might want any of the affected data back.');
   if(!confirmed) return false;
   const dispatched=window.Store.reset({force:true});
   if(!dispatched){
@@ -4285,7 +4294,7 @@ window.aptToggleWinner=function(id){
         {emoji:'💰', label:'Monthly Surplus', value: (surplus >= 0 ? '+' : '') + surplus.toLocaleString() + ' ₽',
           sub: targetPct + '% of 55k target',
           color: surplus >= target ? 'var(--green)' : surplus >= target*0.7 ? 'var(--amber)' : 'var(--red)'},
-        {emoji:'📚', label:'EASA B1.1', value: easa.done + '/15',
+        {emoji:'📚', label:'Training Log Book', value: easa.done + '/' + easa.total,
           sub: easa.pct + '% average progress',
           color: easa.done >= 10 ? 'var(--green)' : easa.done >= 5 ? 'var(--amber)' : 'var(--tx3)'},
         {emoji:'✈️', label:'Career', value: careerM + ' mo',
@@ -4318,8 +4327,8 @@ window.aptToggleWinner=function(id){
       const items = [
         { name: '55k Monthly Savings', pct: surplusPct,
           sub: surplus.toLocaleString() + ' ₽ surplus · target ' + target.toLocaleString() + ' ₽' },
-        { name: 'EASA Part-66 B1.1', pct: easa.pct,
-          sub: easa.done + ' of 15 modules done · ' + (15 - easa.done) + ' to go' },
+        { name: 'Training Log Book', pct: easa.pct,
+          sub: easa.done + ' of ' + easa.total + ' modules done · ' + (easa.total - easa.done) + ' to go' },
       ];
       el.innerHTML = items.map(g =>
         '<div class="today-goal-row">' +
@@ -4338,7 +4347,7 @@ window.aptToggleWinner=function(id){
       if (phEl) phEl.textContent = now < foundationEnd ? 'Foundation' : 'Build Mode';
       if (subEl) subEl.textContent = now < foundationEnd
         ? 'АэроТраст start · 55k system live · logbook day one · MAI application'
-        : 'CFM56 mastery · EASA modules · certificates · 55k every month';
+        : 'CFM56 mastery · Training Log Book · certificates · 55k every month';
     }
     Store.subscribe('*', s => {
       try { renderMetrics(s); renderGoalsStrip(s); renderPhase(s); }
@@ -4372,10 +4381,17 @@ window.aptToggleWinner=function(id){
     };
     const orig = window.finInputChange;
     window.finInputChange = function (phase, field, val) {
-      if (typeof orig === 'function') orig.call(this, phase, field, val);
+      const saved = typeof orig === 'function' ? orig.call(this, phase, field, val) : false;
+      if (saved !== true) return false;
       if (phase === 'russia' && fieldMap[field]) {
         Store.set(fieldMap[field], parseFloat(val) || 0);
       }
+      return true;
+    };
+    const origRecompute = window.finRecompute;
+    window.finRecompute = function () {
+      if (typeof origRecompute === 'function') origRecompute.apply(this, arguments);
+      seedGen2FromGen1();
     };
 
     // Narrow one-time bootstrap: if the canonical Gen-1 key is genuinely
@@ -4421,6 +4437,14 @@ window.aptToggleWinner=function(id){
         const v = r[gen1Field];
         if (typeof v === 'number') Store.set(gen2Path, v);
       }
+      const sumRows = rows => Array.isArray(rows)
+        ? rows.reduce((sum, row) => {
+            const n = parseFloat(row && row.amount);
+            return Number.isFinite(n) ? sum + n : sum;
+          }, 0)
+        : 0;
+      Store.set('money.custom_income_total', sumRows(r.customIncome));
+      Store.set('money.custom_expense_total', sumRows(r.customExpenses));
     }
     seedGen2FromGen1();
 
@@ -4486,6 +4510,14 @@ window.aptToggleWinner=function(id){
     Store.subscribe('about', inject);
   }
 
+  // Boot/restore reconciliation for EASA: dune_easa_v1 (Gen-1) is the writer, state.easa the shadow Today/Goals read.
+  // Store.set is a no-op when equal, so this is safe on every load.
+  function bridgeEasa() {
+    if (localStorage.getItem('dune_easa_v1') === null) return; // absent key: keep the Store shadow (e.g. import without it)
+    const stored = LS.get('dune_easa_v1', {});
+    if (stored && typeof stored === 'object' && !Array.isArray(stored)) Store.set('easa', stored);
+  }
+
   // ─── INIT ──────────────────────────────────────────────────
   function init() {
     try { wireFocus(); } catch (e) { console.error(e); }
@@ -4494,6 +4526,7 @@ window.aptToggleWinner=function(id){
     try { wireTimeline(); } catch (e) { console.error(e); }
     try { wireToday(); } catch (e) { console.error(e); }
     try { bridgeFinance(); } catch (e) { console.error(e); }
+    try { bridgeEasa(); } catch (e) { console.error(e); }
     try { if (window.LOGBOOK && window.LOGBOOK.reconcile) window.LOGBOOK.reconcile(); } catch (e) { console.error(e); }
     try { wireAboutMeta(); } catch (e) { console.error(e); }
     console.log('[Phase1] reactive modules wired. Schema v' + Store.SCHEMA_VERSION);
