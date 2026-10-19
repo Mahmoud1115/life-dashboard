@@ -8,8 +8,8 @@
     "sha256": "d7e5c0a75d75d2878f03083f3fbff2b23c006c2670d09277ab1835301f3cb2ef"
   },
   "bht-analytics.js": {
-    "version": "phase5a",
-    "sha256": "d51ca7b237644dfc02553a0e38d7ace1e948d7a33b835a2c17958902313fc56e"
+    "version": "phase5b",
+    "sha256": "6d262edef97483f1fd2de3326694427515a0502b8485c26d0f74bae4792fdb70"
   },
   "bht-bridge.js": {
     "version": "phase4f",
@@ -40,8 +40,8 @@
     "sha256": "bb46a5f868bb4549e6e42fb8fd3d9f4e0612970075dabd725e86ae88dd2a8a38"
   },
   "core.js": {
-    "version": "phase5e",
-    "sha256": "9cd92344f15b77a3f14c9ed4946b4b7108e1dd5726fde51fe44818c119fd003f"
+    "version": "phase5f",
+    "sha256": "071f01646e83da7a16b4f3e0cf9797d713a23211f83a6b68a2a1c85e00178a97"
   },
   "data.js": {
     "version": "prv05",

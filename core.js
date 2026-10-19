@@ -4068,11 +4068,13 @@
     careerMonths(s) {
       s = s || state;
       const started = s.career && s.career.started;
-      if (typeof started !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(started)) return null;
-      const start = new Date(started + 'T00:00:00');
-      if (Number.isNaN(start.getTime())) return null;
+      // Accept YYYY-MM-DD, YYYY-MM and full ISO timestamps; anything else renders as an em dash.
+      const m = typeof started === 'string' ? /^(\d{4})-(\d{2})(?:-\d{2})?(?:$|T)/.exec(started) : null;
+      if (!m) return null;
+      const y = Number(m[1]), mo = Number(m[2]);
+      if (mo < 1 || mo > 12) return null;
       const now = new Date();
-      return Math.max(0, (now.getFullYear()-start.getFullYear())*12 + (now.getMonth()-start.getMonth()));
+      return Math.max(0, (now.getFullYear()-y)*12 + (now.getMonth()-(mo-1)));
     },
     monthsToCatA(s) {
       s = s || state;

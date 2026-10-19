@@ -1,7 +1,7 @@
 const { test, expect } = require('@playwright/test');
 
 test.describe('PR-3 date fixes', () => {
-  test.use({ timezoneId: 'Europe/Moscow' });
+  test.use({ timezoneId: 'Asia/Tokyo' });
 
   async function boot(page) {
     await page.clock.install({ time: new Date('2026-10-18T22:30:00Z') });
@@ -9,7 +9,7 @@ test.describe('PR-3 date fixes', () => {
     await page.waitForFunction(() => window.Store && window.BHT);
   }
 
-  test('uses the Moscow local date for Logbook and Review defaults', async ({ page }) => {
+  test('uses the local (non-UTC) date for Logbook and Review defaults', async ({ page }) => {
     await boot(page);
     await page.locator('.nmb[data-group="review"]').click();
     await expect(page.locator('#rev-week')).toHaveValue('2026-10-19');
@@ -26,6 +26,13 @@ test.describe('PR-3 date fixes', () => {
       window.showGroup('career');
     });
     await expect(page.locator('body')).not.toContainText('NaN');
+    await expect(page.locator('#c-months')).toHaveText('—');
+  });
+
+  test('career months accept YYYY-MM and ISO values', async ({ page }) => {
+    await boot(page);
+    const months = await page.evaluate(() => ['2026-04', '2026-04-05', '2026-04-05T10:00:00Z', 'garbage', '2026-13'].map((started) => window.Store.derive.careerMonths({ career: { started } })));
+    expect(months).toEqual([6, 6, 6, null, null]);
   });
 
   test('future BHT entries are excluded by main and worker analytics', async ({ page }) => {
