@@ -477,9 +477,16 @@ if (window.Store && typeof window.Store.onSave === 'function') {
   // invocation by setting `window.__prv05DisableBootHydration = true`
   // in an `addInitScript`. Production runs never touch this global.
   if (window.__prv05DisableBootHydration !== true) {
-    hydratePreservationRecordsOnce().catch((e) => {
-      try { console.warn('[PRV-0.5 R2 hydrate] boot init exception', e); } catch (_) {}
-    });
+    const startBootHydration = () => {
+      hydratePreservationRecordsOnce().catch((e) => {
+        try { console.warn('[PRV-0.5 R2 hydrate] boot init exception', e); } catch (_) {}
+      });
+    };
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', startBootHydration, { once: true });
+    } else {
+      startBootHydration();
+    }
   }
 }
 
@@ -649,6 +656,18 @@ function _b1SafeText(v){
   if (typeof v === 'number' || typeof v === 'boolean') return String(v);
   try { return String(v); }
   catch (e) { return ''; }
+}
+function escapeHTML(v){
+  return _b1SafeText(v).replace(/[&<>"']/g,function(c){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+  });
+}
+function escapeICSText(v){
+  return _b1SafeText(v)
+    .replace(/\\/g,'\\\\')
+    .replace(/\r\n|\r|\n/g,'\\n')
+    .replace(/,/g,'\\,')
+    .replace(/;/g,'\\;');
 }
 function _b1SafeNumber(v){
   if (typeof v === 'number' && Number.isFinite(v)) return v;
@@ -1257,9 +1276,9 @@ function renderCalendar(){
     const events=ev[day]||[];
     const hasCrit=events.some(e=>e.importance==='critical');
     const hasHigh=events.some(e=>e.importance==='high');
-    const tip=events.map(e=>e.title).join('\n');
+    const tip=events.map(e=>_b1SafeText(e.title)).join('\n');
     const dotCls='cal-dot'+(hasCrit?' critical':hasHigh?' high':'');
-    html+='<div class="cal-day'+(isToday?' today':'')+(events.length?' has-event':'')+'"'+(tip?' title="'+tip+'"':'')+'>'+
+    html+='<div class="cal-day'+(isToday?' today':'')+(events.length?' has-event':'')+'"'+(tip?' title="'+escapeHTML(tip)+'"':'')+'>'+
       '<div class="cal-day-num">'+day+'</div>'+
       (events.length?'<div class="'+dotCls+'"></div>':'')+
     '</div>';
@@ -1291,8 +1310,8 @@ function renderUpcoming(){
     return '<div class="home-up-item"'+priv+'>'+
       '<div class="home-up-days '+cls+'">'+dayTxt+'</div>'+
       '<div>'+
-        '<div class="home-up-title">'+d.title+'</div>'+
-        '<div class="home-up-meta">'+dateStr+' · '+d.cat+'</div>'+
+        '<div class="home-up-title">'+escapeHTML(d.title)+'</div>'+
+        '<div class="home-up-meta">'+escapeHTML(dateStr)+' · '+escapeHTML(d.cat)+'</div>'+
       '</div>'+
     '</div>';
   }).join('');
@@ -1475,32 +1494,44 @@ if(window.Store){
     const filtered=D.goals.filter(g=>curFilter==='all'||g.cat===curFilter);
     const liveBlock=(curFilter==='all'||curFilter==='finance')?liveGoalsHTML():'';
     container.innerHTML=liveBlock+filtered.map(g=>{
-      const pct=g.progress;
-      const status=g.status;
+      const rawPct=Number(g.progress);
+      const pct=Number.isFinite(rawPct)?Math.min(100,Math.max(0,rawPct)):0;
+      const status=['active','planned','done','blocked'].includes(g.status)?g.status:'planned';
       const dotClass={active:'gs-active',planned:'gs-planned',done:'gs-done',blocked:'gs-blocked'}[status]||'gs-planned';
-      const deadlineStr=g.deadline?'Due: '+g.deadline:'No fixed deadline';
-      const catClass='gt-'+g.cat;
+      const deadlineStr=g.deadline?'Due: '+_b1SafeText(g.deadline):'No fixed deadline';
+      const catClass=['career','education','finance','health','legal','documents','money'].includes(g.cat)?'gt-'+g.cat:'gt-other';
       const isPrivate=g.private?' data-private="true"':'';
-      return '<div class="goal-card"'+isPrivate+'>'+
+      return '<div class="goal-card" data-goal-id="'+escapeHTML(g.id)+'"'+isPrivate+'>'+
         '<div class="goal-status-dot '+dotClass+'"></div>'+
         '<div class="goal-main">'+
-          '<div class="goal-title">'+g.title+'</div>'+
+          '<div class="goal-title">'+escapeHTML(g.title)+'</div>'+
           '<div class="goal-progress-wrap">'+
             '<div class="goal-pbar"><div class="goal-pfill" style="transform:scaleX('+(pct/100)+')"></div></div>'+
-            '<input class="goal-pct-input" type="number" min="0" max="100" value="'+pct+'" title="Edit progress %" onchange="updateGoalProgress(\''+g.id+'\',this.value)" />'+
+            '<input class="goal-pct-input" data-goal-action="progress" type="number" min="0" max="100" value="'+pct+'" title="Edit progress %" />'+
           '</div>'+
           '<div class="goal-meta">'+
-            '<span class="goal-tag '+catClass+'">'+g.cat+'</span>'+
-            '<span class="goal-deadline">'+deadlineStr+'</span>'+
-            '<select class="goal-pct-input" style="width:90px" onchange="updateGoalStatus(\''+g.id+'\',this.value)">'+
+            '<span class="goal-tag '+catClass+'">'+escapeHTML(g.cat)+'</span>'+
+            '<span class="goal-deadline">'+escapeHTML(deadlineStr)+'</span>'+
+            '<select class="goal-pct-input" data-goal-action="status" style="width:90px">'+
               ['active','planned','done','blocked'].map(s=>'<option value="'+s+'"'+(status===s?' selected':'')+'>'+statusLabel(s)+'</option>').join('')+
             '</select>'+
           '</div>'+
-          (g.nextAction?'<div class="goal-next">→ '+g.nextAction+'</div>':'')+
-          (g.note?'<div class="goal-note">'+g.note+'</div>':'')+
+          (g.nextAction?'<div class="goal-next">→ '+escapeHTML(g.nextAction)+'</div>':'')+
+          (g.note?'<div class="goal-note">'+escapeHTML(g.note)+'</div>':'')+
         '</div>'+
       '</div>';
     }).join('');
+    if(container.dataset.xssActionsBound!=='1'){
+      container.dataset.xssActionsBound='1';
+      container.addEventListener('change',function(e){
+        const control=e.target&&e.target.closest&&e.target.closest('[data-goal-action]');
+        if(!control||!container.contains(control)) return;
+        const card=control.closest('[data-goal-id]');
+        if(!card) return;
+        if(control.dataset.goalAction==='progress') window.updateGoalProgress(card.dataset.goalId,control.value);
+        if(control.dataset.goalAction==='status') window.updateGoalStatus(card.dataset.goalId,control.value);
+      });
+    }
   }
   window.updateGoalProgress=function(id,val){
     const pct=Math.min(100,Math.max(0,parseInt(val)||0));
@@ -1552,23 +1583,28 @@ if(window.Store){
       '<div class="lb-stat"><div class="lb-stat-val">'+(totalModules-totalDone-totalStudying)+'</div><div class="lb-stat-label">Not Started</div></div>';
     container.innerHTML=D.easa.map(m=>{
       const s=stored[m.id]||{};
-      const pct=s.progress!==undefined?s.progress:m.progress;
-      const status=s.status||m.status;
-      const priClass='ep-'+(m.priority||'medium');
-      const stClass='ebs-'+status;
+      const rawPct=Number(s.progress!==undefined?s.progress:m.progress);
+      const pct=Number.isFinite(rawPct)?Math.min(100,Math.max(0,rawPct)):0;
+      const rawStatus=_b1SafeText(s.status||m.status);
+      const knownStatuses=['not_started','studying','done'];
+      const status=knownStatuses.includes(rawStatus)?rawStatus:'not_started';
+      const priority=['low','medium','high'].includes(m.priority)?m.priority:'medium';
+      const priClass='ep-'+priority;
       const cardClass='es-'+status;
+      const unknownStatus=rawStatus&&!knownStatuses.includes(rawStatus)
+        ? '<option value="'+escapeHTML(rawStatus)+'" selected>'+escapeHTML(rawStatus)+'</option>' : '';
       return '<div class="easa-card '+cardClass+'">'+
-        '<div class="easa-num">'+m.num+'</div>'+
-        '<div class="easa-title">'+m.title+'</div>'+
+        '<div class="easa-num">'+escapeHTML(m.num)+'</div>'+
+        '<div class="easa-title">'+escapeHTML(m.title)+'</div>'+
         '<div class="easa-bar-wrap"><div class="easa-bar-fill" style="transform:scaleX('+(pct/100)+')"></div></div>'+
         '<div class="easa-meta">'+
-          '<select class="easa-status-select" onchange="updateEasaStatus(\''+m.id+'\',this.value)">'+
-            ['not_started','studying','done'].map(st=>'<option value="'+st+'"'+(status===st?' selected':'')+'>'+st.replace('_',' ')+'</option>').join('')+
+          '<select class="easa-status-select" data-easa-id="'+escapeHTML(m.id)+'" onchange="updateEasaStatus(this.dataset.easaId,this.value)">'+
+            unknownStatus+knownStatuses.map(st=>'<option value="'+st+'"'+(status===st&&!unknownStatus?' selected':'')+'>'+st.replace('_',' ')+'</option>').join('')+
           '</select>'+
-          '<input class="easa-pct-input" type="number" min="0" max="100" value="'+pct+'" title="Progress %" onchange="updateEasaPct(\''+m.id+'\',this.value)" />'+
-          '<span class="easa-priority '+priClass+'">'+m.priority+'</span>'+
+          '<input class="easa-pct-input" type="number" min="0" max="100" value="'+pct+'" title="Progress %" data-easa-id="'+escapeHTML(m.id)+'" onchange="updateEasaPct(this.dataset.easaId,this.value)" />'+
+          '<span class="easa-priority '+priClass+'">'+escapeHTML(m.priority)+'</span>'+
         '</div>'+
-        (m.note?'<div class="easa-note">'+m.note+'</div>':'')+
+        (m.note?'<div class="easa-note">'+escapeHTML(m.note)+'</div>':'')+
       '</div>';
     }).join('');
   }
@@ -1832,7 +1868,8 @@ function renderATACoverage(entries){
   let dlFilter='all';
   function daysBetween(iso){return Math.ceil((new Date(iso)-new Date())/(864e5));}
   function catBadge(cat){
-    return '<span class="dl-cat-badge dcat-'+cat+'">'+cat+'</span>';
+    const safeCat=['passport','legal','immigration','licensing','career','education','finance','health','documents','army'].includes(cat)?cat:'other';
+    return '<span class="dl-cat-badge dcat-'+safeCat+'">'+escapeHTML(cat)+'</span>';
   }
   function renderDeadlines(filter){
     dlFilter=filter||dlFilter;
@@ -1861,18 +1898,25 @@ function renderATACoverage(entries){
           '<div class="dl-count-unit">'+(days<0?'past':'away')+'</div>'+
         '</div>'+
         '<div class="dl-body">'+
-          '<div class="dl-title">'+d.title+'</div>'+
+          '<div class="dl-title">'+escapeHTML(d.title)+'</div>'+
           '<div class="dl-meta">'+
-            '<span class="dl-date">'+dateStr+'</span>'+
+            '<span class="dl-date">'+escapeHTML(dateStr)+'</span>'+
             catBadge(d.cat)+
-            '<span class="dl-cat-badge" style="background:var(--bg3);color:var(--tx3)">'+d.importance+'</span>'+
+            '<span class="dl-cat-badge" style="background:var(--bg3);color:var(--tx3)">'+escapeHTML(d.importance)+'</span>'+
           '</div>'+
-          (d.consequence?'<div class="dl-consequence">If missed: '+d.consequence+'</div>':'')+
-          (d.note?'<div class="dl-note">'+d.note+'</div>':'')+
-          '<button class="dl-ics" onclick="downloadICS(\''+d.id+'\')">+ Add to Calendar</button>'+
+          (d.consequence?'<div class="dl-consequence">If missed: '+escapeHTML(d.consequence)+'</div>':'')+
+          (d.note?'<div class="dl-note">'+escapeHTML(d.note)+'</div>':'')+
+          '<button class="dl-ics" data-deadline-id="'+escapeHTML(d.id)+'">+ Add to Calendar</button>'+
         '</div>'+
       '</div>';
     }).join('')||'<div class="lb-empty">No deadlines match this filter.</div>';
+    if(container.dataset.xssActionsBound!=='1'){
+      container.dataset.xssActionsBound='1';
+      container.addEventListener('click',function(e){
+        const button=e.target&&e.target.closest&&e.target.closest('[data-deadline-id]');
+        if(button&&container.contains(button)) window.downloadICS(button.dataset.deadlineId);
+      });
+    }
   }
   window.filterDeadlines=function(f,btn){
     document.querySelectorAll('.dl-filter').forEach(b=>b.classList.remove('active'));
@@ -1882,8 +1926,8 @@ function renderATACoverage(entries){
   window.downloadICS=function(id){
     const d=D.deadlines.find(x=>x.id===id);
     if(!d) return;
-    const dt=d.date.replace(/-/g,'');
-    const uid=id+'@dune-life-os';
+    const dt=escapeICSText(_b1SafeText(d.date).replace(/-/g,''));
+    const uid=escapeICSText(id)+'@dune-life-os';
     const desc=(d.consequence?'If missed: '+d.consequence+'. ':'')+( d.note||'');
     const ics=[
       'BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//Dune Life OS//EN',
@@ -1891,32 +1935,32 @@ function renderATACoverage(entries){
       'UID:'+uid,
       'DTSTART;VALUE=DATE:'+dt,
       'DTEND;VALUE=DATE:'+dt,
-      'SUMMARY:'+d.title,
-      'DESCRIPTION:'+desc.replace(/\n/g,'\\n'),
-      'BEGIN:VALARM','TRIGGER:-P3D','ACTION:DISPLAY','DESCRIPTION:Reminder: '+d.title,'END:VALARM',
-      'BEGIN:VALARM','TRIGGER:-P7D','ACTION:DISPLAY','DESCRIPTION:1 week: '+d.title,'END:VALARM',
+      'SUMMARY:'+escapeICSText(d.title),
+      'DESCRIPTION:'+escapeICSText(desc),
+      'BEGIN:VALARM','TRIGGER:-P3D','ACTION:DISPLAY','DESCRIPTION:Reminder: '+escapeICSText(d.title),'END:VALARM',
+      'BEGIN:VALARM','TRIGGER:-P7D','ACTION:DISPLAY','DESCRIPTION:1 week: '+escapeICSText(d.title),'END:VALARM',
       'END:VEVENT','END:VCALENDAR'
     ].join('\r\n');
     const blob=new Blob([ics],{type:'text/calendar;charset=utf-8'});
     const url=URL.createObjectURL(blob);
     const a=document.createElement('a');
     a.href=url;
-    a.download=id+'.ics';
+    a.download='dune-deadline.ics';
     a.click();
     URL.revokeObjectURL(url);
   };
   window.downloadAllICS=function(){
     const lines=['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//Dune Life OS//EN'];
     D.deadlines.filter(d=>d.importance==='critical'||d.importance==='high').forEach(d=>{
-      const dt=d.date.replace(/-/g,'');
+      const dt=escapeICSText(_b1SafeText(d.date).replace(/-/g,''));
       const desc=(d.consequence?'If missed: '+d.consequence+'. ':'')+( d.note||'');
       lines.push('BEGIN:VEVENT',
-        'UID:'+d.id+'@dune-life-os',
+        'UID:'+escapeICSText(d.id)+'@dune-life-os',
         'DTSTART;VALUE=DATE:'+dt,
         'DTEND;VALUE=DATE:'+dt,
-        'SUMMARY:'+d.title,
-        'DESCRIPTION:'+desc.replace(/\n/g,'\\n'),
-        'BEGIN:VALARM','TRIGGER:-P7D','ACTION:DISPLAY','DESCRIPTION:1 week: '+d.title,'END:VALARM',
+        'SUMMARY:'+escapeICSText(d.title),
+        'DESCRIPTION:'+escapeICSText(desc),
+        'BEGIN:VALARM','TRIGGER:-P7D','ACTION:DISPLAY','DESCRIPTION:1 week: '+escapeICSText(d.title),'END:VALARM',
         'END:VEVENT');
     });
     lines.push('END:VCALENDAR');
@@ -2070,7 +2114,7 @@ function gistBootstrapDivergedMessage(gistId){
     } else if(lastSync){
       const when=new Date(lastSync);
       cls='fin-gist-status fgs-ok';
-      html='✓ Token saved · Last synced '+when.toLocaleString()+(gistId?' · Gist <code>'+gistId.slice(0,8)+'…</code>':'');
+      html='✓ Token saved · Last synced '+when.toLocaleString()+(gistId?' · Gist <code>'+escapeHTML(_b1SafeText(gistId).slice(0,8))+'…</code>':'');
       disabled=false;
     } else {
       cls='fin-gist-status';
@@ -2117,31 +2161,48 @@ function gistBootstrapDivergedMessage(gistId){
     let items=D.claims;
     if(clFilter!=='all') items=items.filter(c=>c.cat===clFilter||c.confidence===clFilter);
     container.innerHTML=items.map(c=>{
-      const conf=c.confidence;
+      const rawConf=_b1SafeText(c.confidence);
+      const knownConf=['verified','likely','uncertain','dangerous'];
+      const conf=knownConf.includes(rawConf)?rawConf:'uncertain';
+      const unknownConf=rawConf&&!knownConf.includes(rawConf)
+        ? '<option value="'+escapeHTML(rawConf)+'" selected>'+escapeHTML(rawConf)+'</option>' : '';
       const isPrivate=c.private?' data-private="true"':'';
       const lastCheck=c.lastChecked;
-      return '<div class="claim-card conf-'+conf+'"'+isPrivate+'>'+
+      return '<div class="claim-card conf-'+conf+'" data-claim-id="'+escapeHTML(c.id)+'"'+isPrivate+'>'+
         '<div class="claim-header">'+
-          '<span class="claim-conf-badge">'+conf+'</span>'+
-          '<div class="claim-title">'+c.title+'</div>'+
+          '<span class="claim-conf-badge">'+escapeHTML(rawConf)+'</span>'+
+          '<div class="claim-title">'+escapeHTML(c.title)+'</div>'+
         '</div>'+
-        '<div class="claim-text">'+c.text+'</div>'+
+        '<div class="claim-text">'+escapeHTML(c.text)+'</div>'+
         '<div class="claim-meta">'+
-          '<span class="claim-meta-item"><strong>Category:</strong> '+c.cat+'</span>'+
-          '<span class="claim-meta-item"><strong>Source:</strong> '+c.sourceType+'</span>'+
-          '<span class="claim-meta-item"><strong>Checked:</strong> '+lastCheck+'</span>'+
-          '<span class="claim-meta-item"><strong>Recheck:</strong> '+c.recheckDate+'</span>'+
+          '<span class="claim-meta-item"><strong>Category:</strong> '+escapeHTML(c.cat)+'</span>'+
+          '<span class="claim-meta-item"><strong>Source:</strong> '+escapeHTML(c.sourceType)+'</span>'+
+          '<span class="claim-meta-item"><strong>Checked:</strong> '+escapeHTML(lastCheck)+'</span>'+
+          '<span class="claim-meta-item"><strong>Recheck:</strong> '+escapeHTML(c.recheckDate)+'</span>'+
         '</div>'+
-        '<div class="claim-consequence">'+c.consequence+'</div>'+
-        '<div class="claim-next">→ '+c.nextAction+'</div>'+
+        '<div class="claim-consequence">'+escapeHTML(c.consequence)+'</div>'+
+        '<div class="claim-next">→ '+escapeHTML(c.nextAction)+'</div>'+
         '<div style="margin-top:8px;display:flex;gap:8px">'+
-          '<select style="font-family:var(--mono);font-size:9px;border:1px solid var(--bdr2);border-radius:2px;padding:3px 6px;background:var(--bg);color:var(--tx);cursor:pointer" onchange="updateClaimConf(\''+c.id+'\',this.value)">'+
-            ['verified','likely','uncertain','dangerous'].map(v=>'<option value="'+v+'"'+(conf===v?' selected':'')+'>'+v+'</option>').join('')+
+          '<select data-claim-action="confidence" style="font-family:var(--mono);font-size:9px;border:1px solid var(--bdr2);border-radius:2px;padding:3px 6px;background:var(--bg);color:var(--tx);cursor:pointer">'+
+            unknownConf+knownConf.map(v=>'<option value="'+v+'"'+(conf===v&&!unknownConf?' selected':'')+'>'+v+'</option>').join('')+
           '</select>'+
-          '<button onclick="markClaimChecked(\''+c.id+'\')" style="font-family:var(--mono);font-size:9px;letter-spacing:.5px;text-transform:uppercase;padding:4px 10px;border:1px solid var(--bdr);border-radius:2px;background:none;color:var(--tx3);cursor:pointer">Mark Checked</button>'+
+          '<button data-claim-action="checked" style="font-family:var(--mono);font-size:9px;letter-spacing:.5px;text-transform:uppercase;padding:4px 10px;border:1px solid var(--bdr);border-radius:2px;background:none;color:var(--tx3);cursor:pointer">Mark Checked</button>'+
         '</div>'+
       '</div>';
     }).join('');
+    if(container.dataset.xssActionsBound!=='1'){
+      container.dataset.xssActionsBound='1';
+      container.addEventListener('change',function(e){
+        const control=e.target&&e.target.closest&&e.target.closest('[data-claim-action="confidence"]');
+        const card=control&&control.closest('[data-claim-id]');
+        if(card) window.updateClaimConf(card.dataset.claimId,control.value);
+      });
+      container.addEventListener('click',function(e){
+        const control=e.target&&e.target.closest&&e.target.closest('[data-claim-action="checked"]');
+        const card=control&&control.closest('[data-claim-id]');
+        if(card) window.markClaimChecked(card.dataset.claimId);
+      });
+    }
   }
   window.filterClaims=function(f,btn){
     document.querySelectorAll('.cl-filter').forEach(b=>b.classList.remove('active'));
@@ -2190,19 +2251,20 @@ function renderRiskMonitor(){
     '<div class="risk-stat"><div class="risk-stat-num" style="color:var(--tx3)">'+low+'</div><div class="risk-stat-label">Low (&lt;6)</div></div>'+
     '<div class="risk-stat"><div class="risk-stat-num" style="color:var(--gold2)">'+D.risks.length+'</div><div class="risk-stat-label">Total Tracked</div></div>';
   container.innerHTML=sorted.map(r=>{
-    const cls=r.score>=12?'score-high':r.score>=6?'score-med':'score-low';
+    const score=Number.isFinite(Number(r.score))?Number(r.score):0;
+    const cls=score>=12?'score-high':score>=6?'score-med':'score-low';
     const isPrivate=r.private?' data-private="true"':'';
     return '<div class="risk-mon-card"'+isPrivate+'>'+
-      '<div class="risk-score '+cls+'">'+r.score+'</div>'+
+      '<div class="risk-score '+cls+'">'+score+'</div>'+
       '<div class="risk-mon-body">'+
-        '<div class="risk-mon-title">'+r.title+'</div>'+
+        '<div class="risk-mon-title">'+escapeHTML(r.title)+'</div>'+
         '<div class="risk-prob-impact">'+
-          '<span class="rpi-badge">Prob: '+r.prob+'/5</span>'+
-          '<span class="rpi-badge">Impact: '+r.impact+'/5</span>'+
-          '<span class="rpi-badge" style="background:var(--bg3);color:var(--tx2)">'+r.cat+'</span>'+
+          '<span class="rpi-badge">Prob: '+escapeHTML(r.prob)+'/5</span>'+
+          '<span class="rpi-badge">Impact: '+escapeHTML(r.impact)+'/5</span>'+
+          '<span class="rpi-badge" style="background:var(--bg3);color:var(--tx2)">'+escapeHTML(r.cat)+'</span>'+
         '</div>'+
-        '<div class="risk-mitigation">→ '+r.mitigation+'</div>'+
-        '<div class="risk-review">Review: '+r.nextReview+'</div>'+
+        '<div class="risk-mitigation">→ '+escapeHTML(r.mitigation)+'</div>'+
+        '<div class="risk-review">Review: '+escapeHTML(r.nextReview)+'</div>'+
       '</div>'+
     '</div>';
   }).join('');
@@ -2814,7 +2876,7 @@ function updateGistUI(){
       <span>🔑 Token saved</span>
       <button class="icl-small-btn icl-del-btn" onclick="clearGistToken()">✕ Remove</button>
     </div>
-    ${gistId?`<div class="gist-id-display">Connected backup: <code>${gistId.slice(0,12)}…</code></div>`:''}
+    ${gistId?`<div class="gist-id-display">Connected backup: <code>${escapeHTML(_b1SafeText(gistId).slice(0,12))}…</code></div>`:''}
     ${lastSync?`<div class="gist-sync-time">${baseOk?'Last synced':'Historical sync only'}: ${new Date(lastSync).toLocaleString()}</div>`:''}`;
     if(btns) btns.style.display='flex';
   } else {
@@ -3774,7 +3836,6 @@ window.aptToggleWinner=function(id){
 
   // ─── Utilities ─────────────────────────────────────────────
   function setText(id, t) { const el = document.getElementById(id); if (el) el.textContent = t; }
-  function escapeHTML(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
   function daysTo(iso) { return Math.ceil((new Date(iso) - new Date()) / 864e5); }
   function formatDate(iso) {
     try { return new Date(iso).toLocaleDateString('en-GB', { day:'numeric', month:'short', year:'numeric' }); }
@@ -3946,13 +4007,14 @@ window.aptToggleWinner=function(id){
       el.innerHTML = list.map((l, i) => {
         const days = l.target ? daysTo(l.target) : null;
         const dateBit = l.target ? formatDate(l.target) + (days !== null ? ' · ' + (days >= 0 ? days + 'd' : 'past') : '') : '—';
-        const statusCls = 'lic-status-' + (l.status || 'planned');
+        const status = ['planned','in_progress','done'].includes(l.status) ? l.status : 'planned';
+        const statusCls = 'lic-status-' + status;
         return '<div class="license-row ' + statusCls + '">' +
           '<div class="license-name">' + escapeHTML(l.name) + '</div>' +
-          '<div class="license-meta">' + dateBit + '</div>' +
+          '<div class="license-meta">' + escapeHTML(dateBit) + '</div>' +
           '<select class="license-sel" onchange="updateLicenseStatus(' + i + ',this.value)">' +
             ['planned','in_progress','done'].map(s2 =>
-              '<option value="' + s2 + '"' + (l.status === s2 ? ' selected' : '') + '>' +
+              '<option value="' + s2 + '"' + (status === s2 ? ' selected' : '') + '>' +
               ({planned:'Planned','in_progress':'In progress',done:'Done ✓'}[s2]) + '</option>'
             ).join('') +
           '</select>' +
@@ -4494,11 +4556,11 @@ window.aptToggleWinner=function(id){
           }
         }
       } catch (e) { /* keep legacy label */ }
-      const html = '<span class="amm-pill">v' + (a.version || 1) + '</span>' +
+      const html = '<span class="amm-pill">v' + escapeHTML(a.version || 1) + '</span>' +
         '<span class="amm-sep">·</span>' +
-        '<span>Created ' + (a.createdAt || '—') + '</span>' +
+        '<span>Created ' + escapeHTML(a.createdAt || '—') + '</span>' +
         '<span class="amm-sep">·</span>' +
-        '<span>Last updated ' + lastUpdatedLabel + '</span>';
+        '<span>Last updated ' + escapeHTML(lastUpdatedLabel) + '</span>';
       if (!meta) {
         meta = document.createElement('div');
         meta.className = 'about-meta-strip';

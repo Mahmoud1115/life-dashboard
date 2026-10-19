@@ -270,7 +270,7 @@
     const habitChips = habits.map(h => `
       <span class="bht-chip">
         ${escapeHtml(h.name)}
-        <span class="bht-chip-cat">${escapeHtml(h.category)} · w${h.severityWeight}</span>
+        <span class="bht-chip-cat">${escapeHtml(h.category)} · w${escapeHtml(h.severityWeight)}</span>
       </span>
     `).join('');
 

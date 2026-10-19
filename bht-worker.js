@@ -5,19 +5,26 @@
 
 'use strict';
 
-self.addEventListener('message', (e) => {
-  const msg = e.data || {};
-  if (msg.type !== 'compute') return;
-  try {
-    const result = compute(msg.payload || {});
-    self.postMessage({ id: msg.id, type: 'result', payload: result });
-  } catch (err) {
-    self.postMessage({
-      id: msg.id, type: 'error',
-      payload: { message: String((err && err.message) || err) }
-    });
-  }
-});
+(function (global) {
+
+const isWorkerContext = typeof WorkerGlobalScope !== 'undefined' && global instanceof WorkerGlobalScope;
+if (isWorkerContext) {
+  global.addEventListener('message', (e) => {
+    const msg = e.data || {};
+    if (msg.type !== 'compute') return;
+    try {
+      const result = compute(msg.payload || {});
+      global.postMessage({ id: msg.id, type: 'result', payload: result });
+    } catch (err) {
+      global.postMessage({
+        id: msg.id, type: 'error',
+        payload: { message: String((err && err.message) || err) }
+      });
+    }
+  });
+} else {
+  global.BHT_WORKER_COMPUTE = compute;
+}
 
 function pad2(n) { return n < 10 ? '0' + n : '' + n; }
 function ymd(d)  { return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); }
@@ -279,3 +286,5 @@ function buildSummary(entries, habitsById, todayKey, days) {
     perHabit
   };
 }
+
+})(self);

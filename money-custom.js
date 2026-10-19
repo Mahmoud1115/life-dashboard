@@ -160,7 +160,7 @@
     return `
       <div class="mc-row" data-kind="${kind}" data-id="${esc(r.id)}">
         <input class="mc-name" type="text" placeholder="${kind === 'income' ? 'e.g. side job · tutoring' : 'e.g. gym · archery class'}" value="${esc(r.name)}">
-        <input class="mc-amount" type="number" inputmode="numeric" placeholder="0" value="${r.amount || ''}">
+        <input class="mc-amount" type="number" inputmode="numeric" placeholder="0" value="${esc(r.amount || '')}">
         <button class="mc-rm" type="button" aria-label="Remove">✕</button>
       </div>
     `;

@@ -11,7 +11,7 @@
     return;
   }
 
-  const WORKER_PATH = 'bht-worker.js?v=phase4e';
+  const WORKER_PATH = 'bht-worker.js?v=csp2';
   const RECOMPUTE_DEBOUNCE_MS = 220;
 
   function injectStyles() {
@@ -119,6 +119,7 @@
   let nextId = 1;
   const pending = {};
   let inlineFallback = null;
+  let inlineFallbackLoad = null;
 
   function bootWorker() {
     if (worker) return;
@@ -147,12 +148,26 @@
 
   function ensureInlineFallback() {
     if (inlineFallback) return Promise.resolve(inlineFallback);
-    return fetch(WORKER_PATH).then(r => r.text()).then(src => {
-      const stub = { addEventListener: () => {}, postMessage: () => {} };
-      const factory = new Function('self', src + '\nreturn { compute };');
-      inlineFallback = factory(stub);
-      return inlineFallback;
+    if (typeof global.BHT_WORKER_COMPUTE === 'function') {
+      inlineFallback = { compute: global.BHT_WORKER_COMPUTE };
+      return Promise.resolve(inlineFallback);
+    }
+    if (inlineFallbackLoad) return inlineFallbackLoad;
+    inlineFallbackLoad = new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = WORKER_PATH;
+      script.onload = () => {
+        if (typeof global.BHT_WORKER_COMPUTE !== 'function') {
+          reject(new Error('BHT analytics fallback unavailable'));
+          return;
+        }
+        inlineFallback = { compute: global.BHT_WORKER_COMPUTE };
+        resolve(inlineFallback);
+      };
+      script.onerror = () => reject(new Error('BHT analytics fallback failed to load'));
+      document.head.appendChild(script);
     });
+    return inlineFallbackLoad;
   }
 
   function postCompute(snapshot) {

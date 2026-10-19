@@ -4,12 +4,12 @@
     "sha256": "38fce3a86fbf0e19e5602eb2debc45f52d9778c1c5864cd3760c74ea37b42914"
   },
   "app.js": {
-    "version": "traininglogbook2",
-    "sha256": "569615d952f112a5b6c44ddda3fe1385680350a305eeac34799abf88ebb95aa5"
+    "version": "bootorder3",
+    "sha256": "265f04f15cac40e45bed20a7fc6033295df97e7e92c78215e8b2f9117ee66e48"
   },
   "bht-analytics.js": {
-    "version": "phase5b",
-    "sha256": "6d262edef97483f1fd2de3326694427515a0502b8485c26d0f74bae4792fdb70"
+    "version": "phase5c",
+    "sha256": "8db2dd45d4677ced1761512a7afae86f8d1a138da16d63e93c879b177684ceaf"
   },
   "bht-bridge.js": {
     "version": "phase4f",
@@ -20,20 +20,20 @@
     "sha256": "ba4c81b78e693e263706f292bda4022af36556bf2ca577e5faf37c38240ea32a"
   },
   "bht-components.js": {
-    "version": "phase4c",
-    "sha256": "b2cc9bcd293222512ab7ab4200cddad38cef3e2fd7d417b2509e134fbf5aee6b"
+    "version": "phase4d",
+    "sha256": "b5922d59896021105af90783c2a887e5d471545e465429613d63653a28fd9065"
   },
   "bht-duku.js": {
-    "version": "phase5b",
-    "sha256": "b619a0c38e6af2f29ea87b811dd827f65c0ef0a65aa8e05bec836514dc76a50e"
+    "version": "bootorder1",
+    "sha256": "cd1c49ca0e026344e9b010706294d268c4f5332528ef54b1ecf6b855c073b861"
   },
   "bht-grid.js": {
     "version": "phase5c",
     "sha256": "2da4e5f9c645f888ad445ecba708c24537e8d7a6d6b46c5fa562744acf43d724"
   },
   "bht-ui.js": {
-    "version": "polish1",
-    "sha256": "4569779e1cf3535bf0ba02ec02b9a15c4af8d1508d6d69cd5361472323607d42"
+    "version": "polish2",
+    "sha256": "a9fde7c336e6a3ce5e19b6e5e2a02d8c47e8c94b39c2e5c8c476704d431d636b"
   },
   "bht.js": {
     "version": "phase4b",
@@ -64,8 +64,8 @@
     "sha256": "5e4945a02937540cc2c1a985fba4b53f07969291527c61920e878e9a34665827"
   },
   "money-custom.js": {
-    "version": "storagefix1",
-    "sha256": "a4840376cd8cea4b53bcfbe211231d86d62094d11a7a2df2162099ad6aebb555"
+    "version": "storagefix2",
+    "sha256": "b84f8aa7a8951b65e90c2988efad8e702006b263cc737309cfe57ffaddf1734b"
   },
   "observatory.js": {
     "version": "f10a",
