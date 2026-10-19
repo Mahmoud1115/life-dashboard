@@ -428,7 +428,8 @@
           String(d.getMonth() + 1).padStart(2, '0') + '-' +
           String(d.getDate()).padStart(2, '0');
       })();
-      const recent = (s.bht.entries || []).filter(e => e.occurred && e.date >= sevenDaysAgo);
+      const today = todayKey();
+      const recent = (s.bht.entries || []).filter(e => e.occurred && e.date >= sevenDaysAgo && e.date <= today);
       let score = 0;
       for (const e of recent) {
         const h = habits.find(x => x.id === e.habitId);
