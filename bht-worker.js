@@ -51,10 +51,11 @@ function severityMult(s) {
 }
 
 function compute(payload) {
-  const entries    = Array.isArray(payload.entries)    ? payload.entries    : [];
+  const entriesRaw = Array.isArray(payload.entries) ? payload.entries : [];
   const habits     = Array.isArray(payload.habits)     ? payload.habits     : [];
   const lifeEvents = Array.isArray(payload.lifeEvents) ? payload.lifeEvents : [];
   const todayKey   = payload.todayKey || ymd(new Date());
+  const entries    = entriesRaw.filter(e => e && typeof e.date === 'string' && e.date <= todayKey);
   const days       = payload.days || 90;
 
   const habitsById = {};

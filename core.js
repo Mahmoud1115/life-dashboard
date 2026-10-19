@@ -4006,12 +4006,13 @@
   // ──────────────────────────────────────────────
   const derive = {
     monthlyExpenses(s) {
-      const e = (s || state).money.expenses;
-      return (e.rent||0)+(e.food||0)+(e.transport||0)+(e.utilities||0)+(e.phone||0)+(e.family_transfer||0)+(e.other||0)+(e.mai||0);
+      const money = (s || state).money;
+      const e = money.expenses;
+      return (e.rent||0)+(e.food||0)+(e.transport||0)+(e.utilities||0)+(e.phone||0)+(e.family_transfer||0)+(e.other||0)+(e.mai||0)+(money.custom_expense_total||0);
     },
     monthlySurplus(s) {
       s = s || state;
-      return s.money.salary_net - derive.monthlyExpenses(s);
+      return s.money.salary_net + (s.money.custom_income_total||0) - derive.monthlyExpenses(s);
     },
     saveTargetHitPct(s) {
       s = s || state;
@@ -4067,9 +4068,14 @@
     },
     careerMonths(s) {
       s = s || state;
-      const start = new Date(s.career.started);
+      const started = s.career && s.career.started;
+      // Accept YYYY-MM-DD, YYYY-MM and full ISO timestamps; anything else renders as an em dash.
+      const m = typeof started === 'string' ? /^(\d{4})-(\d{2})(?:-\d{2})?(?:$|T)/.exec(started) : null;
+      if (!m) return null;
+      const y = Number(m[1]), mo = Number(m[2]);
+      if (mo < 1 || mo > 12) return null;
       const now = new Date();
-      return Math.max(0, (now.getFullYear()-start.getFullYear())*12 + (now.getMonth()-start.getMonth()));
+      return Math.max(0, (now.getFullYear()-y)*12 + (now.getMonth()-(mo-1)));
     },
     monthsToCatA(s) {
       s = s || state;

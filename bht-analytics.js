@@ -11,7 +11,7 @@
     return;
   }
 
-  const WORKER_PATH = 'bht-worker.js?v=csp1';
+  const WORKER_PATH = 'bht-worker.js?v=csp2';
   const RECOMPUTE_DEBOUNCE_MS = 220;
 
   function injectStyles() {
