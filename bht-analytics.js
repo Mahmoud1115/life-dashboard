@@ -11,7 +11,7 @@
     return;
   }
 
-  const WORKER_PATH = 'bht-worker.js?v=phase4d';
+  const WORKER_PATH = 'bht-worker.js?v=phase4e';
   const RECOMPUTE_DEBOUNCE_MS = 220;
 
   function injectStyles() {

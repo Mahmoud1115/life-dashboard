@@ -9,6 +9,11 @@ const LS = {
   set:(k,v)=>{ try{ localStorage.setItem(k,JSON.stringify(v)); return true; }catch(e){ return false; } }
 };
 
+function localDateKey(date) {
+  const d = date || new Date();
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
 function showStorageWriteFailure(){
   if(typeof showBackupToast==='function') showBackupToast('⚠ Storage write failed — your input is still here. Free browser storage and try again.');
 }
@@ -1799,7 +1804,7 @@ function renderATACoverage(entries){
       try { window.LOGBOOK.reconcile(); } catch (e) { /* mirror is best-effort */ }
     }
     f.reset();
-    f.lb_date.value=new Date().toISOString().split('T')[0];
+    f.lb_date.value=localDateKey();
     showForm=false;
     renderLogbook();
   };
@@ -1815,7 +1820,7 @@ function renderATACoverage(entries){
   };
   document.addEventListener('DOMContentLoaded',()=>{
     const dateInput=document.getElementById('lb-date-input');
-    if(dateInput) dateInput.value=new Date().toISOString().split('T')[0];
+    if(dateInput) dateInput.value=localDateKey();
     renderLogbook();
   });
 })();
@@ -2162,7 +2167,7 @@ function gistBootstrapDivergedMessage(gistId){
     renderClaims();
   };
   window.markClaimChecked=function(id){
-    patchClaim(id, { lastChecked: new Date().toISOString().split('T')[0] });
+    patchClaim(id, { lastChecked: localDateKey() });
     renderClaims();
   };
   document.addEventListener('DOMContentLoaded',()=>renderClaims());
@@ -2295,7 +2300,7 @@ window.exportRecoveryEvidence = function(){
   const blob = new Blob([JSON.stringify(envelope,null,2)],{type:'application/json'});
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = url; a.download = 'dune-recovery-evidence-'+new Date().toISOString().slice(0,10)+'.json';
+  a.href = url; a.download = 'dune-recovery-evidence-'+localDateKey()+'.json';
   a.click(); URL.revokeObjectURL(url);
   showBackupToast('⚠ Recovery evidence exported (NOT a normal backup)');
 };
@@ -2363,7 +2368,7 @@ window.exportBackup=function(){
   const blob=new Blob([JSON.stringify(backup,null,2)],{type:'application/json'});
   const url=URL.createObjectURL(blob);
   const a=document.createElement('a');
-  a.href=url;a.download='dune-backup-'+new Date().toISOString().slice(0,10)+'.json';
+  a.href=url;a.download='dune-backup-'+localDateKey()+'.json';
   a.click();URL.revokeObjectURL(url);
   LS.set('dune_last_backup_v1',new Date().toISOString());
   localStorage.setItem('dune_change_count_v1','0');
@@ -3083,7 +3088,7 @@ function renderLogbookBuilder(){
   // B1 R7: malformed-but-import-accepted rows must not throw the
   // aggregation. Filter to safe objects before deref.
   const entries=Array.isArray(raw)?raw.filter(function(e){return _b1SafeObject(e)!==null;}):[];
-  const today=new Date().toISOString().slice(0,10);
+  const today=localDateKey();
   const ataOpts=LB_ATA.map(a=>`<option value="${a.val}">${a.label}</option>`).join('');
 
   // stats — hostile toString/valueOf are neutralised via _b1Safe*.
@@ -3387,7 +3392,7 @@ window.lbbExportCSV=function(){
   }).join(CRLF);
   const blob=new Blob([BOM+headerLine+CRLF+rows+CRLF],{type:'text/csv;charset=utf-8'});
   const url=URL.createObjectURL(blob);
-  const a=document.createElement('a');a.href=url;a.download='logbook-'+new Date().toISOString().slice(0,10)+'.csv';a.click();URL.revokeObjectURL(url);
+  const a=document.createElement('a');a.href=url;a.download='logbook-'+localDateKey()+'.csv';a.click();URL.revokeObjectURL(url);
 };
 
 /* ═══════════════════════════════════════════
@@ -3694,7 +3699,7 @@ window.aptSave=function(){
     status:document.getElementById('apt-status')?.value||'viewing',
     winner:false,
     notes:document.getElementById('apt-notes')?.value.trim()||'',
-    added:new Date().toISOString().slice(0,10)
+    added:localDateKey()
   });
   if(!LS.set('dune_apartments_v1',apts)){showStorageWriteFailure();return;}
   bumpChangeCount();
@@ -3963,7 +3968,7 @@ window.aptToggleWinner=function(id){
       const monthsEl = document.getElementById('c-months');
       if (monthsEl) {
         const m = Store.derive.careerMonths(s);
-        monthsEl.textContent = m + ' months · ' + (m/12).toFixed(1) + ' years';
+        monthsEl.textContent = m == null ? '—' : m + ' months · ' + (m/12).toFixed(1) + ' years';
       }
     }
     Store.subscribe('career', render);
@@ -4003,7 +4008,7 @@ window.aptToggleWinner=function(id){
   // ─── WEEKLY REVIEW + DECISION JOURNAL ──────────────────────
   function wireReview() {
     const wk = document.getElementById('rev-week');
-    if (wk && !wk.value) wk.value = new Date().toISOString().slice(0,10);
+    if (wk && !wk.value) wk.value = localDateKey();
     function renderReviews(s) {
       const list = (s.reviews || []).slice().reverse();
       const el = document.getElementById('reviews-list');
