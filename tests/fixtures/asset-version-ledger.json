@@ -71,12 +71,16 @@
     "version": "f10a",
     "sha256": "0a199903107cd63ca752403cd29ac4caff3d509b258181a0d5cf052e0f8a0855"
   },
+  "shift-calendar.js": {
+    "version": "shiftp4",
+    "sha256": "54e26f37f49b89cabfb5c31ea05124fbcdaa49711306006800749a640fa133c0"
+  },
   "styles-glass.css": {
     "version": "polish1",
     "sha256": "54d41562925ddde017449508e3b75302cba6e848e62d58cef88e4e5cda622b5f"
   },
   "styles.css": {
-    "version": "bannerfix2",
-    "sha256": "94e101930901b5e263e299d408ee3a1b375f414edaf49eed68180cf11cc5eee4"
+    "version": "shiftp4",
+    "sha256": "544dc73066bb8306a2c561b6cadf369eaaa26914fda185099c7f6fbe00086436"
   }
 }

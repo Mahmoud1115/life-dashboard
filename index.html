@@ -13,7 +13,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="Dune">
-<link rel="stylesheet" href="styles.css?v=bannerfix2">
+<link rel="stylesheet" href="styles.css?v=shiftp4">
 <link rel="stylesheet" href="styles-glass.css?v=polish1">
 </head>
 <body>
@@ -39,6 +39,9 @@
     <div class="nav-main">
       <button class="nmb active" data-group="home" onclick="showGroup('home')">
         <span class="nmb-emoji">📅</span><span class="nmb-label">Today</span>
+      </button>
+      <button class="nmb" data-group="shifts" aria-label="Shifts" onclick="ShiftCalendar.open()">
+        <span class="nmb-emoji">▦</span><span class="nmb-label">Shifts</span>
       </button>
       <button class="nmb" data-group="money" onclick="showGroup('money')">
         <span class="nmb-emoji">💰</span><span class="nmb-label">Money</span>
@@ -176,6 +179,71 @@
     <button class="qa-btn qa-btn-quiet" onclick="show('deadlines',event)">⏱ Add Deadline</button>
   </div>
 </div>
+</section>
+
+<!-- SHIFTS — IN-MEMORY P1 CALENDAR -->
+<section class="sec" id="shifts">
+  <div class="sec-hd">
+    <div class="sec-num">▦ Shifts</div>
+    <h2 class="sec-title">Shift Calendar —<br><em>2 On · 2 Off</em></h2>
+    <p class="sec-intro">Choose the first day of a working pair, then review the rotation or mark a day ON, OFF, or EXTRA.</p>
+  </div>
+
+  <div class="shift-p1-setup card">
+    <div>
+      <label for="shift-anchor">First day of a working pair</label>
+      <input id="shift-anchor" type="date">
+    </div>
+    <p class="shift-p1-notice" role="note">This calendar is not saved yet. The anchor and every day change stay in memory until this page is reloaded.</p>
+  </div>
+
+  <div id="shift-empty" class="shift-p1-empty card">
+    <span aria-hidden="true">▦</span>
+    <h3>Choose an anchor date</h3>
+    <p>The calendar stays clear until the rotation has a starting point.</p>
+  </div>
+
+  <div id="shift-workspace" class="shift-p1-workspace" hidden>
+    <div class="shift-p1-calendar card">
+      <div class="shift-p1-month-head">
+        <button id="shift-prev-month" class="shift-p1-icon-btn" type="button" aria-label="Previous month">‹</button>
+        <h3 id="shift-month-title" aria-live="polite"></h3>
+        <button id="shift-next-month" class="shift-p1-icon-btn" type="button" aria-label="Next month">›</button>
+      </div>
+      <div class="shift-p1-weekdays" aria-hidden="true">
+        <span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span>
+      </div>
+      <div id="shift-calendar-grid" class="shift-p1-grid" role="group" aria-label="Shift calendar"></div>
+      <div class="shift-p1-legend" aria-label="Calendar legend">
+        <span><i class="is-on"></i>ON</span><span><i class="is-extra"></i>EXTRA</span><span><i class="is-off"></i>OFF</span>
+      </div>
+    </div>
+
+    <aside class="shift-p1-side">
+      <div id="shift-day-editor" class="card shift-p1-editor" hidden>
+        <div class="ctitle">Selected day</div>
+        <h3 id="shift-selected-date"></h3>
+        <p id="shift-selected-source" class="shift-p1-source"></p>
+        <div class="shift-p1-actions" aria-label="Selected day status">
+          <button type="button" data-shift-status="ON" aria-label="Mark selected day ON">ON</button>
+          <button type="button" data-shift-status="OFF" aria-label="Mark selected day OFF">OFF</button>
+          <button type="button" data-shift-status="EXTRA" aria-label="Mark selected day EXTRA">EXTRA</button>
+        </div>
+        <button id="shift-use-pattern" class="shift-p1-pattern-btn" type="button">Use 2-on/2-off pattern</button>
+      </div>
+
+      <div id="shift-summary" class="card" aria-live="polite">
+        <div class="ctitle">Month summary</div>
+        <dl class="shift-p1-summary">
+          <div><dt>Regular ON</dt><dd id="shift-summary-on">0</dd></div>
+          <div><dt>EXTRA</dt><dd id="shift-summary-extra">0</dd></div>
+          <div><dt>OFF</dt><dd id="shift-summary-off">0</dd></div>
+          <div><dt>Total hours</dt><dd id="shift-summary-hours">0</dd></div>
+        </dl>
+        <div class="shift-p1-next"><span>Next shift start</span><strong id="shift-next-start">—</strong></div>
+      </div>
+    </aside>
+  </div>
 </section>
 
 <!-- CAREER TRACKER -->
@@ -865,6 +933,7 @@
     <button class="mob-nb" data-sec="home" onclick="show('home',event)"><span class="mob-nb-icon">⌂</span><span class="mob-nb-label">Today</span></button>
     <button class="mob-nb" data-sec="finance" onclick="show('finance',event)"><span class="mob-nb-icon">₽</span><span class="mob-nb-label">Money</span></button>
     <button class="mob-nb" data-sec="progress" onclick="show('progress',event)"><span class="mob-nb-icon">◎</span><span class="mob-nb-label">Goals</span></button>
+    <button class="mob-nb" data-sec="shifts" onclick="show('shifts',event)"><span class="mob-nb-icon">⇄</span><span class="mob-nb-label">Shifts</span></button>
     <button class="mob-nb" data-sec="career-tracker" onclick="show('career-tracker',event)"><span class="mob-nb-icon">✈</span><span class="mob-nb-label">Career</span>
     </button>
     <button class="mob-nb" data-sec="aboutyou" onclick="show('aboutyou',event)"><span class="mob-nb-icon">🧭</span><span class="mob-nb-label">About</span></button>
@@ -889,5 +958,6 @@
 <script src="money-custom.js?v=storagefix2"></script>
 <script src="money-commas.js?v=phase5a"></script>
 <script src="observatory.js?v=f10a"></script>
+<script src="shift-calendar.js?v=shiftp4"></script>
 </body>
 </html>
